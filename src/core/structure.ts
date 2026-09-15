@@ -181,13 +181,23 @@ function orderNodes(
   return Array.from(finalNodeTypes.keys()).sort((a, b) => orderOf(env, a) - orderOf(env, b));
 }
 
+/** The root never gets a primary parent — it's the top of the tree by construction, regardless
+ * of what its own candidate list contains. Those candidates aren't discarded: with the root's
+ * primary forced to `null`, they flow through the normal extras rules in `processNode` (no
+ * ancestors to suppress against, so they surface as extras on the root itself). */
 function computeInitialPrimary(
   finalNodeTypes: ReadonlyMap<string, TypeDef | null>,
   candidates: CandidateSet,
+  root: string | null,
 ): PrimaryInfo {
   const parent = new Map<string, string | null>();
   const edge = new Map<string, EdgeRule | null>();
   for (const path of finalNodeTypes.keys()) {
+    if (path === root) {
+      parent.set(path, null);
+      edge.set(path, null);
+      continue;
+    }
     const list = candidates.byChild.get(path) ?? [];
     const best = list.find((candidate) => finalNodeTypes.has(candidate.parent));
     parent.set(path, best?.parent ?? null);
@@ -493,7 +503,7 @@ export function buildStructure(schema: Schema, snapshot: Snapshot): Structure {
   const candidates = collectCandidates(schema, snapshot, nodeSet.nodeTypes);
   const { root, finalNodeTypes } = determineRoot(nodeSet, snapshot, candidates);
   const orderedNodes = orderNodes(env, finalNodeTypes);
-  const primary = computeInitialPrimary(finalNodeTypes, candidates);
+  const primary = computeInitialPrimary(finalNodeTypes, candidates, root);
   const graph: GraphCtx = { finalNodeTypes, candidates, primary };
   breakCycles(env, graph, orderedNodes);
   const childrenIndex = buildChildrenIndex(orderedNodes, primary.parent);

@@ -339,6 +339,44 @@ describe('buildStructure — host and root qualification', () => {
   });
 });
 
+describe('buildStructure — the root stays parentless', () => {
+  it('does not let another type parent the root, even when the root has a matching candidate of its own', () => {
+    const { schema } = parseSchema(
+      makeRead({
+        types: {
+          Super: { tag: 'super', children: { Category: 'super' } },
+          Category: { tag: 'cat' },
+        },
+      }),
+    );
+    // cat.md is the host and qualifies as root outright (Category has specificity > 0). It also
+    // has its own "super" property pointing at sup.md, which — absent the fix — would make
+    // sup.md look like cat.md's primary parent (Super is a deeper/matching type for Category).
+    const base = snapshot([note('sup.md', { tags: ['super'] })], { host: 'cat.md' });
+    const notes = new Map(base.notes).set(
+      'cat.md',
+      note('cat.md', { tags: ['cat'], propertyLinks: { super: ['sup.md'] } }),
+    );
+    const snap = { ...base, notes };
+
+    const structure = buildStructure(schema, snap);
+
+    expect(structure.root).toBe('cat.md');
+    expect(structure.tops).toStrictEqual(['cat.md']);
+    const rootNode = structure.nodes.get('cat.md');
+    expect(rootNode?.parent).toBeNull();
+    expect(rootNode?.edge).toBeNull();
+    // The root's candidate isn't discarded — with no ancestors to suppress it, it surfaces as
+    // an extra on the root itself.
+    expect(rootNode?.extras).toStrictEqual([{ parent: 'sup.md', kind: 'property' }]);
+    // sup.md never becomes cat.md's parent: it isn't listed as anyone's child, its own parent
+    // stays whatever its own candidates say (none here), and it shows up as an orphan.
+    expect(structure.nodes.get('sup.md')?.children).toStrictEqual([]);
+    expect(structure.nodes.get('sup.md')?.parent).toBeNull();
+    expect(structure.orphans).toStrictEqual(['sup.md']);
+  });
+});
+
 describe('buildStructure — external targets and alsoIn', () => {
   const config = {
     types: {
