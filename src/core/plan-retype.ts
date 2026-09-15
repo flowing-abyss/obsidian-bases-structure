@@ -7,9 +7,18 @@ import {
   edgeTargets,
   listShape,
   ruleBetween,
-  unionInheritedTargets,
   type SubtreeContext,
 } from './derive.js';
+import {
+  arraysEqual,
+  buildEdgeWrites,
+  type EdgeWriteInputs,
+  firstChangedOtherNode,
+  inheritWritesFor,
+  recordAllOverrides,
+  recordOverride,
+  textLinkReason,
+} from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanEnv, PlanResult } from './plan-types.js';
 import type { EdgeRule, Schema, TypeDef, TypeMatch } from './schema.js';
 import { applyPlan } from './simulate.js';
@@ -25,41 +34,6 @@ function oldMatchOf(schema: Schema, typeName: string | null): TypeMatch {
     return EMPTY_MATCH;
   }
   return schema.typeByName.get(typeName)?.match ?? EMPTY_MATCH;
-}
-
-function textLinkReason(
-  kind: 'links' | 'backlinks',
-  snapshot: Snapshot,
-  parentPath: string,
-  nodePath: string,
-): string {
-  const parentName = displayName(snapshot, parentPath);
-  const nodeName = displayName(snapshot, nodePath);
-  return kind === 'backlinks'
-    ? `The link from "${parentName}" to "${nodeName}" lives in note text and cannot be written automatically`
-    : `The link from "${nodeName}" to "${parentName}" lives in note text and cannot be written automatically`;
-}
-
-function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((item, index) => item === b[index]);
-}
-
-function sameSet(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const setB = new Set(b);
-  return a.every((item) => setB.has(item));
-}
-
-function recordOverride(
-  ctx: SubtreeContext,
-  path: string,
-  key: string,
-  targets: readonly string[],
-): void {
-  const existing = ctx.linkOverrides.get(path) ?? {};
-  ctx.linkOverrides.set(path, { ...existing, [key]: targets });
 }
 
 // -- Rejection checks -------------------------------------------------------------------------
@@ -300,91 +274,6 @@ function newPropertyWrites(
 
 // -- N's own edge + inherit-key recompute (parent unchanged, "move" rule) --------------------
 
-interface EdgeInputs {
-  readonly snapshot: Snapshot;
-  readonly node: string;
-  readonly parent: string;
-  readonly oldEdge: EdgeRule | null;
-  readonly key: string;
-  readonly keep: ReadonlySet<string>; // N's genuine property-kind extras
-}
-
-/** N's own parent never changes during a retype, so `oldParent === newParent === inputs.parent` —
- * `edgeTargets` still replaces it "in place" when the key hasn't changed (a no-op beyond dropping
- * any merely-inherited values) and prepends it otherwise. */
-function computeEdgeWrite(inputs: EdgeInputs, cur: readonly string[]): KeyWrite | null {
-  const sameKey = inputs.oldEdge?.kind === 'property' && inputs.oldEdge.property === inputs.key;
-  const newTargets = edgeTargets(cur, inputs.parent, inputs.parent, {
-    keep: inputs.keep,
-    sameKey,
-  });
-  if (arraysEqual(newTargets, cur)) {
-    return null;
-  }
-  return {
-    key: inputs.key,
-    value: {
-      kind: 'links',
-      targets: newTargets,
-      list: listShape(inputs.snapshot, inputs.key, inputs.node),
-    },
-  };
-}
-
-function computeOldEdgeCleanup(
-  schema: Schema,
-  inputs: EdgeInputs,
-  nLinks: Readonly<Record<string, readonly string[]>>,
-): KeyWrite | null {
-  if (
-    inputs.oldEdge?.kind !== 'property' ||
-    inputs.oldEdge.property === inputs.key ||
-    schema.inherit.includes(inputs.oldEdge.property)
-  ) {
-    return null;
-  }
-  const oldKey = inputs.oldEdge.property;
-  const cur2 = nLinks[oldKey] ?? [];
-  const filtered = cur2.filter((item) => item !== inputs.parent);
-  if (arraysEqual(filtered, cur2)) {
-    return null;
-  }
-  return {
-    key: oldKey,
-    value: {
-      kind: 'links',
-      targets: filtered,
-      list: listShape(inputs.snapshot, oldKey, inputs.node),
-    },
-  };
-}
-
-function inheritWritesFor(
-  ctx: SubtreeContext,
-  node: string,
-  excludeKey: string,
-  propertyParents: readonly string[],
-): readonly KeyWrite[] {
-  const writes: KeyWrite[] = [];
-  const nLinks = ctx.snapshot.notes.get(node)?.propertyLinks ?? {};
-  for (const key of ctx.schema.inherit) {
-    if (key === excludeKey) {
-      continue;
-    }
-    const desired = unionInheritedTargets(ctx, propertyParents, key);
-    const current = nLinks[key] ?? [];
-    if (sameSet(desired, current)) {
-      continue;
-    }
-    writes.push({
-      key,
-      value: { kind: 'links', targets: desired, list: listShape(ctx.snapshot, key, node) },
-    });
-    recordOverride(ctx, node, key, desired);
-  }
-  return writes;
-}
-
 /** The property parents used to recompute N's own `inherit` keys when its edge key changes: the
  * (unchanged) parent, then N's surviving property-kind extras. */
 function nOwnPropertyParents(nNode: StructureNode, parent: string): readonly string[] {
@@ -396,14 +285,12 @@ function nOwnPropertyParents(nNode: StructureNode, parent: string): readonly str
   ];
 }
 
-function isNonNull<T>(value: T | null): value is T {
-  return value !== null;
-}
-
 /** N's own edge + inherit-key writes, only when N has a parent and the new parent rule is a
  * `'property'` rule (a text-only rule means the relationship stays exactly as it was in note
- * text — nothing to write). The inherit recompute only runs when N's edge key is actually
- * changing; otherwise nothing downstream of N's own relationship to its parent needs touching. */
+ * text — nothing to write). N's parent never changes during a retype, so `oldParent === newParent`
+ * (see `plan-shared.ts`'s `EdgeWriteInputs`/`buildEdgeWrites`). The inherit recompute only runs
+ * when N's edge key is actually changing; otherwise nothing downstream of N's own relationship to
+ * its parent needs touching. */
 function buildNOwnWrites(
   schema: Schema,
   ctx: SubtreeContext,
@@ -416,22 +303,18 @@ function buildNOwnWrites(
   }
   const parent = nNode.parent;
   const key = parentRule.property;
-  const nLinks = ctx.snapshot.notes.get(action.node)?.propertyLinks ?? {};
-  const cur = nLinks[key] ?? [];
   const propertyParents = nOwnPropertyParents(nNode, parent);
   const keep = new Set(propertyParents.slice(1)); // drop `parent` itself, keep only the extras
-  const inputs: EdgeInputs = {
+  const inputs: EdgeWriteInputs = {
     snapshot: ctx.snapshot,
     node: action.node,
-    parent,
+    oldParent: parent,
+    newParent: parent,
     oldEdge: nNode.edge,
     key,
     keep,
   };
-  const writes = [
-    computeEdgeWrite(inputs, cur),
-    computeOldEdgeCleanup(schema, inputs, nLinks),
-  ].filter(isNonNull);
+  const writes = buildEdgeWrites(schema, inputs);
   if (nNode.edge?.property === key) {
     return writes;
   }
@@ -445,6 +328,12 @@ interface ChildWriteEntry {
   readonly writes: readonly KeyWrite[];
 }
 
+interface ChildEdgeChange {
+  readonly childNode: StructureNode;
+  readonly oldKey: string;
+  readonly newKey: string;
+}
+
 /** Whether `childPath`'s edge property needs to move from its current key to `newType`'s rule for
  * it — `null` when the child doesn't need touching at all (no rule, a non-property edge/rule, or
  * the key hasn't actually changed). */
@@ -453,7 +342,7 @@ function childEdgeChange(
   structure: Structure,
   newTypeName: string,
   childPath: string,
-): { readonly childNode: StructureNode; readonly newKey: string } | null {
+): ChildEdgeChange | null {
   const childNode = structure.nodes.get(childPath);
   if (childNode?.type === null || childNode === undefined || childNode.edge?.kind !== 'property') {
     return null;
@@ -462,7 +351,7 @@ function childEdgeChange(
   if (rule?.kind !== 'property' || childNode.edge.property === rule.property) {
     return null;
   }
-  return { childNode, newKey: rule.property };
+  return { childNode, oldKey: childNode.edge.property, newKey: rule.property };
 }
 
 /** The new-key write (N prepended, deduped) and, unless the old key is itself an inherit key, the
@@ -470,11 +359,10 @@ function childEdgeChange(
 function childRewriteWrites(
   ctx: SubtreeContext,
   childPath: string,
-  change: { readonly childNode: StructureNode; readonly newKey: string },
+  change: ChildEdgeChange,
   node: string,
 ): readonly KeyWrite[] {
-  const { childNode, newKey } = change;
-  const oldKey = childNode.edge?.kind === 'property' ? childNode.edge.property : newKey;
+  const { childNode, oldKey, newKey } = change;
   const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
   const writes: KeyWrite[] = [];
   const newCur = cLinks[newKey] ?? [];
@@ -555,28 +443,6 @@ function mergeWritesByPath(
 
 // -- Verification -------------------------------------------------------------------------------
 
-function firstChangedOtherNode(
-  before: Structure,
-  after: Structure,
-  node: string,
-  focus: string,
-): string | null {
-  for (const [path, beforeNode] of before.nodes) {
-    if (path === node) {
-      continue;
-    }
-    const afterNode = after.nodes.get(path);
-    if (afterNode === undefined) {
-      continue;
-    }
-    const expectedParent = beforeNode.parent === node ? focus : beforeNode.parent;
-    if (afterNode.parent !== expectedParent) {
-      return path;
-    }
-  }
-  return null;
-}
-
 interface VerifyRetypeInputs {
   readonly schema: Schema;
   readonly snapshot: Snapshot;
@@ -618,14 +484,6 @@ function literalRetypeWrites(
   ];
 }
 
-function recordLinkOverrides(ctx: SubtreeContext, path: string, writes: readonly KeyWrite[]): void {
-  for (const write of writes) {
-    if (write.value !== null && write.value.kind === 'links') {
-      recordOverride(ctx, path, write.key, write.value.targets);
-    }
-  }
-}
-
 export function planRetype(
   schema: Schema,
   snapshot: Snapshot,
@@ -651,7 +509,7 @@ export function planRetype(
     ...literalRetypeWrites(snapshot.notes.get(action.node), oldMatch, newType),
     ...buildNOwnWrites(schema, ctx, validation.fields, action),
   ];
-  recordLinkOverrides(ctx, action.node, nWrites);
+  recordAllOverrides(ctx, action.node, nWrites);
 
   const childWrites = retypedChildWrites(schema, ctx, nNode, action);
   const subtreeWrites = deriveSubtreeWrites(ctx, action.node);
