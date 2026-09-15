@@ -4,7 +4,7 @@ import sonarjs from 'eslint-plugin-sonarjs';
 import { defineConfig, globalIgnores } from 'eslint/config';
 import * as globals from 'globals';
 
-const testFiles = ['**/*.test.ts', '**/*.spec.ts', 'vitest.config.ts'];
+const testFiles = ['**/*.test.ts', '**/*.spec.ts', 'vitest.config.ts', 'src/**/__tests__/**/*.ts'];
 
 export default defineConfig(
   globalIgnores([
