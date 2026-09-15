@@ -411,6 +411,32 @@ describe('planAction — create: verification failure', () => {
       reason: 'The new note would not appear under "root" (recognised as "A")',
     });
   });
+
+  it('rejects with "(not recognised as ...)" when the recipe is internally inconsistent and the note matches no type at all', () => {
+    // "Weird"'s own property condition (tags contains "mismatch") can never be satisfied by its
+    // own tag recipe (literal tags: ["weird"]) — the "tags" key collision means the property
+    // write is the one that gets dropped (first write wins), so the created note ends up
+    // matching neither Weird nor Cat, and drops out of the graph entirely.
+    const schema = schemaFrom({
+      types: {
+        Cat: { tag: 'cat', children: { Weird: 'up' } },
+        Weird: { tag: 'weird', property: { tags: 'mismatch' } },
+      },
+    });
+    const snap = snapshot([note('cat.md', { tags: ['cat'] })]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'create', parent: 'cat.md', type: 'Weird', name: 'X' },
+      envAllowing(),
+    );
+
+    expect(result).toStrictEqual({
+      ok: false,
+      reason: 'The new note would not appear under "cat" (not recognised as "Weird")',
+    });
+  });
 });
 
 describe('planAction — create: untyped mode ("parent: up")', () => {
