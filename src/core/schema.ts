@@ -107,19 +107,22 @@ function stripSlashes(value: string): string {
 }
 
 /** `file.links`/`file.backlinks` keep their special kind; otherwise a `property` rule with a
- * leading `note.` stripped. Callers must pass an already-trimmed, non-empty string. */
-function edgeRuleFromString(trimmed: string): EdgeRule {
+ * leading `note.` stripped. Callers must pass an already-trimmed, non-empty string. Returns
+ * `null` when stripping `note.` leaves an empty property name (e.g. `'note.'` alone) — that is
+ * just as much an empty rule as an empty raw string, so it must be rejected the same way. */
+function edgeRuleFromString(trimmed: string): EdgeRule | null {
   if (trimmed === LINKS_VALUE) {
     return { kind: 'links', property: LINKS_VALUE };
   }
   if (trimmed === BACKLINKS_VALUE) {
     return { kind: 'backlinks', property: BACKLINKS_VALUE };
   }
-  return { kind: 'property', property: stripNotePrefix(trimmed) };
+  const property = stripNotePrefix(trimmed);
+  return property === '' ? null : { kind: 'property', property };
 }
 
-/** Validates and trims `raw`, then delegates to `edgeRuleFromString`. Empty string (after
- * trim) is an issue. */
+/** Validates and trims `raw`, then delegates to `edgeRuleFromString`. Empty string, before or
+ * after `note.` normalisation, is an issue. */
 function parseEdgeRule(raw: unknown, ctx: Ctx): EdgeRule | null {
   if (typeof raw !== 'string') {
     ctx.issues.push({ key: ctx.key, message: 'must be a string' });
@@ -130,7 +133,12 @@ function parseEdgeRule(raw: unknown, ctx: Ctx): EdgeRule | null {
     ctx.issues.push({ key: ctx.key, message: 'must not be empty' });
     return null;
   }
-  return edgeRuleFromString(trimmed);
+  const rule = edgeRuleFromString(trimmed);
+  if (rule === null) {
+    ctx.issues.push({ key: ctx.key, message: 'must not be empty' });
+    return null;
+  }
+  return rule;
 }
 
 function parseTagList(raw: readonly unknown[], ctx: Ctx): string[] {
@@ -146,7 +154,7 @@ function parseTagList(raw: readonly unknown[], ctx: Ctx): string[] {
 }
 
 function parseTags(raw: unknown, ctx: Ctx): readonly string[] {
-  if (raw === undefined) {
+  if (raw === undefined || raw === null) {
     return [];
   }
   if (typeof raw === 'string') {
@@ -161,7 +169,7 @@ function parseTags(raw: unknown, ctx: Ctx): readonly string[] {
 }
 
 function parseFolder(raw: unknown, ctx: Ctx): string | null {
-  if (raw === undefined) {
+  if (raw === undefined || raw === null) {
     return null;
   }
   if (typeof raw !== 'string') {
@@ -188,7 +196,7 @@ function parsePropertyEntry(
 }
 
 function parseProperties(raw: unknown, ctx: Ctx): ReadonlyArray<readonly [string, string]> {
-  if (raw === undefined) {
+  if (raw === undefined || raw === null) {
     return [];
   }
   const record = toRecord(raw);
@@ -246,6 +254,10 @@ function parseChildrenListForm(raw: readonly unknown[], ctx: ChildrenCtx): Map<s
     return children;
   }
   const rule = edgeRuleFromString(ctx.parentRaw.trim());
+  if (rule === null) {
+    ctx.issues.push({ key: ctx.key, message: 'must not be empty' });
+    return children;
+  }
   for (const item of raw) {
     addListChild(item, rule, ctx, children);
   }
@@ -353,10 +365,15 @@ function parseTypedMode(
 }
 
 /** `parentRaw` must already be a non-empty string (checked by the caller via
- * `isNonEmptyString`), so the derived edge rule always succeeds. */
-function buildImplicitType(parentRaw: string): TypeDef {
+ * `isNonEmptyString`), but normalising it (e.g. `note.` alone strips to `''`) can still fail. */
+function buildImplicitType(parentRaw: string, issues: SchemaIssue[]): TypeDef {
   const rule = edgeRuleFromString(parentRaw.trim());
-  const children = new Map<string, EdgeRule>([['', rule]]);
+  const children = new Map<string, EdgeRule>();
+  if (rule === null) {
+    issues.push({ key: 'parent', message: 'must not be empty' });
+  } else {
+    children.set('', rule);
+  }
   return {
     name: '',
     level: 0,
@@ -384,7 +401,7 @@ function resolveTypes(read: ConfigReader, issues: SchemaIssue[]): TypeDef[] {
     return parseTypedMode(typesRecord, parentRaw, issues);
   }
   if (isNonEmptyString(parentRaw)) {
-    return [buildImplicitType(parentRaw)];
+    return [buildImplicitType(parentRaw, issues)];
   }
   issues.push({ key: '', message: 'Set "parent" or "types"' });
   return [];
@@ -395,7 +412,12 @@ function normalizeInheritItem(item: unknown, issues: SchemaIssue[]): string | nu
     issues.push({ key: 'inherit', message: 'inherit values must be strings' });
     return null;
   }
-  return stripNotePrefix(item.trim());
+  const normalized = stripNotePrefix(item.trim());
+  if (normalized === '') {
+    issues.push({ key: 'inherit', message: 'must not be empty' });
+    return null;
+  }
+  return normalized;
 }
 
 function parseInherit(raw: unknown, issues: SchemaIssue[]): readonly string[] {

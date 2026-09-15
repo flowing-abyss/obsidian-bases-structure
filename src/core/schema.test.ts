@@ -46,6 +46,14 @@ describe('parseSchema — untyped mode', () => {
     expect(issues).toStrictEqual([{ key: '', message: 'Set "parent" or "types"' }]);
     expect(schema.types).toStrictEqual([]);
   });
+
+  it('reports an issue and drops the rule when "parent" normalises to an empty property', () => {
+    const { schema, issues } = parseSchema(makeRead({ parent: 'note.' }));
+
+    expect(issues).toStrictEqual([{ key: 'parent', message: 'must not be empty' }]);
+    expect(schema.types).toHaveLength(1);
+    expect(schema.types[0]?.children.size).toBe(0);
+  });
 });
 
 describe('parseSchema — vault config from the design spec', () => {
@@ -153,6 +161,18 @@ describe('parseSchema — list-form children', () => {
     expect(schema.typeByName.get('Project')?.children).toStrictEqual(
       new Map([['Module', { kind: 'property', property: 'up' }]]),
     );
+  });
+
+  it('reports an issue and drops all rules when "parent" normalises to an empty property', () => {
+    const { schema, issues } = parseSchema(
+      makeRead({
+        parent: 'note.',
+        types: { Project: { children: ['Module'] }, Module: {} },
+      }),
+    );
+
+    expect(issues).toStrictEqual([{ key: 'types.Project.children', message: 'must not be empty' }]);
+    expect(schema.typeByName.get('Project')?.children.size).toBe(0);
   });
 });
 
@@ -355,6 +375,30 @@ describe('parseSchema — invalid types config', () => {
     expect(issues).toStrictEqual([{ key: 'types.A.children.A', message: 'must be a string' }]);
     expect(schema.typeByName.get('A')?.children.size).toBe(0);
   });
+
+  it('reports an issue and drops the rule when a map-form value normalises to an empty property', () => {
+    const { schema, issues } = parseSchema(
+      makeRead({ types: { A: { children: { A: 'note.' } } } }),
+    );
+
+    expect(issues).toStrictEqual([{ key: 'types.A.children.A', message: 'must not be empty' }]);
+    expect(schema.typeByName.get('A')?.children.size).toBe(0);
+  });
+});
+
+describe('parseSchema — null tag/folder/property (blank YAML key)', () => {
+  it('treats explicit null the same as absent, with no issues', () => {
+    const { schema, issues } = parseSchema(
+      makeRead({ types: { A: { tag: null, folder: null, property: null } } }),
+    );
+
+    expect(issues).toStrictEqual([]);
+    expect(schema.typeByName.get('A')?.match).toStrictEqual({
+      tags: [],
+      folder: null,
+      properties: [],
+    });
+  });
 });
 
 describe('parseSchema — inherit', () => {
@@ -376,6 +420,18 @@ describe('parseSchema — inherit', () => {
     const { schema, issues } = parseSchema(makeRead({ parent: 'up', inherit: ['category', 7] }));
 
     expect(issues).toStrictEqual([{ key: 'inherit', message: 'inherit values must be strings' }]);
+    expect(schema.inherit).toStrictEqual(['category']);
+  });
+
+  it('reports an issue and drops an entry that normalises to an empty string', () => {
+    const { schema, issues } = parseSchema(
+      makeRead({ parent: 'up', inherit: ['category', 'note.', '  '] }),
+    );
+
+    expect(issues).toStrictEqual([
+      { key: 'inherit', message: 'must not be empty' },
+      { key: 'inherit', message: 'must not be empty' },
+    ]);
     expect(schema.inherit).toStrictEqual(['category']);
   });
 });
