@@ -234,16 +234,64 @@ function place(state: LayoutState, node: VisibleNode, top: number): Box {
   return bounds;
 }
 
-/** Places every top, stacking them from `topY = 0`; the next top starts at the previous top's
- * `topY + span + topGap`, plus one more `groupPadding` when the previous top produced at least
- * one group (so that group's frame doesn't touch the next tree). */
+interface VerticalExtent {
+  readonly minY: number;
+  readonly maxY: number;
+}
+
+/** The vertical reach of a set of boxes and groups — a group frame can extend above or below
+ * every plain node box in the same subtree (that's the whole reason it needs measuring
+ * separately rather than trusting `span`/`block`, which only ever account for node boxes). */
+function verticalExtentOf(
+  boxes: ReadonlyMap<string, Box>,
+  groups: readonly LayoutGroup[],
+): VerticalExtent {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const box of boxes.values()) {
+    minY = Math.min(minY, box.y);
+    maxY = Math.max(maxY, box.y + box.height);
+  }
+  for (const group of groups) {
+    minY = Math.min(minY, group.box.y);
+    maxY = Math.max(maxY, group.box.y + group.box.height);
+  }
+  return { minY, maxY };
+}
+
+/** Copies a provisionally-placed top's boxes and groups into the real result, shifting every y
+ * coordinate by `shift` (x is untouched — the shift is purely vertical). */
+function mergeShifted(state: LayoutState, local: LayoutState, shift: number): void {
+  for (const [path, box] of local.boxes) {
+    state.boxes.set(path, { ...box, y: box.y + shift });
+  }
+  for (const group of local.groups) {
+    state.groups.push({ path: group.path, box: { ...group.box, y: group.box.y + shift } });
+  }
+}
+
+/** Places every top's whole subtree provisionally at its own `top = 0` (into a scratch state so
+ * one top's boxes/groups can be measured and shifted without disturbing another top's), measures
+ * its real vertical extent — boxes *and* group frames — then shifts the entire subtree so that
+ * extent's top edge lands at `cursor`. The next top's `cursor` is the shifted extent's bottom
+ * edge plus `topGap`: every coordinate ends up >= 0, and the vertical clearance between adjacent
+ * trees (frames included) is always exactly `topGap`, regardless of `groupPadding`. */
 function placeAllTops(state: LayoutState, forest: VisibleForest): void {
-  let topY = 0;
+  let cursor = 0;
   for (const top of forest.topOrder) {
-    place(state, top, topY);
-    const hasGroups = top.children.some((kid) => kid.children.length > 0);
-    topY +=
-      spanOf(state, top) + state.options.topGap + (hasGroups ? state.options.groupPadding : 0);
+    const local: LayoutState = {
+      input: state.input,
+      options: state.options,
+      span: state.span,
+      block: state.block,
+      boxes: new Map<string, Box>(),
+      groups: [],
+    };
+    place(local, top, 0);
+    const extent = verticalExtentOf(local.boxes, local.groups);
+    const shift = cursor - extent.minY;
+    mergeShifted(state, local, shift);
+    cursor = extent.maxY + shift + state.options.topGap;
   }
 }
 

@@ -151,9 +151,14 @@ describe('layoutTree — forest', () => {
     expect(result.height).toBe(58);
   });
 
-  it('adds an extra groupPadding gap after a top that produced group frames', () => {
+  it('advances the cursor by the full extent of a top (group frames included), not just its span', () => {
+    // t1's own span is 6 (= block(c1), since t1's height 4 is smaller), but c1's group frame
+    // extends the *local* vertical extent (boxes and groups, top placed provisionally at 0)
+    // to [-2, 8] — a spread of 10, wider than the plain span. Shifting the whole subtree down
+    // by 2 (so its minY lands at cursor 0) puts that extent at [0, 10]; the next top starts at
+    // 10 + topGap(8) = 18.
     const input = treeInput(['t1', 't2'], {
-      t1: { children: ['c1'], size: { width: 10, height: 10 } },
+      t1: { children: ['c1'], size: { width: 10, height: 4 } },
       c1: { children: ['g1'], size: { width: 8, height: 6 } },
       g1: { size: { width: 5, height: 4 } },
       t2: { size: { width: 10, height: 20 } },
@@ -161,9 +166,36 @@ describe('layoutTree — forest', () => {
 
     const result = layoutTree(input, opts);
 
-    // Without a group under t1 this would be 0 + 10 + topGap(8) = 18; the group under t1
-    // (c1 has a visible child) adds one more groupPadding(2).
-    expect(result.boxes.get('t2')?.y).toBe(20);
+    expect(result.boxes.get('t2')?.y).toBe(18);
+    // Every coordinate stays non-negative, even though c1's unshifted group would dip to -2.
+    expect(result.boxes.get('t1')?.y).toBeGreaterThanOrEqual(0);
+    const group = result.groups.find((g) => g.path === 'c1');
+    expect(group?.box.y).toBe(0);
+  });
+
+  it('keeps two tops exactly topGap apart, with no negative group y, when groupPadding > topGap', () => {
+    const bigPaddingOpts: LayoutOptions = { columnGap: 10, rowGap: 4, groupPadding: 20, topGap: 4 };
+    const input = treeInput(['t1', 't2'], {
+      t1: { children: ['c1'], size: { width: 10, height: 4 } },
+      c1: { children: ['g1'], size: { width: 8, height: 6 } },
+      g1: { size: { width: 5, height: 4 } },
+      t2: { children: ['c2'], size: { width: 10, height: 4 } },
+      c2: { children: ['g2'], size: { width: 8, height: 6 } },
+      g2: { size: { width: 5, height: 4 } },
+    });
+
+    const result = layoutTree(input, bigPaddingOpts);
+
+    const groupC1 = result.groups.find((g) => g.path === 'c1');
+    const groupC2 = result.groups.find((g) => g.path === 'c2');
+    expect(groupC1).toStrictEqual({ path: 'c1', box: { x: 0, y: 0, width: 63, height: 46 } });
+    expect(groupC2).toStrictEqual({ path: 'c2', box: { x: 0, y: 50, width: 63, height: 46 } });
+    // Neither frame dips below y 0...
+    expect(groupC1?.box.y).toBeGreaterThanOrEqual(0);
+    expect(groupC2?.box.y).toBeGreaterThanOrEqual(0);
+    // ...and they're exactly topGap apart, not overlapping despite groupPadding(20) > topGap(4).
+    const gap = (groupC2?.box.y ?? 0) - ((groupC1?.box.y ?? 0) + (groupC1?.box.height ?? 0));
+    expect(gap).toBe(bigPaddingOpts.topGap);
   });
 });
 
@@ -179,11 +211,14 @@ describe('layoutTree — groups', () => {
 
     const result = layoutTree(input, opts);
 
-    expect(result.boxes.get('a')).toStrictEqual({ x: 20, y: 0, width: 30, height: 10 });
-    expect(result.boxes.get('b')).toStrictEqual({ x: 20, y: 18, width: 30, height: 10 });
+    // r's own subtree has a negative local minY (a's group dips to -2 before shifting), so the
+    // whole top shifts down by 2 to keep every coordinate >= 0 — a and b (and their groups)
+    // land 2 lower than their pre-shift positions.
+    expect(result.boxes.get('a')).toStrictEqual({ x: 20, y: 2, width: 30, height: 10 });
+    expect(result.boxes.get('b')).toStrictEqual({ x: 20, y: 20, width: 30, height: 10 });
     expect(result.groups).toStrictEqual([
-      { path: 'a', box: { x: 18, y: -2, width: 64, height: 14 } },
-      { path: 'b', box: { x: 18, y: 16, width: 64, height: 14 } },
+      { path: 'a', box: { x: 18, y: 0, width: 64, height: 14 } },
+      { path: 'b', box: { x: 18, y: 18, width: 64, height: 14 } },
     ]);
     // The group frames themselves don't overlap: b's group starts below a's group ends.
     const [groupA, groupB] = result.groups;
@@ -214,10 +249,12 @@ describe('layoutTree — groups', () => {
 
     const result = layoutTree(input, opts);
 
-    // Plain node boxes alone would give width 65 (a1 at x 50 + width 15) and height 10; the
-    // group frame around a/a1 extends both by groupPadding.
+    // Plain node boxes alone would give width 65 (a1 at x 50 + width 15); the group frame
+    // around a/a1 extends it to 67. Vertically, the group's local extent ([-2, 12], a spread
+    // of 14) is wider than the plain boxes' ([0, 10]); after r's subtree shifts down by 2 (so
+    // its minY lands at 0), the tallest edge — the group's bottom — sits at 14.
     expect(result.width).toBe(67);
-    expect(result.height).toBe(12);
+    expect(result.height).toBe(14);
   });
 });
 
@@ -233,13 +270,15 @@ describe('layoutTree — repeated paths', () => {
     const result = layoutTree(input, opts);
 
     expect(result.boxes.size).toBe(4);
-    expect(result.boxes.get('a')).toStrictEqual({ x: 20, y: 0, width: 10, height: 10 });
-    expect(result.boxes.get('c')).toStrictEqual({ x: 40, y: 2, width: 10, height: 6 });
-    expect(result.boxes.get('b')).toStrictEqual({ x: 20, y: 18, width: 10, height: 10 });
+    // r's subtree has a negative local minY (a's group dips to -2 before shifting), so the
+    // whole top shifts down by 2 to keep every coordinate >= 0.
+    expect(result.boxes.get('a')).toStrictEqual({ x: 20, y: 2, width: 10, height: 10 });
+    expect(result.boxes.get('c')).toStrictEqual({ x: 40, y: 4, width: 10, height: 6 });
+    expect(result.boxes.get('b')).toStrictEqual({ x: 20, y: 20, width: 10, height: 10 });
     // b's claim on c was ignored (c already visited via a), so b ends up with no visible
     // children and therefore no group.
     expect(result.groups).toStrictEqual([
-      { path: 'a', box: { x: 18, y: -2, width: 34, height: 14 } },
+      { path: 'a', box: { x: 18, y: 0, width: 34, height: 14 } },
     ]);
   });
 
