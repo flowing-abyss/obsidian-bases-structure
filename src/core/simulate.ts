@@ -3,7 +3,7 @@
 // preview/apply steps. Never mutates its input — always returns a new `Snapshot`. No Obsidian
 // imports.
 
-import type { KeyWrite, Plan } from './planner.js';
+import type { KeyWrite, Plan } from './plan-types.js';
 import type { NoteData, Snapshot } from './snapshot.js';
 
 /** A `NoteData` under construction: the same shape, but with mutable collections so the write

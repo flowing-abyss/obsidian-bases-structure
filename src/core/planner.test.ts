@@ -4,7 +4,7 @@ import {
   knowledgeBaseSnapshot,
 } from './__tests__/knowledge-base.fixture.js';
 import { note, snapshot } from './__tests__/notes.js';
-import type { PlanEnv } from './planner.js';
+import type { PlanEnv } from './plan-types.js';
 import { childOptions, planAction } from './planner.js';
 import type { EdgeRule, Schema, TypeDef } from './schema.js';
 import { parseSchema } from './schema.js';

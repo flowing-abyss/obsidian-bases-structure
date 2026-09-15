@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
-import type { KeyWrite, Plan } from './planner.js';
+import type { KeyWrite, Plan } from './plan-types.js';
 import { applyPlan } from './simulate.js';
 
 function emptyPlan(overrides: Partial<Plan> = {}): Plan {

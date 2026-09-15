@@ -33,3 +33,17 @@ export function hasTag(note: NoteData, tag: string): boolean {
     return lower === target || lower.startsWith(`${target}/`);
   });
 }
+
+/** `'a/b/c.md'` → `'c'`; a path without a `.md` suffix is returned as-is. */
+function lastSegmentBasename(path: string): string {
+  const lastSlash = path.lastIndexOf('/');
+  const fileName = lastSlash === -1 ? path : path.slice(lastSlash + 1);
+  return fileName.endsWith('.md') ? fileName.slice(0, -3) : fileName;
+}
+
+/** The name to show the user for `path` in planner rejection/verification messages: the note's
+ * own `basename` when it's in the snapshot, else the last path segment without `.md` — `path`
+ * doesn't have to resolve to a note at all (e.g. a bad parent/node reference). */
+export function displayName(snapshot: Snapshot, path: string): string {
+  return snapshot.notes.get(path)?.basename ?? lastSegmentBasename(path);
+}
