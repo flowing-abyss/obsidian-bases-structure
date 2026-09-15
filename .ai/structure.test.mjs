@@ -80,6 +80,34 @@ test('inject-superpowers.mjs is registered in the Claude Code and Codex configs'
   assert.match(codex, /inject-superpowers\.mjs/);
 });
 
+test('CodeGraph is wired exactly as its local installer expects for every configured agent', () => {
+  const codex = readFileSync(path.join(configsRoot, '.codex', 'config.toml'), 'utf8');
+  const opencode = JSON.parse(readFileSync(path.join(configsRoot, 'opencode.json'), 'utf8'));
+  const claude = JSON.parse(readFileSync(path.join(configsRoot, '.mcp.json'), 'utf8'));
+  const claudeSettings = JSON.parse(
+    readFileSync(path.join(configsRoot, '.claude', 'settings.json'), 'utf8'),
+  );
+  assert.match(
+    codex,
+    /\[mcp_servers\.codegraph\]\ncommand = "codegraph"\nargs = \["serve", "--mcp"\]/,
+  );
+  assert.doesNotMatch(codex, /mcp_servers\.serena/);
+  assert.equal(opencode.mcp?.codegraph?.enabled, true);
+  assert.equal(opencode.mcp?.serena, undefined);
+  assert.deepEqual(claude.mcpServers?.codegraph, {
+    type: 'stdio',
+    command: 'codegraph',
+    args: ['serve', '--mcp'],
+  });
+  assert.equal(claude.mcpServers?.serena, undefined);
+  assert.ok(claudeSettings.permissions?.allow?.includes('mcp__codegraph__*'));
+  assert.ok(
+    claudeSettings.hooks?.UserPromptSubmit?.some((entry) =>
+      entry.hooks?.some((hook) => hook.command === 'codegraph prompt-hook'),
+    ),
+  );
+});
+
 test('every Codex command hook has a commandWindows counterpart', () => {
   const codex = JSON.parse(readFileSync(path.join(configsRoot, '.codex', 'hooks.json'), 'utf8'));
   const commandHooks = Object.values(codex.hooks)

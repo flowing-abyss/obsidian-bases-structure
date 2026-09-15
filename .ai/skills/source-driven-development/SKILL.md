@@ -15,7 +15,7 @@ Routine use of an already-established project pattern doesn't need a fresh
 research pass; see When to Use below for the actual triggers.
 
 For this template, that mainly means: the Obsidian API, TypeScript/Node,
-esbuild, WebdriverIO/Appium, a new dependency, or platform compatibility.
+esbuild, a new dependency, or platform compatibility.
 
 ## When to Use
 
@@ -64,7 +64,7 @@ be determined that way — don't ask when it's already sitting in the dependency
 
 **2. Fetch the specific documentation page** for the feature you're
 implementing — not the homepage, not a search result. Official docs
-(docs.obsidian.md, nodejs.org, esbuild.github.io, webdriver.io) outrank
+(docs.obsidian.md, nodejs.org, esbuild.github.io) outrank
 official blogs/changelogs, which outrank web-standards references
 (MDN). Never cite Stack Overflow, tutorials, AI-generated summaries, or
 training data as a primary source.

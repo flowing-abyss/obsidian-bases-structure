@@ -7,8 +7,8 @@
     "lib": ["ES2021", "DOM"],
     "moduleResolution": "bundler",
     "moduleDetection": "force",
-    // Explicit so adding devDependencies with ambient globals (e.g. @types/mocha for
-    // tests/e2e) can't silently leak `describe`/`it` into src/'s type scope.
+    // Explicit so adding devDependencies with ambient globals (e.g. a test framework's
+    // types) can't silently leak `describe`/`it` into src/'s type scope.
     "types": ["node"],
 
     "strict": true,

@@ -1,6 +1,6 @@
 ---
 name: releasing-an-obsidian-plugin
-description: Cuts a release for this Obsidian plugin — bumps the version, verifies it end-to-end against real Obsidian, tags, pushes, and confirms the release actually came out clean on GitHub. Use when the user asks to release, publish, ship, or cut a new version of the plugin.
+description: Cuts a release for this Obsidian plugin — bumps the version, runs the verify gate, tags, pushes, and confirms the release actually came out clean on GitHub. Use when the user asks to release, publish, ship, or cut a new version of the plugin.
 ---
 
 # Releasing an Obsidian Plugin
@@ -15,10 +15,10 @@ pnpm run release patch   # or: minor / major
 
 ## What it does, in order
 
-1. **`preversion`** runs the canonical verify gate, the release-ready metadata check, and then the local desktop E2E test: `pnpm run verify` (format, lint, types, arch, dead code, coverage, build, artifact checks including README/LICENSE presence), then `node release-check.mjs --release-ready` (fails on unfilled template placeholders — `manifest.json`'s `id`/`name`/`author`/`description`, `package.json`'s `name`), then `pnpm run test:e2e` against real Obsidian, on whatever OS this machine is. Aborts here, untouched, if anything fails — no partial release state.
+1. **`preversion`** runs the canonical verify gate and the release-ready metadata check: `pnpm run verify` (format, lint, types, arch, dead code, coverage, build, artifact checks including README/LICENSE presence), then `node release-check.mjs --release-ready` (fails on unfilled template placeholders — `manifest.json`'s `id`/`name`/`author`/`description`, `package.json`'s `name`). Aborts here, untouched, if anything fails — no partial release state.
 2. **`version`** — bumps `manifest.json`'s `version`, syncs `versions.json` (via `version-bump.mjs`), stages both.
 3. pnpm's own version step commits (`"<new-version>"`) and tags **without a leading `v`** (`--tag-version-prefix ''`) — the tag must equal `manifest.json`'s `version` exactly; this is what `release.yml` and Obsidian's community-plugin submission process both expect.
-4. **`postversion`** — `git push --follow-tags`, which pushes the version commit to the branch and pushes its tag. The branch update triggers `ci.yml` (fast gate, redundant with what `preversion` already ran) and `e2e.yml` (the cross-platform proof — desktop on Ubuntu/Windows/macOS **and** real Android — that `preversion`'s local `test:e2e` alone can't give you, since that only covers this one machine's OS). The tag update separately triggers `release.yml` (build, re-verify, generate a changelog from commit messages, open a **draft** GitHub release with `main.js`/`manifest.json`/`styles.css` attached). All three runs refer to the same release commit SHA — `ci.yml`/`e2e.yml` trigger on branch pushes, not tags, so this is a single push producing three runs, not duplicates.
+4. **`postversion`** — `git push --follow-tags`, which pushes the version commit to the branch and pushes its tag. The branch update triggers `ci.yml` (fast gate, redundant with what `preversion` already ran). The tag update separately triggers `release.yml` (build, re-verify, generate a changelog from commit messages, open a **draft** GitHub release with `main.js`/`manifest.json`/`styles.css` attached). Both runs refer to the same release commit SHA — `ci.yml` triggers on branch pushes, not tags, so this is a single push producing two runs, not duplicates.
 
 ## The command finishing is not the release finishing — verify on GitHub
 
@@ -33,7 +33,7 @@ release_sha=$(git rev-parse HEAD)
 release_tag=$(git describe --tags --exact-match HEAD)
 
 run_id=$(gh run list \
-  --workflow=e2e.yml \
+  --workflow=release.yml \
   --commit="$release_sha" \
   --limit=1 \
   --json databaseId \
@@ -50,14 +50,14 @@ $release_sha = git rev-parse HEAD
 $release_tag = git describe --tags --exact-match HEAD
 
 $run_id = gh run list `
-  --workflow=e2e.yml `
+  --workflow=release.yml `
   --commit=$release_sha `
   --limit=1 `
   --json databaseId `
   --jq '.[0].databaseId'
 
 if (-not $run_id) {
-  throw "No E2E workflow run found for $release_sha"
+  throw "No release workflow run found for $release_sha"
 }
 
 gh run watch $run_id --exit-status
@@ -65,13 +65,13 @@ gh run watch $run_id --exit-status
 
 `--commit` filters server-side to runs for that exact commit, so `--limit=1` is safe here — unlike an unfiltered `gh run list --limit=1`, which can return someone else's concurrent run or a stale one.
 
-Repeat the same flow for `release.yml` (the build itself), swapping `--workflow=e2e.yml` for `--workflow=release.yml`. Then confirm the release exists at the exact tag, with a real changelog body — not an empty one (a broken changelog-builder step still exits 0):
+Then confirm the release exists at the exact tag, with a real changelog body — not an empty one (a broken changelog-builder step still exits 0):
 
 ```bash
 gh release view "$release_tag" --json isDraft,body,name
 ```
 
-If either workflow's conclusion isn't `success`, `$run_id` comes back empty (the push may not have triggered CI yet — wait and re-check, don't assume), or the release body is empty/missing, **stop and report the specific failure**. Diagnose from the failed run's logs (`gh run view <id> --log-failed`) and fix forward.
+If the workflow's conclusion isn't `success`, `$run_id` comes back empty (the push may not have triggered CI yet — wait and re-check, don't assume), or the release body is empty/missing, **stop and report the specific failure**. Diagnose from the failed run's logs (`gh run view <id> --log-failed`) and fix forward.
 
 **Do not rerun `pnpm run release patch` after the version commit and tag were pushed.** It may create the next patch release rather than retrying the failed workflow for the existing tag. Diagnose and fix forward instead.
 

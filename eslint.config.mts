@@ -4,13 +4,7 @@ import sonarjs from 'eslint-plugin-sonarjs';
 import { defineConfig, globalIgnores } from 'eslint/config';
 import * as globals from 'globals';
 
-const testFiles = [
-  '**/*.test.ts',
-  '**/*.spec.ts',
-  'vitest.config.ts',
-  'tests/e2e/**/*.ts',
-  'tests/e2e/**/*.mts',
-];
+const testFiles = ['**/*.test.ts', '**/*.spec.ts', 'vitest.config.ts'];
 
 export default defineConfig(
   globalIgnores([
@@ -27,10 +21,15 @@ export default defineConfig(
     '.ai',
     '.agents',
     '.claude',
+    '.codegraph',
     '.codex',
     '.forge',
     '.opencode',
     '.pi',
+    '.serena',
+    '.superpowers',
+    '.worktrees',
+    'dev-vault-structure',
   ]),
   {
     languageOptions: {
@@ -146,10 +145,7 @@ export default defineConfig(
     // Node-only tooling scripts (not part of the browser-context plugin bundle) — the
     // obsidianmd rules assume every file ships inside main.js and runs on mobile,
     // which doesn't apply to a script that only ever runs under `pnpm run <script>`.
-    // tests/e2e/*.mts run under Node via the wdio CLI; the spec files also run under
-    // Node (only the `executeObsidian` callback bodies they send get serialized into
-    // the real Obsidian process), so the same reasoning applies to all of tests/e2e/.
-    files: ['*.cjs', 'release-check.mjs', 'tests/e2e/**/*.ts', 'tests/e2e/**/*.mts'],
+    files: ['*.cjs', 'release-check.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },
@@ -157,10 +153,6 @@ export default defineConfig(
       'obsidianmd/no-nodejs-modules': 'off',
       'obsidianmd/rule-custom-message': 'off',
       'no-console': 'off',
-      // Core no-undef can't see TS ambient global namespaces (e.g. `WebdriverIO.Config`)
-      // and false-positives on them; typescript-eslint's own type checking already
-      // catches genuinely undefined references here.
-      'no-undef': 'off',
     },
   },
   prettier,

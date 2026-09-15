@@ -24,11 +24,6 @@ data.json
 # Coverage
 coverage/
 
-# E2E: downloaded Obsidian binaries/APKs, per-run WDIO output
-.obsidian-cache/
-tests/e2e/wdio-logs/
-allure-results/
-
 # AI — anchored (leading /) so these only match the generated symlinks at
 # the repo root, not the real files nested under .ai/configs/ that share
 # the same directory names (e.g. .ai/configs/.claude/, .ai/configs/.codex/).
@@ -55,3 +50,4 @@ allure-results/
 /CLAUDE.md
 /opencode.json
 
+dev-vault-structure/

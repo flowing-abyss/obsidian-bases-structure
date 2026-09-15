@@ -7,18 +7,10 @@
         "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
       }
     },
-    "serena": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/oraios/serena",
-        "serena",
-        "start-mcp-server",
-        "--context",
-        "ide",
-        "--project",
-        "."
-      ]
+    "codegraph": {
+      "type": "stdio",
+      "command": "codegraph",
+      "args": ["serve", "--mcp"]
     },
     "github": {
       "type": "http",
