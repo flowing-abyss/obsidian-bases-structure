@@ -121,6 +121,48 @@ export function ruleBetween(
   return lowestLevelRuleFor(schema, childType);
 }
 
+/** Keeps only `list`'s first occurrence of every value, in order. */
+function dedupeKeepFirst(list: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  return list.filter((item) => {
+    if (seen.has(item)) {
+      return false;
+    }
+    seen.add(item);
+    return true;
+  });
+}
+
+/** The value an edge-key write should take, given the note's `current` value at that key: keeps
+ * only `oldParent` (so it can be replaced), `newParent`, and genuine extra parents (`keep` —
+ * `StructureNode.extras` of kind `'property'`) — every other value in `current` is a merely
+ * *inherited* one (an ancestor's cascade), never an intentional extra, and is dropped rather than
+ * carried forward. When `sameKey` (the old primary edge was already a property edge on this same
+ * key) and `oldParent` is still present after that filtering, it's replaced in place (preserving
+ * position and any other kept entries); otherwise `newParent` is prepended ahead of whatever
+ * else survived. Shared by move's own edge-key write, retype's own edge-key write (where
+ * `oldParent === newParent`, since retype never changes N's parent), and retype's per-child
+ * new-key write (`oldParent: null`, `sameKey: false`). */
+export interface EdgeTargetOptions {
+  readonly keep: ReadonlySet<string>; // paths of the node's extras with kind 'property'
+  readonly sameKey: boolean; // the old primary edge was a property edge on this same key
+}
+
+export function edgeTargets(
+  current: readonly string[],
+  oldParent: string | null,
+  newParent: string,
+  options: EdgeTargetOptions,
+): readonly string[] {
+  const { keep, sameKey } = options;
+  const kept = current.filter((t) => t === oldParent || t === newParent || keep.has(t));
+  const replaceInPlace = sameKey && oldParent !== null && kept.includes(oldParent);
+  const result = replaceInPlace
+    ? kept.map((t) => (t === oldParent ? newParent : t))
+    : [newParent, ...kept.filter((t) => t !== newParent && t !== oldParent)];
+  return dedupeKeepFirst(result);
+}
+
 export interface SubtreeContext {
   readonly schema: Schema;
   readonly snapshot: Snapshot;

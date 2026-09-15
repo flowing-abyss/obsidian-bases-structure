@@ -259,7 +259,6 @@ describe('planAction — move: vault schema', () => {
   const TEMPLATER = 'base/_hierarchy/templater.md';
   const READING_STRATEGIES = 'base/_hierarchy/reading strategies.md';
   const NOTE_TAKING = 'base/_meta-notes/note taking.md';
-  const INFO_PROCESSING = 'base/_meta-notes/information processing.md';
 
   it('moving a meta-note to another category cascades category to its hierarchy children only', () => {
     const snap = knowledgeBaseWithLinuxSnapshot();
@@ -291,16 +290,9 @@ describe('planAction — move: vault schema', () => {
   });
 
   it('moving a hierarchy from a problem to a meta-note clears problem and sets meta (no category write)', () => {
-    // NOTE: the decisions doc's own worked example for this scenario states the resulting `meta`
-    // becomes exactly `[note taking]`. Following the documented edge-key-write algorithm literally
-    // (old parent replaced in place only when the *old* edge already used the *same* property;
-    // otherwise the new parent is prepended ahead of whatever the property already held) instead
-    // produces `[note taking, information processing]`, because this note's `meta` property already
-    // held "information processing" (its own correctly-cascaded value from its *old* problem parent)
-    // before the move, and the "old edge key" cleanup only ever touches the *old* edge's own property
-    // ("problem"), never a same-named-but-different-role property like "meta" here. This is a
-    // confirmed contradiction between the documented expected result and the documented algorithm,
-    // reported as a NEEDS_CONTEXT concern rather than silently "fixed" by guessing which one is wrong.
+    // The note's "meta" property already held "information processing" — a value merely inherited
+    // from its old problem parent's own meta chain, not a genuine extra — so `edgeTargets` drops it
+    // rather than carrying it forward: the result is exactly `meta: [note taking]`.
     const snap = knowledgeBaseWithLinuxSnapshot();
 
     const result = planAction(
@@ -317,10 +309,7 @@ describe('planAction — move: vault schema', () => {
       {
         path: READING_STRATEGIES,
         writes: [
-          {
-            key: 'meta',
-            value: { kind: 'links', targets: [NOTE_TAKING, INFO_PROCESSING], list: true },
-          },
+          { key: 'meta', value: { kind: 'links', targets: [NOTE_TAKING], list: true } },
           { key: 'problem', value: { kind: 'links', targets: [], list: true } },
         ],
       },

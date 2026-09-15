@@ -3,6 +3,7 @@ import { note, snapshot } from './__tests__/notes.js';
 import {
   deriveSubtreeWrites,
   edgeProperties,
+  edgeTargets,
   inheritedTargets,
   listShape,
   ruleBetween,
@@ -152,6 +153,70 @@ describe('listShape', () => {
     const snap = snapshot([note('a.md', { frontmatter: { category: null } })]);
 
     expect(listShape(snap, 'category', 'a.md')).toBe(true);
+  });
+});
+
+describe('edgeTargets', () => {
+  it('replaces oldParent with newParent in place when sameKey, preserving a genuine extra', () => {
+    // meta: [A, B] moving from A to C -> meta: [C, B] (B is a genuine property-kind extra).
+    const result = edgeTargets(['A', 'B'], 'A', 'C', { keep: new Set(['B']), sameKey: true });
+
+    expect(result).toStrictEqual(['C', 'B']);
+  });
+
+  it('drops a merely-inherited (ancestor) value even when sameKey and oldParent is present', () => {
+    // The bug this helper fixes: "information processing" is an inherited/ancestor value sitting
+    // in the same property slot, not oldParent, newParent, or a genuine extra — it must not survive.
+    const result = edgeTargets(
+      ['information processing'],
+      'information acquisition',
+      'note taking',
+      { keep: new Set(), sameKey: false },
+    );
+
+    expect(result).toStrictEqual(['note taking']);
+  });
+
+  it('prepends newParent and drops non-extra values when the key differs (sameKey: false)', () => {
+    const result = edgeTargets(['old-value'], 'O', 'P', { keep: new Set(), sameKey: false });
+
+    expect(result).toStrictEqual(['P']);
+  });
+
+  it('prepends newParent but keeps a genuine extra even when the key differs', () => {
+    const result = edgeTargets(['O', 'extra'], 'O', 'P', {
+      keep: new Set(['extra']),
+      sameKey: false,
+    });
+
+    expect(result).toStrictEqual(['P', 'extra']);
+  });
+
+  it('falls back to prepending when sameKey but oldParent is not actually present', () => {
+    const result = edgeTargets(['other'], 'O', 'P', { keep: new Set(), sameKey: true });
+
+    expect(result).toStrictEqual(['P']);
+  });
+
+  it('treats oldParent: null the same as "no old parent to replace" (retype child rewrite shape)', () => {
+    const result = edgeTargets([], null, 'N', { keep: new Set(), sameKey: false });
+
+    expect(result).toStrictEqual(['N']);
+  });
+
+  it('does not duplicate newParent when it is already present', () => {
+    const result = edgeTargets(['P', 'extra'], 'O', 'P', {
+      keep: new Set(['extra']),
+      sameKey: false,
+    });
+
+    expect(result).toStrictEqual(['P', 'extra']);
+  });
+
+  it('collapses duplicate occurrences of oldParent after an in-place replace', () => {
+    const result = edgeTargets(['A', 'A'], 'A', 'C', { keep: new Set(), sameKey: true });
+
+    expect(result).toStrictEqual(['C']);
   });
 });
 

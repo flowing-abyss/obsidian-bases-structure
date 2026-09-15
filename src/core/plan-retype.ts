@@ -4,6 +4,7 @@
 
 import {
   deriveSubtreeWrites,
+  edgeTargets,
   listShape,
   ruleBetween,
   unionInheritedTargets,
@@ -37,20 +38,6 @@ function textLinkReason(
   return kind === 'backlinks'
     ? `The link from "${parentName}" to "${nodeName}" lives in note text and cannot be written automatically`
     : `The link from "${nodeName}" to "${parentName}" lives in note text and cannot be written automatically`;
-}
-
-function dedupeKeepFirst(list: readonly string[], value: string): readonly string[] {
-  let seen = false;
-  return list.filter((item) => {
-    if (item !== value) {
-      return true;
-    }
-    if (seen) {
-      return false;
-    }
-    seen = true;
-    return true;
-  });
 }
 
 function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
@@ -319,19 +306,18 @@ interface EdgeInputs {
   readonly parent: string;
   readonly oldEdge: EdgeRule | null;
   readonly key: string;
+  readonly keep: ReadonlySet<string>; // N's genuine property-kind extras
 }
 
+/** N's own parent never changes during a retype, so `oldParent === newParent === inputs.parent` —
+ * `edgeTargets` still replaces it "in place" when the key hasn't changed (a no-op beyond dropping
+ * any merely-inherited values) and prepends it otherwise. */
 function computeEdgeWrite(inputs: EdgeInputs, cur: readonly string[]): KeyWrite | null {
-  const replaceInPlace =
-    inputs.oldEdge?.kind === 'property' &&
-    inputs.oldEdge.property === inputs.key &&
-    cur.includes(inputs.parent);
-  const newTargets = replaceInPlace
-    ? dedupeKeepFirst(
-        cur.map((item) => (item === inputs.parent ? inputs.parent : item)),
-        inputs.parent,
-      )
-    : dedupeKeepFirst([inputs.parent, ...cur], inputs.parent);
+  const sameKey = inputs.oldEdge?.kind === 'property' && inputs.oldEdge.property === inputs.key;
+  const newTargets = edgeTargets(cur, inputs.parent, inputs.parent, {
+    keep: inputs.keep,
+    sameKey,
+  });
   if (arraysEqual(newTargets, cur)) {
     return null;
   }
@@ -432,12 +418,15 @@ function buildNOwnWrites(
   const key = parentRule.property;
   const nLinks = ctx.snapshot.notes.get(action.node)?.propertyLinks ?? {};
   const cur = nLinks[key] ?? [];
+  const propertyParents = nOwnPropertyParents(nNode, parent);
+  const keep = new Set(propertyParents.slice(1)); // drop `parent` itself, keep only the extras
   const inputs: EdgeInputs = {
     snapshot: ctx.snapshot,
     node: action.node,
     parent,
     oldEdge: nNode.edge,
     key,
+    keep,
   };
   const writes = [
     computeEdgeWrite(inputs, cur),
@@ -446,10 +435,7 @@ function buildNOwnWrites(
   if (nNode.edge?.property === key) {
     return writes;
   }
-  return [
-    ...writes,
-    ...inheritWritesFor(ctx, action.node, key, nOwnPropertyParents(nNode, parent)),
-  ];
+  return [...writes, ...inheritWritesFor(ctx, action.node, key, propertyParents)];
 }
 
 // -- Children whose edge property must move from the old key to the new one -----------------
@@ -492,7 +478,10 @@ function childRewriteWrites(
   const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
   const writes: KeyWrite[] = [];
   const newCur = cLinks[newKey] ?? [];
-  const newTargets = dedupeKeepFirst([node, ...newCur], node);
+  const keep = new Set(
+    childNode.extras.filter((extra) => extra.kind === 'property').map((extra) => extra.parent),
+  );
+  const newTargets = edgeTargets(newCur, null, node, { keep, sameKey: false });
   if (!arraysEqual(newTargets, newCur)) {
     writes.push({
       key: newKey,

@@ -582,6 +582,87 @@ describe('planAction — retype: own edge-key change, old key not owned by inher
   });
 });
 
+describe('planAction — retype: N and a rewritten child each keep a genuine property extra', () => {
+  it("retyping N to another type reachable via the same property key keeps N's extra in place (edgeTargets)", () => {
+    // hier.md's "meta" already lists both a.md (primary) and b.md (a genuine extra, tied on the
+    // same rule, lower valueIndex loses) — retyping to another MetaT child that's also reached via
+    // "meta" must not disturb either value.
+    const schema = schemaFrom({
+      types: {
+        MetaT: { tag: 'meta', children: { Hier: 'meta', OtherHier: 'meta' } },
+        Hier: { tag: 'hier' },
+        OtherHier: { tag: 'otherhier' },
+      },
+    });
+    const snap = snapshot([
+      note('a.md', { tags: ['meta'] }),
+      note('b.md', { tags: ['meta'] }),
+      note('hier.md', { tags: ['hier'], propertyLinks: { meta: ['a.md', 'b.md'] } }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'hier.md', type: 'OtherHier' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // No "meta" write: the edge key, parent, and set of kept values are all unchanged.
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'hier.md',
+        writes: [{ key: 'tags', value: { kind: 'literal', value: ['otherhier'] } }],
+      },
+    ]);
+  });
+
+  it("rewriting a child's edge key during a retype keeps the child's own genuine property extra", () => {
+    // h.md is primarily under m.md (via "viaM", the deeper/winning rule) but also has a genuine
+    // extra candidate via "viaM2" (m2note.md). Retyping m.md to Q moves h.md's edge from "viaM" to
+    // "viaQ"; the rewrite must run against h.md's own extras without erroring or dropping them.
+    const schema = schemaFrom({
+      types: {
+        M2: { tag: 'm2', children: { H: 'viaM2' } },
+        M: { tag: 'm', children: { H: 'viaM' } },
+        Q: { tag: 'q', children: { H: 'viaQ' } },
+        H: { tag: 'h' },
+      },
+    });
+    const snap = snapshot([
+      note('m2note.md', { tags: ['m2'] }),
+      note('m.md', { tags: ['m'] }),
+      note('h.md', { tags: ['h'], propertyLinks: { viaM: ['m.md'], viaM2: ['m2note.md'] } }),
+    ]);
+    const structure = buildStructure(schema, snap);
+    expect(structure.nodes.get('h.md')?.parent).toBe('m.md');
+    expect(structure.nodes.get('h.md')?.extras).toStrictEqual([
+      { parent: 'm2note.md', kind: 'property' },
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'm.md', type: 'Q' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      { path: 'm.md', writes: [{ key: 'tags', value: { kind: 'literal', value: ['q'] } }] },
+      {
+        path: 'h.md',
+        writes: [
+          { key: 'viaQ', value: { kind: 'links', targets: ['m.md'], list: true } },
+          { key: 'viaM', value: { kind: 'links', targets: [], list: true } },
+        ],
+      },
+    ]);
+  });
+});
+
 describe('planAction — retype: own edge-key change where the new key is itself an inherit key', () => {
   it('skips the new key in the generic inherit recompute (it is written by the edge step) and leaves an unrelated, unchanged inherit key alone', () => {
     const schema = schemaFrom({

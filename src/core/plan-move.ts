@@ -4,6 +4,7 @@
 
 import {
   deriveSubtreeWrites,
+  edgeTargets,
   listShape,
   ruleBetween,
   unionInheritedTargets,
@@ -103,37 +104,8 @@ function validateMove(
   return { ok: true, fields: { nNode, rule } };
 }
 
-function dedupeKeepFirst(list: readonly string[], value: string): readonly string[] {
-  let seen = false;
-  return list.filter((item) => {
-    if (item !== value) {
-      return true;
-    }
-    if (seen) {
-      return false;
-    }
-    seen = true;
-    return true;
-  });
-}
-
 function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((item, index) => item === b[index]);
-}
-
-/** The edge-key write value: `replaceFrom` (the old parent, when it already sits under `k`)
- * replaced in place by `target` (preserving position and any other existing entries), otherwise
- * `target` prepended (deduped) ahead of whatever was already there. */
-function edgeTargets(
-  cur: readonly string[],
-  target: string,
-  replaceFrom: string | null,
-): readonly string[] {
-  if (replaceFrom !== null) {
-    const replaced = cur.map((item) => (item === replaceFrom ? target : item));
-    return dedupeKeepFirst(replaced, target);
-  }
-  return dedupeKeepFirst([target, ...cur], target);
 }
 
 interface EdgeWriteInputs {
@@ -143,18 +115,18 @@ interface EdgeWriteInputs {
   readonly oldParent: string | null; // O
   readonly oldEdge: EdgeRule | null; // E
   readonly key: string; // k = rule.property
+  readonly keep: ReadonlySet<string>; // N's genuine property-kind extras
 }
 
-/** The edge-key write itself: `target` replaces the old parent in place when it's already there
- * under this same key, otherwise it's prepended (deduped) ahead of whatever was already there.
- * `null` when nothing actually changes. */
+/** The edge-key write itself: keeps only `O`, `P`, and genuine extras from the current value (see
+ * `derive.ts`'s `edgeTargets`), replacing `O` in place when the edge property hasn't changed,
+ * otherwise prepending `P`. `null` when nothing actually changes. */
 function computeEdgeWrite(inputs: EdgeWriteInputs, cur: readonly string[]): KeyWrite | null {
-  const replaceInPlace =
-    inputs.oldEdge?.kind === 'property' &&
-    inputs.oldEdge.property === inputs.key &&
-    inputs.oldParent !== null &&
-    cur.includes(inputs.oldParent);
-  const newTargets = edgeTargets(cur, inputs.target, replaceInPlace ? inputs.oldParent : null);
+  const sameKey = inputs.oldEdge?.kind === 'property' && inputs.oldEdge.property === inputs.key;
+  const newTargets = edgeTargets(cur, inputs.oldParent, inputs.target, {
+    keep: inputs.keep,
+    sameKey,
+  });
   if (arraysEqual(newTargets, cur)) {
     return null;
   }
@@ -356,6 +328,9 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     typeOverrides: new Map(),
     linkOverrides: new Map(),
   };
+  const propertyExtras = nNode.extras
+    .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
+    .map((extra) => extra.parent);
   const edgeWrites = buildEdgeWrites(schema, {
     snapshot,
     node: action.node,
@@ -363,13 +338,9 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     oldParent,
     oldEdge,
     key: rule.property,
+    keep: new Set(propertyExtras),
   });
-  const propertyParents = [
-    action.parent,
-    ...nNode.extras
-      .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
-      .map((extra) => extra.parent),
-  ];
+  const propertyParents = [action.parent, ...propertyExtras];
   const inheritWrites = inheritWritesFor(ctx, action.node, rule.property, propertyParents);
   const nWrites = [...edgeWrites, ...inheritWrites];
   recordAllOverrides(ctx, action.node, nWrites);
