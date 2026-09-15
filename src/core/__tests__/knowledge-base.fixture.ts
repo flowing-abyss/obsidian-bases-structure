@@ -44,6 +44,8 @@ const READING_STRATEGIES = 'base/_hierarchy/reading strategies.md';
 const NOTE_TAKING_METHODS = 'base/_hierarchy/note-taking methods.md';
 const STRUCTURE_OF_INFO = 'base/_hierarchy/structure of information within the note.md';
 
+export const LINUX_CATEGORY = 'base/categories/linux.md';
+
 const RLANG_CATEGORY = 'base/categories/r-lang.md';
 const RLANG_HIERARCHY = 'base/_hierarchy/r-lang hierarchy.md';
 const BASIC_VARIABLES = 'base/_hierarchy/basic variables types in r.md';
@@ -171,6 +173,19 @@ export function knowledgeBaseSnapshot(): Snapshot {
       TEMPLATER,
     ],
   });
+}
+
+/** `knowledgeBaseSnapshot()` plus a second, unrelated root-level Category note ("linux") — used by
+ * the move planner's tests to exercise moving a node from one category to another. */
+export function knowledgeBaseWithLinuxSnapshot(): Snapshot {
+  const base = knowledgeBaseSnapshot();
+  const notes = new Map(base.notes);
+  notes.set(LINUX_CATEGORY, note(LINUX_CATEGORY, { tags: ['category/linux', 'system/category'] }));
+  return {
+    notes,
+    results: [...base.results, LINUX_CATEGORY],
+    host: base.host,
+  };
 }
 
 export function rLangSnapshot(): Snapshot {

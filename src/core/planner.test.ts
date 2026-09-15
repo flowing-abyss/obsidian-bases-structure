@@ -180,33 +180,6 @@ describe('planAction — create: rejection reasons', () => {
   });
 });
 
-describe('planAction — create: move/retype are not supported yet', () => {
-  const schema = schemaFrom({ types: { A: { tag: 'a' } } });
-  const snap = snapshot([note('a.md', { tags: ['a'] })]);
-
-  it('rejects a move action', () => {
-    const result = planAction(
-      schema,
-      snap,
-      { kind: 'move', node: 'a.md', parent: 'b.md' },
-      envAllowing(),
-    );
-
-    expect(result).toStrictEqual({ ok: false, reason: 'Not supported yet' });
-  });
-
-  it('rejects a retype action', () => {
-    const result = planAction(
-      schema,
-      snap,
-      { kind: 'retype', node: 'a.md', type: 'B' },
-      envAllowing(),
-    );
-
-    expect(result).toStrictEqual({ ok: false, reason: 'Not supported yet' });
-  });
-});
-
 describe('planAction — create: vault schema', () => {
   const schema = schemaFrom(KNOWLEDGE_BASE_CONFIG);
 
@@ -676,5 +649,34 @@ describe('childOptions', () => {
     expect(childOptions(schema, structure, 'hub.md')).toStrictEqual([
       { type: 'Leaf', rule: { kind: 'property', property: 'link' } },
     ]);
+  });
+
+  it('returns [] when the parent node names a type absent from the schema (defensive)', () => {
+    // Can't happen through `buildStructure` (every node type comes from `schema.types`), but
+    // `childOptions` takes a plain `Structure` and shouldn't assume that invariant on its own.
+    const schema = schemaFrom({ types: { A: { tag: 'a' } } });
+    const structure = {
+      root: null,
+      tops: ['ghost.md'],
+      orphans: [],
+      nodes: new Map([
+        [
+          'ghost.md',
+          {
+            path: 'ghost.md',
+            type: 'Ghost',
+            parent: null,
+            edge: null,
+            children: [],
+            extras: [],
+            alsoIn: [],
+            twoWay: false,
+          },
+        ],
+      ]),
+      issues: [],
+    };
+
+    expect(childOptions(schema, structure, 'ghost.md')).toStrictEqual([]);
   });
 });

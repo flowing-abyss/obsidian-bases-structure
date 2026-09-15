@@ -5,6 +5,8 @@
 
 import { ruleBetween } from './derive.js';
 import { planCreate } from './plan-create.js';
+import { planMove } from './plan-move.js';
+import { planRetype } from './plan-retype.js';
 import type { Action, PlanEnv, PlanResult } from './plan-types.js';
 import type { EdgeRule, Schema } from './schema.js';
 import type { Snapshot } from './snapshot.js';
@@ -20,8 +22,9 @@ export function planAction(
     case 'create':
       return planCreate(schema, snapshot, action, env);
     case 'move':
+      return planMove(schema, snapshot, action);
     case 'retype':
-      return { ok: false, reason: 'Not supported yet' };
+      return planRetype(schema, snapshot, action, env);
   }
 }
 
