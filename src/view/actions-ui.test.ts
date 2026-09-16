@@ -961,7 +961,7 @@ describe('hasOpenDraft / onDraftClosed — carried-over fix: keep an open create
     expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onDraftClosed once when a second startCreate supersedes an open draft', () => {
+  it('does not call onDraftClosed when a second startCreate supersedes an open draft — the session continues', () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     const otherEl = h.nodes.get('other.md');
@@ -970,7 +970,8 @@ describe('hasOpenDraft / onDraftClosed — carried-over fix: keep an open create
 
     h.actions.startCreate('other.md', otherEl);
 
-    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+    expect(h.onDraftClosed).not.toHaveBeenCalled();
+    expect(h.actions.hasOpenDraft).toBe(true);
   });
 
   it('calls onDraftClosed once a successful commit settles (before the chained sibling draft reopens)', async () => {

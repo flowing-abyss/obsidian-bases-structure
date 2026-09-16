@@ -354,6 +354,56 @@ describe('StructureView — deferred render while a create draft is open', () =>
 
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
+
+  // Regression: superseding a draft (a new "+" while one is already open) must not flush a
+  // pending render — see `actions-ui.ts`'s `openDraft`/`teardownDraft`. Before that fix,
+  // `openDraft`'s internal `cancelDraft()` call fired `onDraftClosed`, which flushed the deferred
+  // render right there, rebuilding every node and detaching the second draft's own anchor before
+  // `openDraft` got to attach the input to it — so the new draft's input never reached the live
+  // DOM at all.
+  it('supersedes an open draft with a new one while a render is deferred, keeping the second draft live and focused, and flushes exactly one render only once that draft finally closes', () => {
+    const app = App.createConfigured__({
+      files: { 'cat1.md': '---\ntags: [cat]\n---\n', 'cat2.md': '---\ntags: [cat]\n---\n' },
+    });
+    const { view, parentEl } = createView(app, [
+      mustFile(app, 'cat1.md'),
+      mustFile(app, 'cat2.md'),
+    ]);
+    document.body.appendChild(parentEl);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+
+    // Draft A opens on cat1.
+    findNode(parentEl, 'cat1.md')
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(parentEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
+
+    // A data update arrives while draft A is open: deferred, not applied yet.
+    view.onDataUpdated();
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    // The user opens a second draft on cat2 instead of finishing the first one.
+    findNode(parentEl, 'cat2.md')
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    // Superseding a draft is not a close: the pending render must still be deferred, and the new
+    // draft's input must be live in the DOM, under cat2, and focused.
+    expect(updateSpy).not.toHaveBeenCalled();
+    const secondInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (secondInput === null) throw new Error('Test setup error: second draft did not open');
+    expect(findNode(parentEl, 'cat2.md').contains(secondInput)).toBe(true);
+    expect(document.activeElement).toBe(secondInput);
+
+    // Closing the second draft (Escape) finally ends the whole session: exactly one render flushes.
+    secondInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+  });
 });
 
 function findNode(parentEl: HTMLElement, path: string): HTMLElement {

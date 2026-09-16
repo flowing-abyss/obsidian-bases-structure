@@ -23,10 +23,12 @@ export interface ActionsDeps {
   readonly getInput: () => RenderInput;
   readonly hostPath: string;
   readonly refresh: () => void;
-  /** Called whenever an open draft closes — cancel (Escape/blur/superseded), a successful or
-   * failed commit, or `destroy()` — see `cancelDraft`, the single teardown path all of those funnel
-   * through. `StructureView` uses this to flush a data-driven render it deferred while the draft
-   * was open (see the class doc comment). */
+  /** Called whenever an open draft closes for good — cancel (Escape/blur), a successful or failed
+   * commit, or `destroy()` — see `cancelDraft`. Superseding one draft with another (a new "+"
+   * while one is already open) does *not* fire this: it's a single continuous draft session from
+   * `StructureView`'s point of view, not a close, so the deferred render must stay deferred (see
+   * `openDraft`'s own note). `StructureView` uses this to flush a data-driven render it deferred
+   * while the draft was open (see the class doc comment). */
   readonly onDraftClosed: () => void;
 }
 
@@ -146,6 +148,12 @@ export class StructureActions {
   private readonly deps: ActionsDeps;
   private draft: DraftState | null = null;
   private pendingFocus: string | null = null;
+  /** The `.bases-structure-body` a draft last opened into — kept even after that draft closes,
+   * since the container itself outlives every render (only its children are rebuilt). Belt-and-
+   * braces fallback for `openDraft`: if the `anchorEl` it's given is already detached (stale from
+   * before a render that happened to run in between), this is what lets it re-resolve a live
+   * element for the same path instead of attaching a draft nobody can see. */
+  private lastRoot: HTMLElement | null = null;
 
   constructor(deps: ActionsDeps) {
     this.deps = deps;
@@ -180,22 +188,32 @@ export class StructureActions {
     this.showTypeMenu(parentPath, anchorEl, options, event);
   }
 
-  /** The only teardown path for a draft — Escape, blur, opening a different draft, a
-   * successful/failed commit, and `destroy()` all funnel through this, so it's the single place
-   * that has to undo `openDraft`'s `DRAFTING_CLASS` and report the close via `onDraftClosed`. The
-   * no-op early return when nothing is open matters here too: it keeps `onDraftClosed` from firing
-   * (and `StructureView` from rendering) when there was nothing to close. */
+  /** The externally-visible close path for a draft — Escape, blur, a successful/failed commit, and
+   * `destroy()` all funnel through this. Unlike `teardownDraft` (which this wraps), it reports the
+   * close via `onDraftClosed` — the no-op early return when nothing is open matters here too: it
+   * keeps `onDraftClosed` from firing (and `StructureView` from rendering) when there was nothing
+   * to close. `openDraft` deliberately does *not* call this when it supersedes an already-open
+   * draft — see its own note. */
   cancelDraft(): void {
+    if (this.teardownDraft()) {
+      this.deps.onDraftClosed();
+    }
+  }
+
+  /** Removes an open draft's DOM/listeners and clears `this.draft`, without reporting the close —
+   * the shared teardown `cancelDraft` and `openDraft` both build on. Returns whether a draft was
+   * actually open (so callers that need to notify can tell a real close from a no-op). */
+  private teardownDraft(): boolean {
     const draft = this.draft;
     if (draft === null) {
-      return;
+      return false;
     }
     draft.inputEl.removeEventListener('keydown', this.handleDraftKeydown);
     draft.inputEl.removeEventListener('blur', this.handleDraftBlur);
     draft.anchorEl.classList.remove(DRAFTING_CLASS);
     draft.wrapperEl.remove();
     this.draft = null;
-    this.deps.onDraftClosed();
+    return true;
   }
 
   /** `moveTargets(node)` → picker; `size === 0` → a Notice instead, same shape as `startCreate`'s
@@ -391,22 +409,44 @@ export class StructureActions {
     this.showMenuAt(menu, anchorEl, event);
   }
 
-  /** `anchorEl` gets `DRAFTING_CLASS` for the draft's whole lifetime (removed in `cancelDraft`,
-   * the only teardown path — see its own doc comment): CSS keys off that class to give the node
-   * its own typing-sized layout instead of squeezing the input in alongside the title, "+",
-   * toggle and alsoIn chip that are still otherwise present. */
+  /** `anchorEl` gets `DRAFTING_CLASS` for the draft's whole lifetime (removed by `teardownDraft`):
+   * CSS keys off that class to give the node its own typing-sized layout instead of squeezing the
+   * input in alongside the title, "+", toggle and alsoIn chip that are still otherwise present.
+   *
+   * Replacing an already-open draft goes through `teardownDraft`, *not* `cancelDraft` — superseding
+   * one draft with another (a new "+" while one is open) is a single continuous draft session, not
+   * a close: `StructureView` may have a data-driven render deferred (see the class doc comment),
+   * and firing `onDraftClosed` here would flush it mid-supersede, rebuilding every node and
+   * detaching `anchorEl` before this method gets to use it (the deferred render only makes sense
+   * once the *whole* session actually ends, via `cancelDraft`/`destroy`). */
   private openDraft(parentPath: string, anchorEl: HTMLElement, type: string): void {
-    this.cancelDraft();
-    anchorEl.classList.add(DRAFTING_CLASS);
-    const wrapperEl = anchorEl.createDiv(DRAFT_CLASS);
+    this.teardownDraft();
+    const target = this.resolveAnchor(anchorEl, parentPath);
+    this.lastRoot = target.closest<HTMLElement>(ROOT_SELECTOR) ?? this.lastRoot;
+    target.classList.add(DRAFTING_CLASS);
+    const wrapperEl = target.createDiv(DRAFT_CLASS);
     const inputEl = wrapperEl.createEl('input', {
       cls: DRAFT_INPUT_CLASS,
       attr: { placeholder: type, spellcheck: 'false' },
     });
     inputEl.addEventListener('keydown', this.handleDraftKeydown);
     inputEl.addEventListener('blur', this.handleDraftBlur);
-    this.draft = { anchorEl, parentPath, type, wrapperEl, inputEl, committing: false };
+    this.draft = { anchorEl: target, parentPath, type, wrapperEl, inputEl, committing: false };
     inputEl.focus();
+  }
+
+  /** `anchorEl` as given, unless it's already detached (stale from a render that ran in between —
+   * see `openDraft`'s note), in which case it's re-resolved by `parentPath` under the last known
+   * live root. Falls back to the original (possibly detached) element when there's no root to
+   * search, or the path isn't found there either — no worse than before this fallback existed. */
+  private resolveAnchor(anchorEl: HTMLElement, parentPath: string): HTMLElement {
+    if (anchorEl.isConnected) {
+      return anchorEl;
+    }
+    if (this.lastRoot === null) {
+      return anchorEl;
+    }
+    return findNodeElement(this.lastRoot, parentPath) ?? anchorEl;
   }
 
   private readonly handleDraftKeydown = (event: KeyboardEvent): void => {
