@@ -50,7 +50,7 @@ describe('applyLinksWrite — building a fresh value (no current content)', () =
     expect(frontmatter['key']).toStrictEqual(expected);
   });
 
-  it('deletes the key when there is nothing to add (an empty write)', () => {
+  it('writes an empty array (round 2 minor 1: keeps the key rather than deleting it) when there is nothing to add and the key does not exist yet', () => {
     const app = createApp();
     const frontmatter: Record<string, unknown> = {};
 
@@ -62,7 +62,7 @@ describe('applyLinksWrite — building a fresh value (no current content)', () =
       creating: new Set(),
     });
 
-    expect('key' in frontmatter).toBe(false);
+    expect(frontmatter['key']).toStrictEqual([]);
   });
 
   it('falls back to a target’s bare basename when it is being created by this same plan (I5)', () => {
@@ -149,7 +149,7 @@ describe('applyLinksWrite — patching existing content (C1)', () => {
     expect(frontmatter['meta']).toStrictEqual(['[[A]]', '[[other]]']);
   });
 
-  it('deletes the key once the patch leaves nothing behind', () => {
+  it('writes null (round 2 minor 1: keeps the key, scalar-shaped) once the patch leaves nothing behind', () => {
     const app = createApp();
     const frontmatter: Record<string, unknown> = { meta: '[[A]]' };
 
@@ -161,7 +161,22 @@ describe('applyLinksWrite — patching existing content (C1)', () => {
       creating: new Set(),
     });
 
-    expect('meta' in frontmatter).toBe(false);
+    expect(frontmatter['meta']).toBeNull();
+  });
+
+  it('writes an empty array (round 2 minor 1: keeps the key, list-shaped) once the patch leaves an already-array value with nothing behind', () => {
+    const app = createApp();
+    const frontmatter: Record<string, unknown> = { meta: ['[[A]]'] };
+
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'meta',
+      value: { kind: 'links', remove: ['A.md'], add: [], list: true },
+      sourcePath: 'source.md',
+      creating: new Set(),
+    });
+
+    expect(frontmatter['meta']).toStrictEqual([]);
   });
 });
 
@@ -174,12 +189,12 @@ describe('applyListItemWrite', () => {
     expect(frontmatter['type']).toStrictEqual(['task', 'archived']);
   });
 
-  it('deletes the key once the patch leaves nothing behind', () => {
+  it('writes an empty array (round 2 minor 1: keeps the key rather than deleting it) once the patch leaves nothing behind', () => {
     const frontmatter: Record<string, unknown> = { type: ['project'] };
 
     applyListItemWrite(frontmatter, 'type', { kind: 'listItem', remove: 'project' });
 
-    expect('type' in frontmatter).toBe(false);
+    expect(frontmatter['type']).toStrictEqual([]);
   });
 });
 

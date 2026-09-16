@@ -96,12 +96,14 @@ function removeMatching(
   return { kept, insertIndex, presentTargets };
 }
 
-/** `null` once `kept` holds nothing; otherwise `kept` itself once it holds more than one element
- * or `isArray` says the value should stay an array regardless of count; otherwise its lone
- * element, unwrapped back to a scalar. */
+/** Round 2 minor 1: the key is always kept, never deleted by emptying it out — `[]` once `kept`
+ * holds nothing and the value should be array-shaped, `null` once it holds nothing and should be
+ * scalar-shaped; otherwise `kept` itself once it holds more than one element or `isArray` says the
+ * value should stay an array regardless of count, otherwise its lone element, unwrapped back to a
+ * scalar. */
 function finalizeValue(kept: readonly unknown[], isArray: boolean): unknown {
   if (kept.length === 0) {
-    return null;
+    return isArray ? [] : null;
   }
   return kept.length > 1 || isArray ? kept : kept[0];
 }
@@ -110,8 +112,8 @@ function finalizeValue(kept: readonly unknown[], isArray: boolean): unknown {
  * then inserts a `format`-ed string for every `add` target not already present (after removal) —
  * at the position of the first removed element, or appended when nothing was removed. Elements
  * that aren't links, or are links that don't resolve, are never touched (kept exactly as written).
- * Returns `null` when the result would hold no elements at all (an empty write, same as a full key
- * delete's "after" value) — never an empty string or empty array. */
+ * Round 2 minor 1: the key itself is always kept, even when the result holds no elements at all —
+ * `[]` when the value should stay array-shaped, `null` for a scalar. Never deletes the key. */
 export function patchLinksValue(current: unknown, options: LinkPatchOptions): unknown {
   const { remove, add, list, resolve, format } = options;
   const { items, wasArray } = rawItemsOf(current);
@@ -176,8 +178,9 @@ function insertListAdd(kept: unknown[], insertIndex: number | null, add: string 
  * given), then inserts `patch.add` (when given and not already present) at the removed element's
  * position, or appended when nothing was removed. Mirrors `patchLinksValue`'s positional rule
  * without needing a resolver, since these values are never links. A scalar `current` stays a
- * scalar unless the result ends up holding more than one element; `null` when the result is
- * empty. */
+ * scalar unless the result ends up holding more than one element. Round 2 minor 1: the key is
+ * always kept — `[]` when the result is empty and `current` was already an array, `null` when
+ * it's empty and `current` was scalar/absent. */
 export function patchListItem(current: unknown, patch: ListItemPatch): unknown {
   const { items, wasArray } = rawItemsOf(current);
   const { kept, insertIndex } = removeListMatch(items, patch.remove);

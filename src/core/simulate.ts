@@ -139,18 +139,15 @@ function applyLinksWrite(
   key: string,
   value: Extract<KeyWrite['value'], { kind: 'links' }>,
 ): void {
-  const patched = patchLinksValue(draft.frontmatter[key], {
+  // Round 2 minor 1: the key is always kept, even once the patch leaves nothing — `patchLinksValue`
+  // itself returns `[]`/`null` (never a "delete" signal), so this always assigns, never deletes.
+  draft.frontmatter[key] = patchLinksValue(draft.frontmatter[key], {
     remove: new Set(value.remove),
     add: value.add,
     list: value.list,
     resolve: (raw) => resolveRawLink(notes, raw),
     format: wikilink,
   });
-  if (patched === null) {
-    delete draft.frontmatter[key];
-  } else {
-    draft.frontmatter[key] = patched;
-  }
   const newTargets = resultingTargets(draft.propertyLinks[key] ?? [], value.remove, value.add);
   if (newTargets.length === 0) {
     delete draft.propertyLinks[key];
@@ -172,15 +169,11 @@ function applyListItemWrite(
   key: string,
   value: Extract<KeyWrite['value'], { kind: 'listItem' }>,
 ): void {
-  const patched = patchListItem(draft.frontmatter[key], {
+  // Round 2 minor 1: always assigns, never deletes — see `applyLinksWrite` above.
+  draft.frontmatter[key] = patchListItem(draft.frontmatter[key], {
     ...(value.remove === undefined ? {} : { remove: value.remove }),
     ...(value.add === undefined ? {} : { add: value.add }),
   });
-  if (patched === null) {
-    delete draft.frontmatter[key];
-  } else {
-    draft.frontmatter[key] = patched;
-  }
 }
 
 /** Recomputes `draft.frontmatterTags`/`draft.tags` after a write touched a tags key: `tags` =

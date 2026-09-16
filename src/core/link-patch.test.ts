@@ -164,7 +164,7 @@ describe('patchLinksValue', () => {
     expect(result).toStrictEqual('[[B]]');
   });
 
-  it('returns null when the result would be empty', () => {
+  it('returns null (scalar-shaped) when the result would be empty and current was a scalar', () => {
     const resolve = resolveByBasename({ A: 'A.md' });
     const current = '[[A]]';
 
@@ -177,6 +177,21 @@ describe('patchLinksValue', () => {
     });
 
     expect(result).toBeNull();
+  });
+
+  it('returns an empty array (round 2 minor 1: the key is kept, not deleted) when the result would be empty and current was already an array', () => {
+    const resolve = resolveByBasename({ A: 'A.md' });
+    const current = ['[[A]]'];
+
+    const result = patchLinksValue(current, {
+      remove: new Set(['A.md']),
+      add: [],
+      list: true,
+      resolve,
+      format,
+    });
+
+    expect(result).toStrictEqual([]);
   });
 
   it('builds a fresh list for a key that does not exist yet, honouring `list: true` even for one target', () => {
@@ -260,8 +275,14 @@ describe('patchListItem', () => {
     expect(result).toStrictEqual(['task']);
   });
 
-  it('returns null once the result is empty', () => {
+  it('returns an empty array once the result is empty and current was already an array (round 2 minor 1: the key is kept, not deleted)', () => {
     const result = patchListItem(['project'], { remove: 'project' });
+
+    expect(result).toStrictEqual([]);
+  });
+
+  it('returns null once the result is empty and current was a scalar (round 2 minor 1: still kept, but scalar-shaped)', () => {
+    const result = patchListItem('project', { remove: 'project' });
 
     expect(result).toBeNull();
   });

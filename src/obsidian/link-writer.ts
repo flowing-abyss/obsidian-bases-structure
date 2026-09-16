@@ -71,40 +71,32 @@ export interface LinksWriteArgs {
 
 /** Applies a `'links'`-kind write to `frontmatter[key]` in place: patches the note's *existing*
  * raw value for `key` (preserving unresolved links, plain text, aliases/headings, and links
- * outside the base exactly as written — see `patchLinksValue`), deleting the key entirely once the
- * result would hold nothing. */
+ * outside the base exactly as written — see `patchLinksValue`). Round 2 minor 1: the key is always
+ * kept, even once the result holds nothing — `patchLinksValue` itself returns `[]`/`null` rather
+ * than a "delete" signal, so this always assigns, never deletes. */
 export function applyLinksWrite(app: App, args: LinksWriteArgs): void {
   const { frontmatter, key, value, sourcePath, creating } = args;
-  const patched = patchLinksValue(frontmatter[key], {
+  frontmatter[key] = patchLinksValue(frontmatter[key], {
     remove: new Set(value.remove),
     add: value.add,
     list: value.list,
     resolve: (raw) => resolveFrontmatterLink(app, raw, sourcePath),
     format: (target) => `[[${linktextFor(app, target, sourcePath, creating)}]]`,
   });
-  if (patched === null) {
-    delete frontmatter[key];
-  } else {
-    frontmatter[key] = patched;
-  }
 }
 
 /** Applies a `'listItem'`-kind write to `frontmatter[key]` in place: patches a plain (non-link)
- * list-shaped value by element (see `patchListItem`) — retype's recipe-property/tag writes. */
+ * list-shaped value by element (see `patchListItem`) — retype's recipe-property/tag writes. Round
+ * 2 minor 1: always assigns (never deletes) — see `applyLinksWrite`. */
 export function applyListItemWrite(
   frontmatter: Record<string, unknown>,
   key: string,
   value: ListItemWrite,
 ): void {
-  const patched = patchListItem(frontmatter[key], {
+  frontmatter[key] = patchListItem(frontmatter[key], {
     ...(value.remove === undefined ? {} : { remove: value.remove }),
     ...(value.add === undefined ? {} : { add: value.add }),
   });
-  if (patched === null) {
-    delete frontmatter[key];
-  } else {
-    frontmatter[key] = patched;
-  }
 }
 
 /** One Markdown list item linking to `target`, as appended to a note's body. */
