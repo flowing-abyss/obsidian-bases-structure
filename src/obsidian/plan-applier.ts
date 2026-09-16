@@ -5,8 +5,9 @@
 
 import type { App, TFile } from 'obsidian';
 import { Notice } from 'obsidian';
+import { deepEqual } from '../core/deep-equal.js';
 import type { KeyWrite, Plan } from '../core/plan-types.js';
-import { folderOf } from '../core/snapshot.js';
+import { folderOf, type Snapshot } from '../core/snapshot.js';
 import { applyLinksWrite, applyListItemWrite, linkLine } from './link-writer.js';
 import type { UndoManager } from './undo-manager.js';
 
@@ -63,11 +64,16 @@ function requireFile(app: App, path: string): TFile {
   return file;
 }
 
+interface WriteContext {
+  readonly sourcePath: string;
+  readonly creating: ReadonlySet<string>;
+}
+
 function applyWrite(
   app: App,
   frontmatter: Record<string, unknown>,
   write: KeyWrite,
-  sourcePath: string,
+  ctx: WriteContext,
 ): void {
   const { key, value } = write;
   if (value === null) {
@@ -75,7 +81,13 @@ function applyWrite(
     return;
   }
   if (value.kind === 'links') {
-    applyLinksWrite(app, { frontmatter, key, value, sourcePath });
+    applyLinksWrite(app, {
+      frontmatter,
+      key,
+      value,
+      sourcePath: ctx.sourcePath,
+      creating: ctx.creating,
+    });
     return;
   }
   if (value.kind === 'listItem') {
@@ -85,11 +97,16 @@ function applyWrite(
   frontmatter[key] = value.value;
 }
 
-function renderBody(app: App, bodyLinks: readonly string[], sourcePath: string): string {
+function renderBody(
+  app: App,
+  bodyLinks: readonly string[],
+  sourcePath: string,
+  creating: ReadonlySet<string>,
+): string {
   if (bodyLinks.length === 0) {
     return '';
   }
-  return `${bodyLinks.map((target) => linkLine(app, target, sourcePath)).join('\n')}\n`;
+  return `${bodyLinks.map((target) => linkLine(app, target, sourcePath, creating)).join('\n')}\n`;
 }
 
 /** Creates the note and records its `'create'` step *immediately*, before writing frontmatter —
@@ -101,57 +118,113 @@ async function applyCreation(
   app: App,
   creation: Plan['creations'][number],
   steps: TransactionStep[],
+  creating: ReadonlySet<string>,
 ): Promise<void> {
   await ensureFolder(app, folderOf(creation.path), steps);
-  const body = renderBody(app, creation.bodyLinks, creation.path);
+  const body = renderBody(app, creation.bodyLinks, creation.path, creating);
   const file = await app.vault.create(creation.path, body);
   const stepIndex = steps.length;
   steps.push({ kind: 'create', path: creation.path, content: body });
+  const ctx: WriteContext = { sourcePath: creation.path, creating };
   await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
     for (const write of creation.writes) {
-      applyWrite(app, frontmatter, write, creation.path);
+      applyWrite(app, frontmatter, write, ctx);
     }
   });
   const content = await app.vault.read(file);
   steps.splice(stepIndex, 1, { kind: 'create', path: creation.path, content });
 }
 
+interface ChangeWriteState {
+  readonly expectedFrontmatter: Readonly<Record<string, unknown>> | undefined;
+  readonly checkedKeys: Set<string>;
+}
+
+interface ChangeWriteArgs {
+  readonly app: App;
+  readonly frontmatter: Record<string, unknown>;
+  readonly write: KeyWrite;
+  readonly path: string;
+  readonly creating: ReadonlySet<string>;
+  readonly state: ChangeWriteState;
+  readonly steps: TransactionStep[];
+}
+
+/** Applies one write, first checking (once per *distinct* key) whether the note's current value
+ * still matches what the plan expected — `false` (nothing applied, nothing recorded) the moment
+ * it doesn't; a later write to the same key already checked (e.g. a retype's paired tag
+ * remove+add) is this same plan's own edit, not a concurrent one, so it's never re-checked. */
+function tryApplyChangeWrite(args: ChangeWriteArgs): boolean {
+  const { app, frontmatter, write, path, creating, state, steps } = args;
+  const { expectedFrontmatter, checkedKeys } = state;
+  if (expectedFrontmatter !== undefined && !checkedKeys.has(write.key)) {
+    checkedKeys.add(write.key);
+    if (!deepEqual(frontmatter[write.key], expectedFrontmatter[write.key])) {
+      return false;
+    }
+  }
+  const existed = write.key in frontmatter;
+  const before = structuredClone(frontmatter[write.key]);
+  const deleted = write.value === null;
+  applyWrite(app, frontmatter, write, { sourcePath: path, creating });
+  const after = deleted ? undefined : structuredClone(frontmatter[write.key]);
+  steps.push({ kind: 'frontmatter', path, key: write.key, existed, before, after, deleted });
+  return true;
+}
+
+/** Applies every write for one changed note inside a single `processFrontMatter` call, checking
+ * each touched key against `ctx.expected` (the raw frontmatter value the fresh snapshot the plan
+ * was built from saw for that key) via `tryApplyChangeWrite`. On a mismatch, stops applying *this
+ * and every later* write and throws — `applyPlan`'s outer `try` already stops the whole walk there
+ * and keeps whatever completed earlier as undoable, exactly what "nothing else was written"
+ * requires (I5). */
 async function applyChange(
   app: App,
   change: Plan['changes'][number],
   steps: TransactionStep[],
+  ctx: ApplyContext,
 ): Promise<void> {
   const file = requireFile(app, change.path);
+  const state: ChangeWriteState = {
+    expectedFrontmatter: ctx.expected.notes.get(change.path)?.frontmatter,
+    checkedKeys: new Set(),
+  };
+  const outcome = { conflict: false };
   await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
     for (const write of change.writes) {
-      const existed = write.key in frontmatter;
-      const before = structuredClone(frontmatter[write.key]);
-      const deleted = write.value === null;
-      applyWrite(app, frontmatter, write, change.path);
-      const after = deleted ? undefined : structuredClone(frontmatter[write.key]);
-      steps.push({
-        kind: 'frontmatter',
+      if (outcome.conflict) {
+        break;
+      }
+      const applied = tryApplyChangeWrite({
+        app,
+        frontmatter,
+        write,
         path: change.path,
-        key: write.key,
-        existed,
-        before,
-        after,
-        deleted,
+        creating: ctx.creating,
+        state,
+        steps,
       });
+      if (!applied) {
+        outcome.conflict = true;
+      }
     }
   });
+  if (outcome.conflict) {
+    throw new Error(`"${file.basename}" changed while applying; nothing else was written`);
+  }
 }
 
 async function applyAppend(
   app: App,
   append: Plan['appends'][number],
   steps: TransactionStep[],
+  creating: ReadonlySet<string>,
 ): Promise<void> {
   const file = requireFile(app, append.path);
   let text = '';
   await app.vault.process(file, (data: string) => {
     const prefix = data === '' || data.endsWith('\n') ? '' : '\n';
-    text = `${prefix}${linkLine(app, append.target, append.path)}\n`;
+    text = `${prefix}${linkLine(app, append.target, append.path, creating)}\n`;
     return data + text;
   });
   steps.push({ kind: 'append', path: append.path, text });
@@ -168,20 +241,37 @@ async function applyMove(
   steps.push({ kind: 'rename', from: move.from, to: move.to });
 }
 
+interface ApplyContext {
+  readonly expected: Snapshot;
+  readonly creating: ReadonlySet<string>;
+}
+
 /** Applies every part of `plan` in order (creations, changes, appends, moves), recording one
  * `TransactionStep` per primitive write. Stops at the first failing operation and returns the
- * steps completed so far with `error` set — `null` when everything succeeded. */
-export async function applyPlan(app: App, plan: Plan, label: string): Promise<ApplyOutcome> {
+ * steps completed so far with `error` set — `null` when everything succeeded. `expected` is the
+ * snapshot the plan was built from (the view's `freshInput()`, read immediately before planning):
+ * each change write is checked against it before being applied, so a concurrent edit to the same
+ * key aborts the rest of the plan instead of overwriting it (I5). */
+export async function applyPlan(
+  app: App,
+  plan: Plan,
+  label: string,
+  expected: Snapshot,
+): Promise<ApplyOutcome> {
   const steps: TransactionStep[] = [];
+  const ctx: ApplyContext = {
+    expected,
+    creating: new Set(plan.creations.map((creation) => creation.path)),
+  };
   try {
     for (const creation of plan.creations) {
-      await applyCreation(app, creation, steps);
+      await applyCreation(app, creation, steps, ctx.creating);
     }
     for (const change of plan.changes) {
-      await applyChange(app, change, steps);
+      await applyChange(app, change, steps, ctx);
     }
     for (const append of plan.appends) {
-      await applyAppend(app, append, steps);
+      await applyAppend(app, append, steps, ctx.creating);
     }
     for (const move of plan.moves) {
       await applyMove(app, move, steps);
@@ -202,6 +292,13 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+export interface CommitRequest {
+  readonly plan: Plan;
+  readonly label: string;
+  /** The snapshot the plan was built from — see `applyPlan`'s own doc comment. */
+  readonly expected: Snapshot;
+}
+
 /** `applyPlan`, then the outer boundary a user-triggered structure edit needs: the transaction is
  * pushed onto `undo` whenever it has at least one step — even a failed apply may have partially
  * succeeded, and that partial work still needs to be reversible. On failure, logs the error and
@@ -209,10 +306,10 @@ function errorMessage(error: unknown): string {
 export async function commitPlan(
   app: App,
   undo: UndoManager,
-  plan: Plan,
-  label: string,
+  request: CommitRequest,
 ): Promise<boolean> {
-  const outcome = await applyPlan(app, plan, label);
+  const { plan, label, expected } = request;
+  const outcome = await applyPlan(app, plan, label, expected);
   if (outcome.transaction.steps.length > 0) {
     undo.push(outcome.transaction);
   }

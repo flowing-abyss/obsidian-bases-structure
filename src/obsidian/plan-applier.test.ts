@@ -1,7 +1,9 @@
 import type * as ObsidianModule from 'obsidian';
 import { App, type TFile } from 'obsidian-test-mocks/obsidian';
 import { describe, expect, it, vi } from 'vitest';
+import { note, snapshot } from '../core/__tests__/notes.js';
 import type { Plan } from '../core/plan-types.js';
+import type { Snapshot } from '../core/snapshot.js';
 import { applyPlan, commitPlan } from './plan-applier.js';
 import { UndoManager } from './undo-manager.js';
 
@@ -35,6 +37,13 @@ function emptyPlan(): Plan {
   return { creations: [], changes: [], appends: [], moves: [] };
 }
 
+/** No notes at all — the optimistic-concurrency check (I5) is a no-op for every path, since
+ * `expected.notes.get(path)` is always `undefined`. What every test that isn't specifically about
+ * that check uses. */
+function emptySnapshot(): Snapshot {
+  return snapshot([]);
+}
+
 describe('applyPlan — creations', () => {
   it('creates missing parent folders, renders body links and frontmatter, and records the final content', async () => {
     const app = App.createConfigured__({ files: { 'parent.md': '' } });
@@ -52,7 +61,7 @@ describe('applyPlan — creations', () => {
       ],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create child');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create child', emptySnapshot());
 
     expect(outcome.error).toBeNull();
     expect(app.vault.getFolderByPath('projects')).not.toBeNull();
@@ -79,7 +88,7 @@ describe('applyPlan — creations', () => {
       creations: [{ path: 'root.md', writes: [], bodyLinks: [] }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create root');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create root', emptySnapshot());
 
     expect(outcome.error).toBeNull();
     expect(app.vault.getFileByPath('root.md')).not.toBeNull();
@@ -94,7 +103,7 @@ describe('applyPlan — creations', () => {
       creations: [{ path: 'projects/sub/child.md', writes: [], bodyLinks: [] }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested', emptySnapshot());
 
     expect(outcome.error).toBeNull();
     expect(createFolderSpy).toHaveBeenCalledExactlyOnceWith('projects/sub');
@@ -109,7 +118,7 @@ describe('applyPlan — creations', () => {
       creations: [{ path: 'projects/sub/child.md', writes: [], bodyLinks: [] }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested', emptySnapshot());
 
     const content = await app.vault.read(mustFile(app, 'projects/sub/child.md'));
     expect(outcome.transaction.steps).toStrictEqual([
@@ -138,6 +147,7 @@ describe('applyPlan — creations', () => {
       app.asOriginalType__(),
       plan,
       'Create with failing frontmatter',
+      emptySnapshot(),
     );
 
     expect(outcome.error).toBeInstanceOf(Error);
@@ -170,7 +180,8 @@ describe('applyPlan — changes', () => {
       ],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Change note');
+    const expected = snapshot([note('note.md', { frontmatter: { status: 'active' } })]);
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Change note', expected);
 
     expect(outcome.error).toBeNull();
     expect(outcome.transaction.steps).toStrictEqual([
@@ -221,7 +232,12 @@ describe('applyPlan — changes', () => {
       ],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move');
+    const expected = snapshot([
+      note('H.md', {
+        frontmatter: { meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]'] },
+      }),
+    ]);
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move', expected);
 
     expect(outcome.error).toBeNull();
     if (outcome.transaction.steps.length > 0) {
@@ -248,6 +264,133 @@ describe('applyPlan — changes', () => {
   });
 });
 
+describe('applyPlan — optimistic concurrency check (I5)', () => {
+  it('aborts the whole change and every later one when a note no longer matches what the plan expected, leaving both notes untouched', async () => {
+    const app = App.createConfigured__({
+      files: {
+        'a.md': '---\nstatus: changed-by-someone-else\n---\n',
+        'b.md': '---\nstatus: active\n---\n',
+      },
+    });
+    // "a.md" was "active" when the plan was built (freshInput's snapshot), but the file has since
+    // changed underneath it.
+    const expected = snapshot([
+      note('a.md', { frontmatter: { status: 'active' } }),
+      note('b.md', { frontmatter: { status: 'active' } }),
+    ]);
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        { path: 'a.md', writes: [{ key: 'status', value: { kind: 'literal', value: 'new' } }] },
+        { path: 'b.md', writes: [{ key: 'status', value: { kind: 'literal', value: 'new' } }] },
+      ],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Concurrent edit', expected);
+
+    expect(errorMessage(outcome.error)).toBe(
+      '"a" changed while applying; nothing else was written',
+    );
+    expect(outcome.transaction.steps).toStrictEqual([]);
+    const cacheA = app.metadataCache.getFileCache(mustFile(app, 'a.md'));
+    expect(cacheA?.frontmatter?.['status']).toBe('changed-by-someone-else');
+    const cacheB = app.metadataCache.getFileCache(mustFile(app, 'b.md'));
+    expect(cacheB?.frontmatter?.['status']).toBe('active');
+  });
+
+  it('keeps an earlier write on the same note that still matched, only aborting from the mismatched key onward', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\nstatus: active\nkind: changed-by-someone-else\n---\n' },
+    });
+    const expected = snapshot([
+      note('note.md', { frontmatter: { status: 'active', kind: 'original' } }),
+    ]);
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        {
+          path: 'note.md',
+          writes: [
+            { key: 'status', value: { kind: 'literal', value: 'new-status' } },
+            { key: 'kind', value: { kind: 'literal', value: 'new-kind' } },
+          ],
+        },
+      ],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Partial conflict', expected);
+
+    expect(errorMessage(outcome.error)).toBe(
+      '"note" changed while applying; nothing else was written',
+    );
+    expect(outcome.transaction.steps).toStrictEqual([
+      {
+        kind: 'frontmatter',
+        path: 'note.md',
+        key: 'status',
+        existed: true,
+        before: 'active',
+        after: 'new-status',
+        deleted: false,
+      },
+    ]);
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'note.md'));
+    expect(cache?.frontmatter?.['status']).toBe('new-status');
+    expect(cache?.frontmatter?.['kind']).toBe('changed-by-someone-else');
+  });
+
+  it('does not re-check a key the plan itself writes to twice (e.g. a paired tag remove+add)', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\ntype:\n  - project\n  - archived\n---\n' },
+    });
+    const expected = snapshot([
+      note('note.md', { frontmatter: { type: ['project', 'archived'] } }),
+    ]);
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        {
+          path: 'note.md',
+          writes: [
+            { key: 'type', value: { kind: 'listItem', remove: 'project', add: 'task' } },
+            { key: 'type', value: { kind: 'listItem', add: 'urgent' } },
+          ],
+        },
+      ],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Pairwise tags', expected);
+
+    expect(outcome.error).toBeNull();
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'note.md'));
+    expect(cache?.frontmatter?.['type']).toStrictEqual(['task', 'archived', 'urgent']);
+  });
+
+  it('does not check a key the plan never touches, even if it also changed concurrently', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\nstatus: active\nunrelated: changed-by-someone-else\n---\n' },
+    });
+    const expected = snapshot([
+      note('note.md', { frontmatter: { status: 'active', unrelated: 'original' } }),
+    ]);
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        {
+          path: 'note.md',
+          writes: [{ key: 'status', value: { kind: 'literal', value: 'new-status' } }],
+        },
+      ],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Unrelated key change', expected);
+
+    expect(outcome.error).toBeNull();
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'note.md'));
+    expect(cache?.frontmatter?.['status']).toBe('new-status');
+  });
+});
+
 describe('applyPlan — appends', () => {
   it('appends without a leading blank line when the file is empty', async () => {
     const app = App.createConfigured__({ files: { 'empty.md': '', 'target.md': '' } });
@@ -256,7 +399,7 @@ describe('applyPlan — appends', () => {
       appends: [{ path: 'empty.md', target: 'target.md' }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append', emptySnapshot());
 
     expect(outcome.error).toBeNull();
     expect(outcome.transaction.steps).toStrictEqual([
@@ -272,7 +415,7 @@ describe('applyPlan — appends', () => {
       appends: [{ path: 'note.md', target: 'target.md' }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append', emptySnapshot());
 
     expect(outcome.transaction.steps).toStrictEqual([
       { kind: 'append', path: 'note.md', text: '\n- [[target]]\n' },
@@ -287,7 +430,7 @@ describe('applyPlan — appends', () => {
       appends: [{ path: 'note.md', target: 'target.md' }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append', emptySnapshot());
 
     expect(outcome.transaction.steps).toStrictEqual([
       { kind: 'append', path: 'note.md', text: '- [[target]]\n' },
@@ -304,7 +447,7 @@ describe('applyPlan — moves', () => {
       moves: [{ from: 'source.md', to: 'newfolder/sub/source.md' }],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move', emptySnapshot());
 
     expect(outcome.error).toBeNull();
     expect(app.vault.getFolderByPath('newfolder/sub')).not.toBeNull();
@@ -330,7 +473,7 @@ describe('applyPlan — missing notes', () => {
       moves: [],
     };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Partial');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Partial', emptySnapshot());
 
     expect(outcome.error).toBeInstanceOf(Error);
     expect(errorMessage(outcome.error)).toBe('Note not found: missing.md');
@@ -342,7 +485,12 @@ describe('applyPlan — missing notes', () => {
     const app = App.createConfigured__({});
     const plan: Plan = { ...emptyPlan(), appends: [{ path: 'missing.md', target: 'x.md' }] };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Append missing');
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      plan,
+      'Append missing',
+      emptySnapshot(),
+    );
 
     expect(errorMessage(outcome.error)).toBe('Note not found: missing.md');
   });
@@ -351,7 +499,7 @@ describe('applyPlan — missing notes', () => {
     const app = App.createConfigured__({});
     const plan: Plan = { ...emptyPlan(), moves: [{ from: 'missing.md', to: 'x.md' }] };
 
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move missing');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move missing', emptySnapshot());
 
     expect(errorMessage(outcome.error)).toBe('Note not found: missing.md');
   });
@@ -364,7 +512,11 @@ describe('commitPlan', () => {
     const pushSpy = vi.spyOn(undo, 'push');
     const plan: Plan = { ...emptyPlan(), creations: [{ path: 'a.md', writes: [], bodyLinks: [] }] };
 
-    const result = await commitPlan(app.asOriginalType__(), undo, plan, 'Commit');
+    const result = await commitPlan(app.asOriginalType__(), undo, {
+      plan,
+      label: 'Commit',
+      expected: emptySnapshot(),
+    });
 
     expect(result).toBe(true);
     expect(pushSpy).toHaveBeenCalledTimes(1);
@@ -384,7 +536,11 @@ describe('commitPlan', () => {
       moves: [],
     };
 
-    const result = await commitPlan(app.asOriginalType__(), undo, plan, 'Commit fail');
+    const result = await commitPlan(app.asOriginalType__(), undo, {
+      plan,
+      label: 'Commit fail',
+      expected: emptySnapshot(),
+    });
 
     expect(result).toBe(false);
     expect(undo.canUndo).toBe(true);
@@ -399,7 +555,11 @@ describe('commitPlan', () => {
     const undo = new UndoManager(app.asOriginalType__());
     const pushSpy = vi.spyOn(undo, 'push');
 
-    const result = await commitPlan(app.asOriginalType__(), undo, emptyPlan(), 'Nothing to do');
+    const result = await commitPlan(app.asOriginalType__(), undo, {
+      plan: emptyPlan(),
+      label: 'Nothing to do',
+      expected: emptySnapshot(),
+    });
 
     expect(result).toBe(true);
     expect(pushSpy).not.toHaveBeenCalled();
@@ -412,7 +572,11 @@ describe('commitPlan', () => {
     const undo = new UndoManager(app.asOriginalType__());
     const plan: Plan = { ...emptyPlan(), creations: [{ path: 'a.md', writes: [], bodyLinks: [] }] };
 
-    const result = await commitPlan(app.asOriginalType__(), undo, plan, 'Non-error throw');
+    const result = await commitPlan(app.asOriginalType__(), undo, {
+      plan,
+      label: 'Non-error throw',
+      expected: emptySnapshot(),
+    });
 
     expect(result).toBe(false);
     expect(noticeMock).toHaveBeenCalledWith('Structure: could not apply all changes. boom');

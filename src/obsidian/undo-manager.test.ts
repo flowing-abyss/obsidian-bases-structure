@@ -1,6 +1,7 @@
 import type { TFile } from 'obsidian-test-mocks/obsidian';
 import { App } from 'obsidian-test-mocks/obsidian';
 import { describe, expect, it, vi } from 'vitest';
+import { note, snapshot } from '../core/__tests__/notes.js';
 import type { Plan } from '../core/plan-types.js';
 import { applyPlan, type Transaction } from './plan-applier.js';
 import { UndoManager } from './undo-manager.js';
@@ -45,7 +46,8 @@ describe('UndoManager', () => {
       appends: [{ path: 'append-target.md', target: 'parent.md' }],
       moves: [{ from: 'movable.md', to: 'moved/movable.md' }],
     };
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Round trip');
+    const expected = snapshot([note('existing.md', { frontmatter: { status: 'active' } })]);
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Round trip', expected);
     expect(outcome.error).toBeNull();
     const undo = new UndoManager(app.asOriginalType__());
     undo.push(outcome.transaction);
@@ -401,7 +403,7 @@ describe('UndoManager', () => {
       appends: [],
       moves: [],
     };
-    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested');
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested', snapshot([]));
     expect(outcome.error).toBeNull();
     undo.push(outcome.transaction);
 

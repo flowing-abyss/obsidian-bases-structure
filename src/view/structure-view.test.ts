@@ -528,6 +528,49 @@ describe('StructureView — drag wiring', () => {
       delete proto.elementFromPoint;
     }
   });
+
+  it('plans a drag-triggered move against the vault as it is now, not the last render (I5)', async () => {
+    // Changes "leaf.md"'s parent directly (bypassing the view) right after the one render this
+    // test triggers — simulating an edit that lands between renders, which `onDataUpdated` never
+    // gets called again for. A plan built from the stale last-render snapshot would still see
+    // "leaf.md" under "cat1.md" and treat the drop below as a genuine (if redundant) cat1->cat2
+    // move; `freshInput()` re-reads first and sees it's already under "cat2.md", rejecting it.
+    const { view, parentEl, app } = twoParentsView();
+    view.onDataUpdated();
+    const sourceEl = findNode(parentEl, 'leaf.md');
+    const targetEl = findNode(parentEl, 'cat2.md');
+    const proto = document as unknown as { elementFromPoint?: (x: number, y: number) => Element };
+    proto.elementFromPoint = () => targetEl;
+    const leafFile = app.vault.getFileByPath('leaf.md');
+    if (leafFile === null) {
+      throw new Error('Test setup error: missing file "leaf.md"');
+    }
+    await app.fileManager.processFrontMatter(leafFile, (frontmatter: Record<string, unknown>) => {
+      frontmatter['up'] = '[[cat2]]';
+    });
+
+    try {
+      sourceEl.dispatchEvent(
+        new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, bubbles: true }),
+      );
+      document.dispatchEvent(
+        new PointerEvent('pointermove', { pointerId: 1, clientX: 20, clientY: 20, bubbles: true }),
+      );
+      document.dispatchEvent(
+        new PointerEvent('pointerup', { pointerId: 1, clientX: 20, clientY: 20, bubbles: true }),
+      );
+
+      await vi.waitFor(() => {
+        expect(
+          NoticeMock.instances.some(
+            (n) => typeof n.message === 'string' && n.message.includes('is already under'),
+          ),
+        ).toBe(true);
+      });
+    } finally {
+      delete proto.elementFromPoint;
+    }
+  });
 });
 
 describe('StructureView — context menu wiring', () => {

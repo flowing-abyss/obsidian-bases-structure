@@ -158,6 +158,10 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
     app: app.asOriginalType__(),
     undo,
     getInput,
+    // The harness's own `getInput` already re-reads the vault on every call (see its own doc
+    // comment), so it doubles as `freshInput` here — a real `StructureView` needs a separate
+    // function only because its `getInput` is memoised per render (`lastInput`).
+    freshInput: getInput,
     hostPath: options.hostPath ?? '',
     refresh,
     onDraftClosed,
@@ -1107,6 +1111,49 @@ describe('startMove', () => {
     );
     expect(h.undo.canUndo).toBe(false);
   });
+
+  it('ignores a second move started while the first is still committing, with its own Notice (I5)', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    h.actions.startMove('meta.md', 'cat2.md');
+    const noticesBeforeSecond = NoticeMock.instances.length;
+    // Synchronous, before the first commit's promise chain has had a chance to settle: `committing`
+    // is already `true` at this point (set before any `await` in the first call), so this must be
+    // ignored rather than racing the first move's apply.
+    h.actions.startMove('child.md', 'cat1.md');
+
+    expect(NoticeMock.instances).toHaveLength(noticesBeforeSecond + 1);
+    expect(NoticeMock.instances[noticesBeforeSecond]?.message).toBe(
+      'Structure: still applying the previous change',
+    );
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    // The ignored second move never wrote anything: child.md still has its original parent.
+    const childFile = mustFile(h.app, 'child.md');
+    expect(h.app.metadataCache.getFileCache(childFile)?.frontmatter?.['meta']).toBe('[[meta]]');
+  });
+
+  it('allows a new move once the previous commit has settled', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    h.actions.startMove('meta.md', 'cat2.md');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    h.actions.startMove('child.md', 'cat1.md');
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      NoticeMock.instances.some(
+        (notice) => notice.message === 'Structure: still applying the previous change',
+      ),
+    ).toBe(false);
+  });
 });
 
 interface MoveModal {
@@ -1291,6 +1338,33 @@ describe('commitAndNotify — unexpected failure', () => {
           notice.message === 'Structure: could not apply the change. push boom',
       ),
     ).toBe(true);
+  });
+});
+
+describe('committing guard — ignores a new action while one is still applying (I5)', () => {
+  it('ignores a create-draft commit started while an earlier move is still in flight, keeping the draft open', async () => {
+    const files = { ...baseFiles(), 'leaf2.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n' };
+    const h = makeHarness(files);
+    h.actions.startMove('sub.md', 'leaf2.md'); // in flight, not awaited
+    const noticesBeforeDraft = NoticeMock.instances.length;
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    const inputEl = draftInput(h.root);
+    inputEl.value = 'New Sub';
+
+    pressKey(inputEl, 'Enter');
+
+    expect(NoticeMock.instances).toHaveLength(noticesBeforeDraft + 1);
+    expect(NoticeMock.instances[noticesBeforeDraft]?.message).toBe(
+      'Structure: still applying the previous change',
+    );
+    expect(h.root.querySelector('.bases-structure-draft-input')).toBe(inputEl);
+    expect(h.app.vault.getFileByPath('New Sub.md')).toBeNull();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
   });
 });
 

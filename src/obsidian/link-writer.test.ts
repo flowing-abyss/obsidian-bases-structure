@@ -35,18 +35,6 @@ describe('applyLinksWrite — building a fresh value (no current content)', () =
       list: false,
       expected: '[[target]]',
     },
-    {
-      description: 'a scalar target that does not exist yet, falling back to its basename',
-      add: ['new/created.md'],
-      list: false,
-      expected: '[[created]]',
-    },
-    {
-      description: 'a scalar target with no .md extension, falling back to it as-is',
-      add: ['no-extension'],
-      list: false,
-      expected: '[[no-extension]]',
-    },
   ])('renders $description', ({ add, list, expected }) => {
     const app = createApp();
     const frontmatter: Record<string, unknown> = {};
@@ -56,6 +44,7 @@ describe('applyLinksWrite — building a fresh value (no current content)', () =
       key: 'key',
       value: { kind: 'links', remove: [], add, list },
       sourcePath: 'source.md',
+      creating: new Set(),
     });
 
     expect(frontmatter['key']).toStrictEqual(expected);
@@ -70,9 +59,40 @@ describe('applyLinksWrite — building a fresh value (no current content)', () =
       key: 'key',
       value: { kind: 'links', remove: [], add: [], list: true },
       sourcePath: 'source.md',
+      creating: new Set(),
     });
 
     expect('key' in frontmatter).toBe(false);
+  });
+
+  it('falls back to a target’s bare basename when it is being created by this same plan (I5)', () => {
+    const app = createApp();
+    const frontmatter: Record<string, unknown> = {};
+
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'key',
+      value: { kind: 'links', remove: [], add: ['new/created.md'], list: false },
+      sourcePath: 'source.md',
+      creating: new Set(['new/created.md']),
+    });
+
+    expect(frontmatter['key']).toBe('[[created]]');
+  });
+
+  it('throws instead of writing a broken link when a target does not exist and is not being created (I5)', () => {
+    const app = createApp();
+    const frontmatter: Record<string, unknown> = {};
+
+    expect(() => {
+      applyLinksWrite(app.asOriginalType__(), {
+        frontmatter,
+        key: 'key',
+        value: { kind: 'links', remove: [], add: ['gone.md'], list: false },
+        sourcePath: 'source.md',
+        creating: new Set(),
+      });
+    }).toThrow('Cannot link to "gone.md": it no longer exists');
   });
 });
 
@@ -88,6 +108,7 @@ describe('applyLinksWrite — patching existing content (C1)', () => {
       key: 'meta',
       value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true },
       sourcePath: 'source.md',
+      creating: new Set(),
     });
 
     expect(frontmatter['meta']).toStrictEqual([
@@ -107,6 +128,7 @@ describe('applyLinksWrite — patching existing content (C1)', () => {
       key: 'meta',
       value: { kind: 'links', remove: ['A.md'], add: [], list: true },
       sourcePath: 'source.md',
+      creating: new Set(),
     });
 
     expect(frontmatter['meta']).toStrictEqual(['kept']);
@@ -121,6 +143,7 @@ describe('applyLinksWrite — patching existing content (C1)', () => {
       key: 'meta',
       value: { kind: 'links', remove: [], add: ['other.md'], list: false },
       sourcePath: 'source.md',
+      creating: new Set(),
     });
 
     expect(frontmatter['meta']).toStrictEqual(['[[A]]', '[[other]]']);
@@ -135,6 +158,7 @@ describe('applyLinksWrite — patching existing content (C1)', () => {
       key: 'meta',
       value: { kind: 'links', remove: ['A.md'], add: [], list: false },
       sourcePath: 'source.md',
+      creating: new Set(),
     });
 
     expect('meta' in frontmatter).toBe(false);
@@ -163,12 +187,24 @@ describe('linkLine', () => {
   it('renders a Markdown list item linking to an existing target', () => {
     const app = createApp();
 
-    expect(linkLine(app.asOriginalType__(), 'notes/target.md', 'source.md')).toBe('- [[target]]');
+    expect(linkLine(app.asOriginalType__(), 'notes/target.md', 'source.md', new Set())).toBe(
+      '- [[target]]',
+    );
   });
 
-  it('falls back to the bare basename when the target does not exist', () => {
+  it('falls back to the bare basename when the target is being created by this same plan (I5)', () => {
     const app = createApp();
 
-    expect(linkLine(app.asOriginalType__(), 'missing.md', 'source.md')).toBe('- [[missing]]');
+    expect(
+      linkLine(app.asOriginalType__(), 'missing.md', 'source.md', new Set(['missing.md'])),
+    ).toBe('- [[missing]]');
+  });
+
+  it('throws when the target does not exist and is not being created (I5)', () => {
+    const app = createApp();
+
+    expect(() => linkLine(app.asOriginalType__(), 'missing.md', 'source.md', new Set())).toThrow(
+      'Cannot link to "missing.md": it no longer exists',
+    );
   });
 });

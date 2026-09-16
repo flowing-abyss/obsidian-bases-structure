@@ -22,6 +22,7 @@ import { buildStructure } from '../core/structure.js';
 import type StructureViewPlugin from '../main.js';
 import { findHostFile } from '../obsidian/root-finder.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
+import type { FreshInput } from './actions-ui.js';
 import { StructureActions } from './actions-ui.js';
 import { attachDrag } from './drag.js';
 import { GraphRenderer } from './graph-renderer.js';
@@ -184,7 +185,17 @@ export class StructureView extends BasesView {
     this.safeRender();
   }
 
-  private render(): void {
+  /** Parses the schema and re-reads the snapshot/structure straight from the vault's current
+   * state — the one computation both `render()` (which also needs `issues`/`host` for the rest of
+   * its own work) and `readFreshInput()` (I5: an action plans against this, not the last render's
+   * possibly-stale `RenderInput`) share, so they can never disagree about what "current" means. */
+  private computeCurrentData(): {
+    readonly schema: Schema;
+    readonly issues: readonly SchemaIssue[];
+    readonly host: ReturnType<typeof findHostFile>;
+    readonly snapshot: Snapshot;
+    readonly structure: Structure;
+  } {
     const { schema, issues } = parseSchema((key) => this.config.get(key));
     const host = findHostFile(this.app, this.containerEl);
     const snapshot = readSnapshot(
@@ -193,6 +204,11 @@ export class StructureView extends BasesView {
       host,
     );
     const structure = buildStructure(schema, snapshot);
+    return { schema, issues, host, snapshot, structure };
+  }
+
+  private render(): void {
+    const { schema, issues, host, snapshot, structure } = this.computeCurrentData();
     this.renderIssues(issues, structure.issues, snapshot);
     const state = getUiState(`${host?.path ?? ''}::${this.config.name}`);
     const input: RenderInput = { schema, snapshot, structure, state };
@@ -212,6 +228,14 @@ export class StructureView extends BasesView {
     renderer.update(focusPath === null ? input : { ...input, focusPath });
   }
 
+  /** `ActionsDeps.freshInput()` — re-reads the vault right now, independent of when the last
+   * `render()` happened to run (I5). Never touches the DOM/UI state, so it's safe to call at any
+   * time, including while a create draft is open. */
+  private readFreshInput(): FreshInput {
+    const { schema, snapshot, structure } = this.computeCurrentData();
+    return { schema, snapshot, structure };
+  }
+
   /** Created once, on the first render, and reused for the view's whole lifetime — unlike the
    * renderer, a layout switch doesn't need a fresh instance. `getInput` always resolves to the
    * latest render's data (see `render()`); only `hostPath` is fixed at creation, since a Bases
@@ -221,6 +245,7 @@ export class StructureView extends BasesView {
       app: this.app,
       undo: this.plugin.undo,
       getInput,
+      freshInput: () => this.readFreshInput(),
       hostPath,
       refresh: () => {
         this.render();

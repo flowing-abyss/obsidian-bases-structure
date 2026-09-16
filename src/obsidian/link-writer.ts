@@ -1,9 +1,10 @@
 // Converts plan `WriteValue`s and body/append link targets into the wikilink text Obsidian
 // expects, matching how `MetadataCache.fileToLinktext` renders an existing file and falling back
-// to a plain basename when the target doesn't exist yet (e.g. a backlink to a note created earlier
-// in the same plan, before the vault has re-resolved it). Used by `plan-applier.ts` when writing
-// new values; `undo-manager.ts` restores old ones directly (raw before/after frontmatter values),
-// not through this module.
+// to a plain basename only for a target this same plan is creating (before the vault has
+// re-resolved it) — any other nonexistent target means the plan was built from a stale snapshot
+// (I5), so `linktextFor` throws rather than writing a link to nothing. Used by `plan-applier.ts`
+// when writing new values; `undo-manager.ts` restores old ones directly (raw before/after
+// frontmatter values), not through this module.
 //
 // A `'links'`/`'listItem'` write is a *patch*, not a literal value — see `../core/link-patch.ts`
 // for the shared remove/add algorithm. `applyLinksWrite`/`applyListItemWrite` apply one write's
@@ -27,13 +28,24 @@ function basenameWithoutExtension(path: string): string {
 }
 
 /** The link text Obsidian would render for `target` from `sourcePath`: the file's own rendering
- * when it currently exists in the vault, else its bare basename. */
-function linktextFor(app: App, target: string, sourcePath: string): string {
+ * when it currently exists in the vault; its bare basename when it doesn't exist *yet* but this
+ * same plan is about to create it (`creating`); otherwise throws — the plan's snapshot is stale
+ * (the target was renamed/deleted since), and writing a link to a basename that resolves to
+ * nothing would silently produce a broken reference (I5). */
+function linktextFor(
+  app: App,
+  target: string,
+  sourcePath: string,
+  creating: ReadonlySet<string>,
+): string {
   const file = app.vault.getFileByPath(target);
   if (file !== null) {
     return app.metadataCache.fileToLinktext(file, sourcePath, true);
   }
-  return basenameWithoutExtension(target);
+  if (creating.has(target)) {
+    return basenameWithoutExtension(target);
+  }
+  throw new Error(`Cannot link to "${target}": it no longer exists`);
 }
 
 /** One raw frontmatter element (`"[[Target]]"`, `"[[Target|Alias]]"`, plain text, …) → the vault
@@ -52,6 +64,9 @@ export interface LinksWriteArgs {
   readonly key: string;
   readonly value: LinksWrite;
   readonly sourcePath: string;
+  /** Paths this same plan is creating — the one case a nonexistent link target is still allowed
+   * to resolve to a bare basename (I5). */
+  readonly creating: ReadonlySet<string>;
 }
 
 /** Applies a `'links'`-kind write to `frontmatter[key]` in place: patches the note's *existing*
@@ -59,13 +74,13 @@ export interface LinksWriteArgs {
  * outside the base exactly as written — see `patchLinksValue`), deleting the key entirely once the
  * result would hold nothing. */
 export function applyLinksWrite(app: App, args: LinksWriteArgs): void {
-  const { frontmatter, key, value, sourcePath } = args;
+  const { frontmatter, key, value, sourcePath, creating } = args;
   const patched = patchLinksValue(frontmatter[key], {
     remove: new Set(value.remove),
     add: value.add,
     list: value.list,
     resolve: (raw) => resolveFrontmatterLink(app, raw, sourcePath),
-    format: (target) => `[[${linktextFor(app, target, sourcePath)}]]`,
+    format: (target) => `[[${linktextFor(app, target, sourcePath, creating)}]]`,
   });
   if (patched === null) {
     delete frontmatter[key];
@@ -93,6 +108,11 @@ export function applyListItemWrite(
 }
 
 /** One Markdown list item linking to `target`, as appended to a note's body. */
-export function linkLine(app: App, target: string, sourcePath: string): string {
-  return `- [[${linktextFor(app, target, sourcePath)}]]`;
+export function linkLine(
+  app: App,
+  target: string,
+  sourcePath: string,
+  creating: ReadonlySet<string>,
+): string {
+  return `- [[${linktextFor(app, target, sourcePath, creating)}]]`;
 }

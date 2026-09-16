@@ -10,17 +10,34 @@ import { moveTargets } from '../core/plan-move.js';
 import { retypeOptions } from '../core/plan-retype.js';
 import type { Action, Plan, PlanEnv } from '../core/plan-types.js';
 import { childOptions, planAction } from '../core/planner.js';
-import type { EdgeRule } from '../core/schema.js';
+import type { EdgeRule, Schema } from '../core/schema.js';
 import { displayName, folderOf, type Snapshot } from '../core/snapshot.js';
+import type { Structure } from '../core/structure.js';
 import { commitPlan } from '../obsidian/plan-applier.js';
 import type { UndoManager, UndoResult } from '../obsidian/undo-manager.js';
 import { reportOpenFailure } from './open-note.js';
 import type { RenderInput } from './structure-view.js';
 
+/** `schema`/`snapshot`/`structure` re-read from the vault right now — what `commitAndNotify`/
+ * `runCommit` plan and commit against, instead of the (possibly stale) last render's `RenderInput`
+ * (I5: a click can happen well after the last `onDataUpdated`, e.g. while a create draft deferred
+ * rendering, or simply because nothing touched a property Bases requeries on). */
+export interface FreshInput {
+  readonly schema: Schema;
+  readonly snapshot: Snapshot;
+  readonly structure: Structure;
+}
+
 export interface ActionsDeps {
   readonly app: App;
   readonly undo: UndoManager;
   readonly getInput: () => RenderInput;
+  /** Re-reads the snapshot/structure from the vault at call time — see `FreshInput`. Used only at
+   * the moment an action actually plans+commits (`startMove`, `commitRetype`, `runCommit`); menu
+   * listings (`startCreate`, `startMovePicker`, `startRetype`) still use `getInput()`, since a
+   * slightly-stale list of options is harmless and re-reading on every keystroke/menu-open would
+   * not be. */
+  readonly freshInput: () => FreshInput;
   readonly hostPath: string;
   readonly refresh: () => void;
   /** Called whenever an open draft closes for good — cancel (Escape/blur), a successful or failed
@@ -154,9 +171,24 @@ export class StructureActions {
    * before a render that happened to run in between), this is what lets it re-resolve a live
    * element for the same path instead of attaching a draft nobody can see. */
   private lastRoot: HTMLElement | null = null;
+  /** Set while a move/retype/create commit is actually in flight (between `commitPlan` starting
+   * and settling) — a new create/move/retype started while this is true is ignored with a Notice
+   * instead of racing the one already applying (I5). Menu listings aren't gated by this: only the
+   * three commit-initiating paths (`startMove`, `commitRetype`, `runCommit`) check and set it. */
+  private committing = false;
 
   constructor(deps: ActionsDeps) {
     this.deps = deps;
+  }
+
+  /** `true` (and shows the "still applying" Notice) when another commit is already in flight —
+   * callers that find this true must not start their own. */
+  private guardBusy(): boolean {
+    if (this.committing) {
+      notifyError('still applying the previous change');
+      return true;
+    }
+    return false;
   }
 
   /** Whether a create draft is currently open. `StructureView.onDataUpdated` checks this to defer
@@ -232,9 +264,13 @@ export class StructureActions {
   }
 
   /** Plans and commits a `'move'` action: `node` reparented under `parent`, with the planner's own
-   * cascade to descendants. Rejections show the planner's reason and write nothing. */
+   * cascade to descendants. Rejections show the planner's reason and write nothing. Plans against
+   * `freshInput()` (not the last render), and is ignored while another commit is in flight. */
   startMove(node: string, parent: string): void {
-    const { schema, snapshot } = this.deps.getInput();
+    if (this.guardBusy()) {
+      return;
+    }
+    const { schema, snapshot } = this.deps.freshInput();
     const result = planAction(schema, snapshot, { kind: 'move', node, parent }, this.planEnv());
     if (!result.ok) {
       notifyError(result.reason);
@@ -243,7 +279,8 @@ export class StructureActions {
     const name = displayName(snapshot, node);
     const label = `Move "${name}"`;
     const message = `Moved "${name}" to "${displayName(snapshot, parent)}"`;
-    this.commitAndNotify(result.plan, label, message);
+    this.committing = true;
+    this.commitAndNotify(snapshot, result.plan, label, message);
   }
 
   /** `retypeOptions(node)` → a menu of type names; empty → a Notice. Choosing a type commits a
@@ -357,27 +394,40 @@ export class StructureActions {
   }
 
   private commitRetype(node: string, type: string, name: string): void {
-    const { schema, snapshot } = this.deps.getInput();
+    if (this.guardBusy()) {
+      return;
+    }
+    const { schema, snapshot } = this.deps.freshInput();
     const result = planAction(schema, snapshot, { kind: 'retype', node, type }, this.planEnv());
     if (!result.ok) {
       notifyError(result.reason);
       return;
     }
-    this.commitAndNotify(result.plan, `Change type of "${name}"`, `Changed "${name}" to "${type}"`);
+    this.committing = true;
+    this.commitAndNotify(
+      snapshot,
+      result.plan,
+      `Change type of "${name}"`,
+      `Changed "${name}" to "${type}"`,
+    );
   }
 
   /** Shared commit tail for `startMove`/`commitRetype`: apply, refresh regardless of outcome, and
    * only show the success notice when the plan actually applied cleanly (a failed apply already
-   * shows its own Notice — see `commitPlan`). */
-  private commitAndNotify(plan: Plan, label: string, message: string): void {
-    commitPlan(this.deps.app, this.deps.undo, plan, label)
+   * shows its own Notice — see `commitPlan`). `expected` is the same fresh snapshot the caller just
+   * planned against, passed straight through to `commitPlan`'s optimistic check (I5). Always clears
+   * `committing`, however the commit resolves. */
+  private commitAndNotify(expected: Snapshot, plan: Plan, label: string, message: string): void {
+    commitPlan(this.deps.app, this.deps.undo, { plan, label, expected })
       .then((applied) => {
+        this.committing = false;
         this.deps.refresh();
         if (applied) {
           this.showUndoNotice(message);
         }
       })
       .catch((error: unknown) => {
+        this.committing = false;
         logError(error);
         notifyError(`could not apply the change. ${errorMessage(error)}`);
       });
@@ -485,12 +535,17 @@ export class StructureActions {
     if (draft === null || draft.committing) {
       return;
     }
+    if (this.guardBusy()) {
+      return;
+    }
     const name = draft.inputEl.value.trim();
     if (name === '') {
       return;
     }
     draft.committing = true;
+    this.committing = true;
     this.runCommit(draft, name, mode).catch((error: unknown) => {
+      this.committing = false;
       logError(error);
       notifyError(`could not create the note. ${errorMessage(error)}`);
       // Undo the `committing` lock so the draft (if it's still the one on screen) is usable
@@ -519,22 +574,23 @@ export class StructureActions {
 
   private async runCommit(draft: DraftState, name: string, mode: ChainMode): Promise<void> {
     const root = draft.anchorEl.closest<HTMLElement>(ROOT_SELECTOR);
-    const { schema, snapshot } = this.deps.getInput();
+    const { schema, snapshot } = this.deps.freshInput();
     const env: PlanEnv = this.planEnv();
     const action: Action = { kind: 'create', parent: draft.parentPath, type: draft.type, name };
     const result = planAction(schema, snapshot, action, env);
     if (!result.ok) {
       notifyError(result.reason);
+      this.committing = false;
       draft.committing = false;
       draft.inputEl.select();
       return;
     }
-    const applied = await commitPlan(
-      this.deps.app,
-      this.deps.undo,
-      result.plan,
-      `Create "${name}"`,
-    );
+    const applied = await commitPlan(this.deps.app, this.deps.undo, {
+      plan: result.plan,
+      label: `Create "${name}"`,
+      expected: snapshot,
+    });
+    this.committing = false;
     // Captured before this method's own cleanup below touches `this.draft`: if the user cancelled
     // this draft (Escape/blur) or opened a different one while the commit was in flight, `draft`
     // no longer matches, and chaining has nothing sensible to re-anchor to. `cancelDraft` operates
