@@ -310,7 +310,10 @@ export class StructureActions {
     });
   }
 
-  private openNode(node: string, newLeaf: boolean | PaneType): void {
+  /** Public (task 16): the keyboard's `Enter`/`Mod+Enter` open the active node the same way the
+   * context menu's "Open"/"Open in new tab" items do — see `keyboard.ts`'s `open` dep, wired in
+   * `structure-view.ts`. */
+  openNode(node: string, newLeaf: boolean | PaneType): void {
     this.deps.app.workspace
       .openLinkText(node, this.deps.hostPath, newLeaf)
       .catch((error: unknown) => {

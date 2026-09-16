@@ -13,6 +13,7 @@ describe('getUiState', () => {
       zoomTouched: false,
       scrollLeft: 0,
       scrollTop: 0,
+      active: null,
     });
   });
 

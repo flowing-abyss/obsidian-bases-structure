@@ -28,6 +28,7 @@ function makeState(overrides: Partial<ViewUiState> = {}): ViewUiState {
     zoomTouched: false,
     scrollLeft: 0,
     scrollTop: 0,
+    active: null,
     ...overrides,
   };
 }
@@ -202,6 +203,53 @@ describe('GraphRenderer', () => {
 
     expect(renderer.getNodeElement('a.md')).toBe(container.querySelector('[data-path="a.md"]'));
     expect(renderer.getNodeElement('nope.md')).toBeNull();
+  });
+
+  it('marks state.active is-active with tabindex 0, and the class survives a re-render', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(makeInput({ state: makeState({ active: 'a.md' }) }));
+
+    let aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    let rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+    expect(aEl.classList.contains('is-active')).toBe(true);
+    expect(aEl.tabIndex).toBe(0);
+    expect(rootEl.classList.contains('is-active')).toBe(false);
+    expect(rootEl.tabIndex).toBe(-1);
+
+    renderer.update(makeInput({ state: makeState({ active: 'a.md' }) }));
+
+    aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+    expect(aEl.classList.contains('is-active')).toBe(true);
+    expect(aEl.tabIndex).toBe(0);
+    expect(rootEl.tabIndex).toBe(-1);
+  });
+
+  it('moves real focus to the active node only when it changes between renders', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'a.md' });
+
+    renderer.update(makeInput({ state }));
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(document.activeElement).toBe(aEl);
+
+    // Every `update()` rebuilds the node elements from scratch, even when nothing about `active`
+    // changed — re-focusing the fresh element every time would yank focus away from whatever the
+    // user is doing elsewhere (a draft input, the toolbar, ...) on every unrelated re-render.
+    renderer.update(makeInput({ state }));
+    const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(rebuiltAEl).not.toBe(aEl);
+    expect(document.activeElement).not.toBe(rebuiltAEl);
+
+    state.active = 'root.md';
+    renderer.update(makeInput({ state }));
+    const rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+    expect(document.activeElement).toBe(rootEl);
   });
 
   it('draws one tree edge per parent-child relationship, with no markers and no group frames', () => {

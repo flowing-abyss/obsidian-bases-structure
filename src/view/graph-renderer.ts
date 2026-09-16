@@ -12,10 +12,12 @@ import { edgePath } from './edges.js';
 import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
+  applyActiveNode,
   attachNodeInteractions,
   cloneNodeElementContext,
   createNodeElement,
   findNodeElement,
+  focusActiveNode,
 } from './node-element.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
 import type { ViewUiState } from './view-state.js';
@@ -208,6 +210,10 @@ export class GraphRenderer implements StructureRenderer {
   // instance (the same `ViewUiState` is reused across remounts via `getUiState`).
   private hasAutoFitted = false;
   private edgesByPath = new Map<string, SVGPathElement[]>();
+  // Tracks the active path applied by the *previous* `update()` so a re-render triggered for an
+  // unrelated reason (a collapse toggle elsewhere, a refresh from an action) doesn't re-focus or
+  // re-scroll to the same node every time — only an actual change does (see `applyActiveState`).
+  private lastActivePath: string | null = null;
 
   constructor(container: HTMLElement, ctx: NodeElementContext, options: GraphRendererOptions = {}) {
     this.container = container;
@@ -282,6 +288,20 @@ export class GraphRenderer implements StructureRenderer {
     this.applyZoom(input.state.zoom);
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
+    this.applyActiveState(input.state.active);
+  }
+
+  /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) — the
+   * node elements themselves are rebuilt wholesale above, so nothing here can just persist a
+   * class from before. Only moves real focus/scroll when `active` actually changed since the
+   * last render (tracked via `lastActivePath`), so an unrelated re-render (e.g. a collapse toggle
+   * elsewhere) never steals focus back from wherever the user currently is. */
+  private applyActiveState(active: string | null): void {
+    const activeEl = applyActiveNode(this.nodesEl, active);
+    if (activeEl !== null && active !== this.lastActivePath) {
+      focusActiveNode(activeEl);
+    }
+    this.lastActivePath = active;
   }
 
   getNodeElement(path: string): HTMLElement | null {

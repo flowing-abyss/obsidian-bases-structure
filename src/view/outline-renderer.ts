@@ -15,10 +15,12 @@
 import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
+  applyActiveNode,
   attachNodeInteractions,
   cloneNodeElementContext,
   createNodeElement,
   findNodeElement,
+  focusActiveNode,
 } from './node-element.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
 
@@ -112,6 +114,9 @@ export class OutlineRenderer implements StructureRenderer {
   private readonly disposeInteractions: () => void;
   private listEl: HTMLElement | null = null;
   private lastInput: RenderInput | null = null;
+  // Tracks the active path applied by the *previous* `update()` — mirrors the graph renderer's
+  // own field, see its doc comment for why an unchanged `active` skips focus/scroll.
+  private lastActivePath: string | null = null;
 
   constructor(containerEl: HTMLElement, ctx: NodeElementContext) {
     this.containerEl = containerEl;
@@ -148,6 +153,18 @@ export class OutlineRenderer implements StructureRenderer {
       this.emptyEl.addClass('is-hidden');
     }
     this.outlineEl.scrollTop = input.state.scrollTop;
+    this.applyActiveState(input.state.active);
+  }
+
+  /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) — see
+   * the graph renderer's identical method for why (node elements are rebuilt wholesale above) and
+   * why focus/scroll only follow an actual change. */
+  private applyActiveState(active: string | null): void {
+    const activeEl = applyActiveNode(this.outlineEl, active);
+    if (activeEl !== null && active !== this.lastActivePath) {
+      focusActiveNode(activeEl);
+    }
+    this.lastActivePath = active;
   }
 
   getNodeElement(path: string): HTMLElement | null {

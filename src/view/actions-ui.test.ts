@@ -63,7 +63,14 @@ function mustFile(app: App, path: string): TFile {
 }
 
 function makeState(): ViewUiState {
-  return { collapsed: new Set(), zoom: 1, zoomTouched: false, scrollLeft: 0, scrollTop: 0 };
+  return {
+    collapsed: new Set(),
+    zoom: 1,
+    zoomTouched: false,
+    scrollLeft: 0,
+    scrollTop: 0,
+    active: null,
+  };
 }
 
 /** A minimal stand-in for a renderer's DOM: one `.bases-structure-node[data-path]` per note the

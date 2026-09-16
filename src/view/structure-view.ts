@@ -4,7 +4,7 @@
 // running — so the two child elements are created in the constructor, before any data arrives.
 
 import type { QueryController } from 'obsidian';
-import { BasesView } from 'obsidian';
+import { BasesView, Notice } from 'obsidian';
 import { moveTargets } from '../core/plan-move.js';
 import type { Schema, SchemaIssue } from '../core/schema.js';
 import { parseSchema } from '../core/schema.js';
@@ -18,6 +18,7 @@ import { readSnapshot } from '../obsidian/snapshot-reader.js';
 import { StructureActions } from './actions-ui.js';
 import { attachDrag } from './drag.js';
 import { GraphRenderer } from './graph-renderer.js';
+import { attachKeyboard } from './keyboard.js';
 import type { NodeElementContext } from './node-element.js';
 import { OutlineRenderer } from './outline-renderer.js';
 import type { ViewUiState } from './view-state.js';
@@ -25,12 +26,29 @@ import { getUiState } from './view-state.js';
 
 const NODE_SELECTOR = '.bases-structure-node';
 
-/** `true` for exactly a bare Mod+Z (no Shift/Alt, either Cmd or Ctrl) — deliberately excludes the
- * common "Mod+Shift+Z redo" chord even though this plugin has no redo, so a future one doesn't
- * silently collide with this shortcut. */
-function isUndoShortcut(event: KeyboardEvent): boolean {
-  const modPressed = event.metaKey || event.ctrlKey;
-  return modPressed && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z';
+/** Fallback `Structure`/`ViewUiState` for `attachStructureKeyboard`'s deps closures, for the
+ * (never actually reached in practice — `render()` always sets `lastInput` before the keyboard
+ * handler is attached, see `resolveRenderer`) case the type system still has to account for.
+ * `EMPTY_STRUCTURE` is a shared constant since keyboard.ts only ever reads a `Structure`, never
+ * mutates it; the state fallback is built fresh per call since `ViewUiState.collapsed` is a
+ * mutable `Set` and a shared singleton could otherwise leak mutations across calls. */
+const EMPTY_STRUCTURE: Structure = {
+  root: null,
+  tops: [],
+  orphans: [],
+  nodes: new Map(),
+  issues: [],
+};
+
+function emptyViewState(): ViewUiState {
+  return {
+    collapsed: new Set(),
+    zoom: 1,
+    zoomTouched: false,
+    scrollLeft: 0,
+    scrollTop: 0,
+    active: null,
+  };
 }
 
 export interface RenderInput {
@@ -100,6 +118,7 @@ export class StructureView extends BasesView {
   private actions: StructureActions | null = null;
   private lastInput: RenderInput | null = null;
   private dragDispose: (() => void) | null = null;
+  private keyboardDispose: (() => void) | null = null;
 
   constructor(controller: QueryController, parentEl: HTMLElement, plugin: StructureViewPlugin) {
     super(controller);
@@ -110,11 +129,9 @@ export class StructureView extends BasesView {
     this.registerDomEvent(this.containerEl, 'contextmenu', (event) => {
       this.handleContextMenu(event);
     });
-    this.registerDomEvent(this.containerEl, 'keydown', (event) => {
-      this.handleKeyDown(event);
-    });
     this.register(() => {
       this.dragDispose?.();
+      this.keyboardDispose?.();
       this.actions?.destroy();
       this.renderer?.destroy();
       this.containerEl.empty();
@@ -183,6 +200,7 @@ export class StructureView extends BasesView {
   private resolveRenderer(layout: Schema['layout'], ctx: NodeElementContext): StructureRenderer {
     if (this.renderer === null || this.rendererLayout !== layout) {
       this.dragDispose?.();
+      this.keyboardDispose?.();
       this.renderer?.destroy();
       this.renderer =
         layout === 'outline'
@@ -190,6 +208,7 @@ export class StructureView extends BasesView {
           : new GraphRenderer(this.bodyEl, ctx);
       this.rendererLayout = layout;
       this.dragDispose = this.attachNodeDrag();
+      this.keyboardDispose = this.attachStructureKeyboard();
     }
     return this.renderer;
   }
@@ -213,6 +232,61 @@ export class StructureView extends BasesView {
     });
   }
 
+  /** Wires `keyboard.ts`'s roving-focus control (task 16) to the same `bodyEl` container the drag
+   * gesture uses, attached/disposed alongside it in `resolveRenderer`. Every dep here either reads
+   * the latest render (`this.lastInput`, same fallback pattern as `attachNodeDrag`'s `targetsFor`)
+   * or forwards straight to `this.actions` — `addSibling` is the one exception, resolved below. */
+  private attachStructureKeyboard(): () => void {
+    return attachKeyboard({
+      container: this.bodyEl,
+      getStructure: () => this.lastInput?.structure ?? EMPTY_STRUCTURE,
+      getState: () => this.lastInput?.state ?? emptyViewState(),
+      refresh: () => {
+        this.render();
+      },
+      open: (path, newTab) => {
+        this.actions?.openNode(path, newTab);
+      },
+      addChild: (path, anchorEl) => {
+        this.actions?.startCreate(path, anchorEl);
+      },
+      addSibling: (path, anchorEl) => {
+        this.handleAddSibling(path, anchorEl);
+      },
+      movePicker: (path) => {
+        this.actions?.startMovePicker(path);
+      },
+      retype: (path, anchorEl) => {
+        this.actions?.startRetype(path, anchorEl);
+      },
+      undo: () => {
+        this.actions?.undoLast();
+      },
+    });
+  }
+
+  /** Adding a sibling means creating under `path`'s own *parent* — a root/top node has none, so
+   * that case shows a Notice instead (see task 16's decisions) rather than silently doing nothing
+   * or falling back to some other parent. The draft opens anchored to the parent's own rendered
+   * element (via the renderer's `getNodeElement`), not `anchorEl` (the active node's own element
+   * `keyboard.ts` passes) — a new sibling visually belongs under the parent, the same place a
+   * "+" click there would open one; `anchorEl` is only a fallback for the practically-unreachable
+   * case the parent isn't currently rendered. */
+  private handleAddSibling(path: string, anchorEl: HTMLElement): void {
+    const input = this.lastInput;
+    if (input === null) {
+      return;
+    }
+    const parent = input.structure.nodes.get(path)?.parent ?? null;
+    if (parent === null) {
+      const name = displayName(input.snapshot, path);
+      new Notice(`Structure: "${name}" has no parent to add a sibling to`);
+      return;
+    }
+    const parentAnchor = this.renderer?.getNodeElement(parent) ?? anchorEl;
+    this.actions?.startCreate(parent, parentAnchor);
+  }
+
   private handleContextMenu(event: MouseEvent): void {
     if (!(event.target instanceof HTMLElement)) {
       return;
@@ -224,14 +298,6 @@ export class StructureView extends BasesView {
     }
     event.preventDefault();
     this.actions.openNodeMenu(path, event);
-  }
-
-  private handleKeyDown(event: KeyboardEvent): void {
-    if (event.target instanceof HTMLInputElement || !isUndoShortcut(event)) {
-      return;
-    }
-    event.preventDefault();
-    this.actions?.undoLast();
   }
 
   private renderIssues(

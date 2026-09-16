@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import type { StructureNode } from '../core/structure.js';
 import {
+  applyActiveNode,
   attachNodeInteractions,
   createNodeElement,
+  focusActiveNode,
   type NodeElementContext,
 } from './node-element.js';
 
@@ -56,6 +58,15 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     onAdd: () => undefined,
     ...overrides,
   };
+}
+
+function makeNodes(paths: readonly string[]): HTMLElement {
+  const root = createDiv();
+  for (const path of paths) {
+    const ctx = makeCtx({ snapshot: snapshot(paths.map((p) => note(p))) });
+    root.appendChild(createNodeElement(ctx, makeNode({ path })));
+  }
+  return root;
 }
 
 describe('createNodeElement', () => {
@@ -311,5 +322,67 @@ describe('attachNodeInteractions', () => {
 
     expect(openLinkText).not.toHaveBeenCalled();
     expect(trigger).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyActiveNode', () => {
+  it('gives the matching node tabindex 0 and is-active, every other node tabindex -1', () => {
+    const root = makeNodes(['a.md', 'b.md', 'c.md']);
+
+    const activeEl = applyActiveNode(root, 'b.md');
+
+    const [a, b, c] = Array.from(root.querySelectorAll<HTMLElement>('.bases-structure-node'));
+    expect(activeEl).toBe(b);
+    expect(b?.classList.contains('is-active')).toBe(true);
+    expect(b?.tabIndex).toBe(0);
+    expect(a?.classList.contains('is-active')).toBe(false);
+    expect(a?.tabIndex).toBe(-1);
+    expect(c?.classList.contains('is-active')).toBe(false);
+    expect(c?.tabIndex).toBe(-1);
+  });
+
+  it('returns null and marks nothing active when activePath is null', () => {
+    const root = makeNodes(['a.md', 'b.md']);
+
+    const activeEl = applyActiveNode(root, null);
+
+    expect(activeEl).toBeNull();
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('.bases-structure-node'))) {
+      expect(el.classList.contains('is-active')).toBe(false);
+      expect(el.tabIndex).toBe(-1);
+    }
+  });
+
+  it('returns null when activePath does not match any rendered node', () => {
+    const root = makeNodes(['a.md']);
+
+    expect(applyActiveNode(root, 'nope.md')).toBeNull();
+  });
+});
+
+describe('focusActiveNode', () => {
+  it('moves real DOM focus to the element', () => {
+    const root = makeNodes(['a.md']);
+    document.body.appendChild(root);
+    applyActiveNode(root, 'a.md');
+    const el = root.querySelector<HTMLElement>('.bases-structure-node');
+    if (el === null) throw new Error('Test setup error: missing node element');
+
+    focusActiveNode(el);
+
+    expect(document.activeElement).toBe(el);
+  });
+
+  it('does not throw even though jsdom has no scrollIntoView implementation', () => {
+    const root = makeNodes(['a.md']);
+    document.body.appendChild(root);
+    applyActiveNode(root, 'a.md');
+    const el = root.querySelector<HTMLElement>('.bases-structure-node');
+    if (el === null) throw new Error('Test setup error: missing node element');
+    expect(typeof el.scrollIntoView).toBe('undefined');
+
+    expect(() => {
+      focusActiveNode(el);
+    }).not.toThrow();
   });
 });

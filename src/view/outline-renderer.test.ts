@@ -569,6 +569,65 @@ describe('OutlineRenderer', () => {
     });
   });
 
+  it('marks state.active is-active with tabindex 0, and the class survives a re-render', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-active');
+    state.active = 'child.md';
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+
+    let childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    let rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
+    expect(childEl?.classList.contains('is-active')).toBe(true);
+    expect(childEl?.tabIndex).toBe(0);
+    expect(rootEl?.classList.contains('is-active')).toBe(false);
+    expect(rootEl?.tabIndex).toBe(-1);
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+
+    childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
+    expect(childEl?.classList.contains('is-active')).toBe(true);
+    expect(childEl?.tabIndex).toBe(0);
+    expect(rootEl?.tabIndex).toBe(-1);
+  });
+
+  it('moves real focus to the active node only when it changes between renders', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-active-focus');
+    state.active = 'child.md';
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    expect(document.activeElement).toBe(childEl);
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    expect(rebuiltChildEl).not.toBe(childEl);
+    expect(document.activeElement).not.toBe(rebuiltChildEl);
+
+    state.active = 'root.md';
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
+    expect(document.activeElement).toBe(rootEl);
+  });
+
   it('restores scrollTop across updates', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot([note('a.md')], { results: ['a.md'] });

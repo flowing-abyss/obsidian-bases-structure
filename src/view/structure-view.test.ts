@@ -1,3 +1,4 @@
+import type * as ObsidianModule from 'obsidian';
 import type { BasesQueryResult, PluginManifest, TFile } from 'obsidian';
 import { App, QueryController } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,9 +7,30 @@ import StructureViewPlugin from '../main.js';
 import { StructureActions } from './actions-ui.js';
 import * as dragModule from './drag.js';
 import { GraphRenderer } from './graph-renderer.js';
+import * as keyboardModule from './keyboard.js';
 import { OutlineRenderer } from './outline-renderer.js';
 import { formatStructureIssue, StructureView } from './structure-view.js';
 import { clearUiState } from './view-state.js';
+
+// `Notice` is replaced with a small hand-rolled mock (same shape/approach as `actions-ui.test.ts`)
+// so the addSibling-with-no-parent wiring test can inspect the exact message shown.
+const { NoticeMock } = vi.hoisted(() => {
+  class NoticeMock {
+    static readonly instances: NoticeMock[] = [];
+    readonly message: string | DocumentFragment;
+
+    constructor(message: string | DocumentFragment) {
+      this.message = message;
+      NoticeMock.instances.push(this);
+    }
+  }
+  return { NoticeMock };
+});
+
+vi.mock('obsidian', async (importOriginal) => {
+  const actual = await importOriginal<typeof ObsidianModule>();
+  return { ...actual, Notice: NoticeMock };
+});
 
 const manifest: PluginManifest = {
   id: 'bases-structure',
@@ -45,6 +67,7 @@ function createView(app: App, files: readonly TFile[]): TestView {
 afterEach(() => {
   clearUiState();
   vi.restoreAllMocks();
+  NoticeMock.instances.length = 0;
 });
 
 describe('StructureView', () => {
@@ -407,66 +430,179 @@ describe('StructureView — context menu wiring', () => {
   });
 });
 
-describe('StructureView — undo shortcut wiring', () => {
-  it('Mod+Z triggers undoLast and prevents default', () => {
-    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
-    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+describe('StructureView — keyboard wiring', () => {
+  const catLeafConfig = { Cat: { tag: 'cat', children: { Leaf: 'up' } }, Leaf: { tag: 'leaf' } };
+
+  function catLeafView(): TestView & { app: App } {
+    const app = App.createConfigured__({
+      files: {
+        'cat.md': '---\ntags: [cat]\n---\n',
+        'leaf.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n',
+      },
+    });
+    const view = createView(app, [mustFile(app, 'cat.md'), mustFile(app, 'leaf.md')]);
+    view.view.config.set('types', catLeafConfig);
+    return { ...view, app };
+  }
+
+  it('attaches keyboard to the renderer container', () => {
+    const disposeSpy = vi.fn();
+    const attachKeyboardSpy = vi
+      .spyOn(keyboardModule, 'attachKeyboard')
+      .mockReturnValue(disposeSpy);
+    const { view, parentEl } = catLeafView();
+
+    view.onDataUpdated();
+
+    expect(attachKeyboardSpy).toHaveBeenCalledTimes(1);
+    const deps = attachKeyboardSpy.mock.calls[0]?.[0];
+    expect(deps?.container).toBe(parentEl.querySelector('.bases-structure-body'));
+  });
+
+  it('wires open/addChild/movePicker/retype/undo to the matching StructureActions methods', () => {
+    const attachKeyboardSpy = vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(vi.fn());
+    const { view, parentEl } = catLeafView();
+    view.onDataUpdated();
+    const deps = attachKeyboardSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachKeyboard was not called');
+    const openNodeSpy = vi
+      .spyOn(StructureActions.prototype, 'openNode')
+      .mockImplementation(() => undefined);
+    const startCreateSpy = vi
+      .spyOn(StructureActions.prototype, 'startCreate')
+      .mockImplementation(() => undefined);
+    const startMovePickerSpy = vi
+      .spyOn(StructureActions.prototype, 'startMovePicker')
+      .mockImplementation(() => undefined);
+    const startRetypeSpy = vi
+      .spyOn(StructureActions.prototype, 'startRetype')
+      .mockImplementation(() => undefined);
+    const undoLastSpy = vi
+      .spyOn(StructureActions.prototype, 'undoLast')
+      .mockImplementation(() => undefined);
+    const anchorEl = findNode(parentEl, 'leaf.md');
+
+    deps.open('leaf.md', true);
+    deps.addChild('leaf.md', anchorEl);
+    deps.movePicker('leaf.md');
+    deps.retype('leaf.md', anchorEl);
+    deps.undo();
+
+    expect(openNodeSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', true);
+    expect(startCreateSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', anchorEl);
+    expect(startMovePickerSpy).toHaveBeenCalledExactlyOnceWith('leaf.md');
+    expect(startRetypeSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', anchorEl);
+    expect(undoLastSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('addSibling resolves the parent from the structure and calls startCreate anchored at it', () => {
+    const attachKeyboardSpy = vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(vi.fn());
+    const { view, parentEl } = catLeafView();
+    view.onDataUpdated();
+    const deps = attachKeyboardSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachKeyboard was not called');
+    const startCreateSpy = vi
+      .spyOn(StructureActions.prototype, 'startCreate')
+      .mockImplementation(() => undefined);
+    const leafEl = findNode(parentEl, 'leaf.md');
+    const catEl = findNode(parentEl, 'cat.md');
+
+    deps.addSibling('leaf.md', leafEl);
+
+    expect(startCreateSpy).toHaveBeenCalledExactlyOnceWith('cat.md', catEl);
+  });
+
+  it('addSibling shows a Notice instead when the node has no parent', () => {
+    const attachKeyboardSpy = vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(vi.fn());
+    const { view, parentEl } = catLeafView();
+    view.onDataUpdated();
+    const deps = attachKeyboardSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachKeyboard was not called');
+    const startCreateSpy = vi
+      .spyOn(StructureActions.prototype, 'startCreate')
+      .mockImplementation(() => undefined);
+    const catEl = findNode(parentEl, 'cat.md');
+
+    deps.addSibling('cat.md', catEl);
+
+    expect(startCreateSpy).not.toHaveBeenCalled();
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: "cat" has no parent to add a sibling to',
+    );
+  });
+
+  it('disposes the previous attachment and re-attaches when the renderer is recreated (layout switch)', () => {
+    const disposeSpy1 = vi.fn();
+    const disposeSpy2 = vi.fn();
+    const attachKeyboardSpy = vi
+      .spyOn(keyboardModule, 'attachKeyboard')
+      .mockReturnValueOnce(disposeSpy1)
+      .mockReturnValueOnce(disposeSpy2);
+    const { view } = catLeafView();
+    view.onDataUpdated();
+    expect(attachKeyboardSpy).toHaveBeenCalledTimes(1);
+    expect(disposeSpy1).not.toHaveBeenCalled();
+
+    view.config.set('layout', 'outline');
+    view.onDataUpdated();
+
+    expect(disposeSpy1).toHaveBeenCalledTimes(1);
+    expect(attachKeyboardSpy).toHaveBeenCalledTimes(2);
+    expect(disposeSpy2).not.toHaveBeenCalled();
+  });
+
+  it('disposes the keyboard attachment on unload', () => {
+    const disposeSpy = vi.fn();
+    vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(disposeSpy);
+    const { view } = catLeafView();
+    view.onDataUpdated();
+
+    view.load();
+    view.unload();
+
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('drives a real click + Mod+Z end to end through the rendered DOM (no mocked attachKeyboard)', () => {
+    const { view, parentEl } = catLeafView();
     view.onDataUpdated();
     const undoLastSpy = vi
       .spyOn(StructureActions.prototype, 'undoLast')
       .mockImplementation(() => undefined);
-    const bases = parentEl.querySelector('.bases-structure');
-    if (bases === null) throw new Error('missing view root');
+    const bodyEl = parentEl.querySelector('.bases-structure-body');
+    if (bodyEl === null) throw new Error('missing body');
+    const catEl = findNode(parentEl, 'cat.md');
+    // Mod+Z only acts once a node is active — a real click (not a mock) is what sets it.
+    catEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
     const event = new KeyboardEvent('keydown', {
       key: 'z',
       ctrlKey: true,
       bubbles: true,
       cancelable: true,
     });
-
-    bases.dispatchEvent(event);
+    bodyEl.dispatchEvent(event);
 
     expect(undoLastSpy).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('a key press inside an input does not trigger undo', () => {
-    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
-    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+  it('a real ArrowRight on the rendered body moves the active node end to end', () => {
+    const { view, parentEl } = catLeafView();
     view.onDataUpdated();
-    const undoLastSpy = vi
-      .spyOn(StructureActions.prototype, 'undoLast')
-      .mockImplementation(() => undefined);
-    const bases = parentEl.querySelector('.bases-structure');
-    if (bases === null) throw new Error('missing view root');
-    const inputEl = createEl('input');
-    bases.appendChild(inputEl);
-    const event = new KeyboardEvent('keydown', {
-      key: 'z',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    const bodyEl = parentEl.querySelector('.bases-structure-body');
+    if (bodyEl === null) throw new Error('missing body');
+    const catEl = findNode(parentEl, 'cat.md');
+    catEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
-    inputEl.dispatchEvent(event);
+    bodyEl.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
+    );
 
-    expect(undoLastSpy).not.toHaveBeenCalled();
-  });
-
-  it('a key press without Mod does not trigger undo', () => {
-    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
-    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
-    view.onDataUpdated();
-    const undoLastSpy = vi
-      .spyOn(StructureActions.prototype, 'undoLast')
-      .mockImplementation(() => undefined);
-    const bases = parentEl.querySelector('.bases-structure');
-    if (bases === null) throw new Error('missing view root');
-    const event = new KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true });
-
-    bases.dispatchEvent(event);
-
-    expect(undoLastSpy).not.toHaveBeenCalled();
+    expect(
+      parentEl.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
+    ).toBe('leaf.md');
   });
 });
 

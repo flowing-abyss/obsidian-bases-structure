@@ -88,6 +88,15 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   border-style: dashed;
 }
 
+/* The keyboard's roving-focus active node (task 16, see `src/view/keyboard.ts`) — a focus ring on
+   the node itself, not the container (nothing here sets `outline`/`box-shadow` on
+   `.bases-structure-body`). Its hover-only affordances ("+"/toggle) are also made visible below,
+   alongside the existing hover/focus-within rules, so a keyboard user can see the "+" button
+   without needing a mouse over the node too. */
+.bases-structure-node.is-active {
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
 /* Drag-to-move (see `src/view/drag.ts`): the dragged source, its valid drop targets, the target
    currently under the pointer, and everything else — applied together while a drag is in
    progress, always fully cleaned up on drop/Escape/pointercancel. */
@@ -248,8 +257,10 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 
 .bases-structure-node:hover .bases-structure-toggle,
 .bases-structure-node:focus-within .bases-structure-toggle,
+.bases-structure-node.is-active .bases-structure-toggle,
 .bases-structure-node:hover .bases-structure-add,
-.bases-structure-node:focus-within .bases-structure-add {
+.bases-structure-node:focus-within .bases-structure-add,
+.bases-structure-node.is-active .bases-structure-add {
   opacity: 0.55;
 }
 

@@ -115,6 +115,41 @@ export function findNodeElement(root: HTMLElement, path: string): HTMLElement | 
   return null;
 }
 
+/** Roving-tabindex + `.is-active` (task 16): the node matching `activePath` gets `tabindex="0"`
+ * and the class; every other `.bases-structure-node` under `root` gets `tabindex="-1"`. Returns
+ * the active element (or `null` when `activePath` is `null` or isn't currently rendered — e.g.
+ * hidden behind a collapsed ancestor), so a renderer can decide whether to move real focus/scroll
+ * it into view. Called on every `update()` (both renderers rebuild their node elements wholesale
+ * each time) so the highlight survives a re-render instead of being lost with the old elements. */
+export function applyActiveNode(root: HTMLElement, activePath: string | null): HTMLElement | null {
+  let activeEl: HTMLElement | null = null;
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
+    const isActive = activePath !== null && el.getAttribute('data-path') === activePath;
+    el.classList.toggle('is-active', isActive);
+    el.tabIndex = isActive ? 0 : -1;
+    if (isActive) {
+      activeEl = el;
+    }
+  }
+  return activeEl;
+}
+
+/** Moves real keyboard focus to `el` and scrolls it into view — called once per render when the
+ * active node changed (task 16's roving tabindex needs real DOM focus to follow the logical
+ * active node, or a later keydown dispatched from wherever focus fell back to would never bubble
+ * through the container's delegated listener). `scrollIntoView` isn't implemented at all by jsdom
+ * (`focus` is) — wrapped in a `try`/`catch` rather than a `typeof` guard, since the standard DOM
+ * types declare it as always present and a guard would trip `no-unnecessary-condition`; mirrors
+ * `drag.ts`'s `safePointerCapture` for the same class of jsdom gap. */
+export function focusActiveNode(el: HTMLElement): void {
+  el.focus({ preventScroll: true });
+  try {
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch {
+    // Intentionally ignored — see the doc comment above.
+  }
+}
+
 /** The "+" affordance: always in the DOM (shown on hover/focus via CSS), so it's the delegated
  * click listener below — not conditional rendering — that decides whether it's reachable. */
 function appendAddButton(el: HTMLElement): void {

@@ -10,12 +10,23 @@ export interface ViewUiState {
   zoomTouched: boolean;
   scrollLeft: number;
   scrollTop: number;
+  // The path of the node the keyboard's roving focus currently sits on (task 16), or `null` when
+  // nothing is active. Lives here rather than as its own module-level map for the same reason
+  // `collapsed`/`zoom` do: it survives a re-render of the same view but resets on plugin unload.
+  active: string | null;
 }
 
 const states = new Map<string, ViewUiState>();
 
 function createDefaultState(): ViewUiState {
-  return { collapsed: new Set(), zoom: 1, zoomTouched: false, scrollLeft: 0, scrollTop: 0 };
+  return {
+    collapsed: new Set(),
+    zoom: 1,
+    zoomTouched: false,
+    scrollLeft: 0,
+    scrollTop: 0,
+    active: null,
+  };
 }
 
 /** The `ViewUiState` for `key`, creating and storing a fresh default the first time it's asked
