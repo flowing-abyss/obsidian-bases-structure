@@ -2,6 +2,13 @@
 // the current query results, builds the pure `Structure`, and hands it to a renderer. Bases hides
 // an empty `.bases-view` inside embeds (`display: none`), which stops the query from ever
 // running — so the two child elements are created in the constructor, before any data arrives.
+//
+// `onDataUpdated` can fire at any time, including while a create draft is open (see
+// `actions-ui.ts`'s `StructureActions`) — both renderers rebuild every node on every render, which
+// would otherwise wipe the draft's DOM, typed value and focus out from under the user. While
+// `StructureActions.hasOpenDraft` is true, a data-driven render is deferred (`pendingRender`)
+// instead of run immediately, and flushed exactly once when the draft closes for any reason —
+// cancel, commit, or the view unloading — via `ActionsDeps.onDraftClosed`.
 
 import type { QueryController } from 'obsidian';
 import { BasesView, Notice } from 'obsidian';
@@ -119,6 +126,10 @@ export class StructureView extends BasesView {
   private lastInput: RenderInput | null = null;
   private dragDispose: (() => void) | null = null;
   private keyboardDispose: (() => void) | null = null;
+  /** Set by `onDataUpdated` when a data-driven render arrives while a create draft is open (see
+   * the class doc comment's carried-over fix); flushed by `flushPendingRender` once the draft
+   * closes, however it closes — cancel, commit, or the view unloading. */
+  private pendingRender = false;
 
   constructor(controller: QueryController, parentEl: HTMLElement, plugin: StructureViewPlugin) {
     super(controller);
@@ -139,7 +150,20 @@ export class StructureView extends BasesView {
     });
   }
 
+  /** Bases can call this at any time, including while the user has a create draft open and is
+   * mid-keystroke (e.g. a metadata plugin filling in fields on the note the draft is about to
+   * chain from) — both renderers rebuild every node on `update()`, which would otherwise destroy
+   * the draft's DOM, typed value and focus. While `hasOpenDraft` is true, defer: remember that a
+   * render is owed and let `flushPendingRender` run it once the draft actually closes. */
   override onDataUpdated(): void {
+    if (this.actions?.hasOpenDraft === true) {
+      this.pendingRender = true;
+      return;
+    }
+    this.safeRender();
+  }
+
+  private safeRender(): void {
     try {
       this.render();
     } catch (error) {
@@ -147,6 +171,17 @@ export class StructureView extends BasesView {
       this.bodyEl.empty();
       this.bodyEl.setText(`Structure view failed: ${errorMessage(error)}`);
     }
+  }
+
+  /** Wired as `ActionsDeps.onDraftClosed`: runs the render `onDataUpdated` deferred, exactly once,
+   * the moment a draft closes for any reason — including the view's own `onunload` (`actions`'s
+   * `destroy()` also funnels through `cancelDraft`), so a pending render is never silently lost. */
+  private flushPendingRender(): void {
+    if (!this.pendingRender) {
+      return;
+    }
+    this.pendingRender = false;
+    this.safeRender();
   }
 
   private render(): void {
@@ -189,6 +224,9 @@ export class StructureView extends BasesView {
       hostPath,
       refresh: () => {
         this.render();
+      },
+      onDraftClosed: () => {
+        this.flushPendingRender();
       },
     });
     return this.actions;

@@ -23,6 +23,11 @@ export interface ActionsDeps {
   readonly getInput: () => RenderInput;
   readonly hostPath: string;
   readonly refresh: () => void;
+  /** Called whenever an open draft closes — cancel (Escape/blur/superseded), a successful or
+   * failed commit, or `destroy()` — see `cancelDraft`, the single teardown path all of those funnel
+   * through. `StructureView` uses this to flush a data-driven render it deferred while the draft
+   * was open (see the class doc comment). */
+  readonly onDraftClosed: () => void;
 }
 
 type ChainMode = 'enter' | 'tab';
@@ -133,7 +138,10 @@ class MoveSuggestModal extends FuzzySuggestModal<string> {
 
 /** Owns the single "+" draft input a `StructureView` can have open at once, and the plan → apply
  * → undo pipeline a committed draft runs through. One instance per view, created once and reused
- * across renders (see `structure-view.ts`). */
+ * across renders (see `structure-view.ts`). While a draft is open, `StructureView` defers its own
+ * data-driven renders (`hasOpenDraft`) so a background vault change can't rebuild the DOM out from
+ * under the typed input; `cancelDraft` — the single teardown path for a draft — reports every close
+ * back through `ActionsDeps.onDraftClosed` so that deferred render can run exactly once. */
 export class StructureActions {
   private readonly deps: ActionsDeps;
   private draft: DraftState | null = null;
@@ -141,6 +149,12 @@ export class StructureActions {
 
   constructor(deps: ActionsDeps) {
     this.deps = deps;
+  }
+
+  /** Whether a create draft is currently open. `StructureView.onDataUpdated` checks this to defer
+   * a data-driven render instead of letting it wipe the draft's DOM and typed value. */
+  get hasOpenDraft(): boolean {
+    return this.draft !== null;
   }
 
   /** The path to highlight in the render that follows a successful create — consumed (cleared) so
@@ -166,9 +180,11 @@ export class StructureActions {
     this.showTypeMenu(parentPath, anchorEl, options, event);
   }
 
-  /** The only teardown path for a draft — Escape, blur, opening a different draft, and a
-   * successful/failed commit all funnel through this, so it's the single place that has to undo
-   * `openDraft`'s `DRAFTING_CLASS`. */
+  /** The only teardown path for a draft — Escape, blur, opening a different draft, a
+   * successful/failed commit, and `destroy()` all funnel through this, so it's the single place
+   * that has to undo `openDraft`'s `DRAFTING_CLASS` and report the close via `onDraftClosed`. The
+   * no-op early return when nothing is open matters here too: it keeps `onDraftClosed` from firing
+   * (and `StructureView` from rendering) when there was nothing to close. */
   cancelDraft(): void {
     const draft = this.draft;
     if (draft === null) {
@@ -179,6 +195,7 @@ export class StructureActions {
     draft.anchorEl.classList.remove(DRAFTING_CLASS);
     draft.wrapperEl.remove();
     this.draft = null;
+    this.deps.onDraftClosed();
   }
 
   /** `moveTargets(node)` → picker; `size === 0` → a Notice instead, same shape as `startCreate`'s

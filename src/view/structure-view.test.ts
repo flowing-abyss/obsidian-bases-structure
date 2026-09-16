@@ -251,6 +251,111 @@ describe('StructureView — create wiring', () => {
   });
 });
 
+// Carried-over fix (task 14): `onDataUpdated` can fire while a create draft is open — e.g. the
+// user's own metadata plugin filling fields into the note that was just created, which fires
+// right when the chained sibling draft opens (see `structure-view.ts`'s file doc comment). Both
+// renderers rebuild every node on `update()`, which would otherwise destroy the open draft's DOM,
+// typed value and focus before `cancelDraft()` ever runs.
+describe('StructureView — deferred render while a create draft is open', () => {
+  const typesConfig = { Cat: { tag: 'cat', children: { Leaf: 'up' } }, Leaf: { tag: 'leaf' } };
+
+  function openDraftView(app: App): TestView {
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    if (parentEl.querySelector('.bases-structure-draft-input') === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    return { view, parentEl };
+  }
+
+  it('defers a data update while the draft is open, keeping the draft element, its typed value and focus', () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = openDraftView(app);
+    document.body.appendChild(parentEl);
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'Typed Name';
+    input.focus();
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    view.onDataUpdated();
+
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBe(input);
+    expect(input.value).toBe('Typed Name');
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('performs exactly one render once the draft closes (Escape) after a deferred data update', () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = openDraftView(app);
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    // A data update arrives while the draft is open: deferred, not applied yet.
+    view.onDataUpdated();
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+  });
+
+  it('the commit → chain flow still reopens the sibling draft after exactly one render', async () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { parentEl } = openDraftView(app);
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    expect(reopenedInput).not.toBeNull();
+    expect(reopenedInput).not.toBe(input);
+  });
+
+  it('does not lose a pending render when the view unloads with the draft still open', () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.load();
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    if (parentEl.querySelector('.bases-structure-draft-input') === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    // A data update arrives while the draft is open, right before the view unloads.
+    view.onDataUpdated();
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    view.unload();
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 function findNode(parentEl: HTMLElement, path: string): HTMLElement {
   for (const el of Array.from(parentEl.querySelectorAll<HTMLElement>('.bases-structure-node'))) {
     if (el.getAttribute('data-path') === path) {

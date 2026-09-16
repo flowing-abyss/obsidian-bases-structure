@@ -100,6 +100,7 @@ interface Harness {
   readonly actions: StructureActions;
   readonly undo: UndoManager;
   readonly refresh: ReturnType<typeof vi.fn>;
+  readonly onDraftClosed: ReturnType<typeof vi.fn>;
   readonly root: HTMLElement;
   readonly nodes: Map<string, HTMLElement>;
   getInput(): RenderInput;
@@ -152,15 +153,17 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
   });
 
   const undo = new UndoManager(app.asOriginalType__());
+  const onDraftClosed = vi.fn();
   const deps: ActionsDeps = {
     app: app.asOriginalType__(),
     undo,
     getInput,
     hostPath: options.hostPath ?? '',
     refresh,
+    onDraftClosed,
   };
   const actions = new StructureActions(deps);
-  return { app, schema, actions, undo, refresh, root, nodes, getInput };
+  return { app, schema, actions, undo, refresh, onDraftClosed, root, nodes, getInput };
 }
 
 function baseFiles(): Record<string, string> {
@@ -911,6 +914,94 @@ describe('destroy', () => {
     expect(() => {
       h.actions.destroy();
     }).not.toThrow();
+  });
+});
+
+describe('hasOpenDraft / onDraftClosed — carried-over fix: keep an open create draft alive across background renders', () => {
+  it('hasOpenDraft is false with no draft, true once one opens, false again once it closes', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    expect(h.actions.hasOpenDraft).toBe(false);
+
+    h.actions.startCreate('leaf.md', leafEl);
+    expect(h.actions.hasOpenDraft).toBe(true);
+
+    h.actions.cancelDraft();
+    expect(h.actions.hasOpenDraft).toBe(false);
+  });
+
+  it('does not call onDraftClosed when cancelDraft runs with nothing open', () => {
+    const h = makeHarness(baseFiles());
+
+    h.actions.cancelDraft();
+
+    expect(h.onDraftClosed).not.toHaveBeenCalled();
+  });
+
+  it('calls onDraftClosed exactly once when Escape closes the draft', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+
+    pressKey(draftInput(h.root), 'Escape');
+
+    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onDraftClosed exactly once when blur closes the draft', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+
+    draftInput(h.root).dispatchEvent(new Event('blur'));
+
+    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onDraftClosed once when a second startCreate supersedes an open draft', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    const otherEl = h.nodes.get('other.md');
+    if (leafEl === undefined || otherEl === undefined) throw new Error('missing elements');
+    h.actions.startCreate('leaf.md', leafEl);
+
+    h.actions.startCreate('other.md', otherEl);
+
+    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onDraftClosed once a successful commit settles (before the chained sibling draft reopens)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+
+    // The chain reopens a sibling draft after the commit, so a draft is open again by the time
+    // this assertion runs — onDraftClosed must still have fired exactly once for the draft that
+    // actually closed (the committed one), not for the freshly reopened one.
+    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onDraftClosed when destroy() closes an open draft, and not when nothing is open', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+
+    h.actions.destroy();
+    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+
+    h.actions.destroy();
+    expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
   });
 });
 
