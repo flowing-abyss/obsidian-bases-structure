@@ -10,6 +10,7 @@ import { note, snapshot } from './__tests__/notes.js';
 import { moveTargets } from './plan-move.js';
 import { planAction } from './planner.js';
 import { parseSchema } from './schema.js';
+import { applyPlan } from './simulate.js';
 import { buildStructure } from './structure.js';
 
 function makeRead(config: Record<string, unknown>): (key: string) => unknown {
@@ -206,6 +207,49 @@ describe('planAction — move: keeps extra values in the same edge property', ()
         moves: [],
       },
     });
+  });
+});
+
+describe('planAction — move: preserves an unresolved link, plain text, and a link outside the base', () => {
+  it("moving H from A to M2 keeps H's other meta values — an unresolved link, plain text, and Ext (typed Meta-note, but outside the base's own results) — the reviewer's exact C1 example, exercised end to end through the real planner (manual-check regression: the planner's own \"keep\" set had only ever covered structural extras, not alsoIn/external links, so this dropped Ext even after the C1 patch rewrite)", () => {
+    const schema = schemaFrom({
+      types: {
+        'Meta-note': { tag: 'meta', children: { Hierarchy: 'meta' } },
+        Hierarchy: { tag: 'hier' },
+      },
+    });
+    const A = note('A.md', { tags: ['meta'] });
+    const M2 = note('M2.md', { tags: ['meta'] });
+    // "Ext" is a real, typed Meta-note, but not part of the base's own results — reachable only as
+    // an external property-link target (readSnapshot's one-level inclusion), matching the "also
+    // in" chip the view shows for it.
+    const Ext = note('Ext.md', { tags: ['meta'] });
+    const H = note('H.md', {
+      tags: ['hier'],
+      frontmatter: { meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]'] },
+      propertyLinks: { meta: ['A.md', 'Ext.md'] },
+    });
+    const snap = snapshot([A, M2, Ext, H], { results: ['A.md', 'M2.md', 'H.md'] });
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'H.md', parent: 'M2.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'H.md',
+        writes: [
+          { key: 'meta', value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('H.md')?.frontmatter['meta']).toStrictEqual([
+      '[[M2]]',
+      '[[Not yet written]]',
+      'some text',
+      '[[Ext]]',
+    ]);
   });
 });
 

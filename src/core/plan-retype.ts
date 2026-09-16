@@ -5,6 +5,7 @@
 import {
   deriveSubtreeWrites,
   edgeTargets,
+  keepTargetsFor,
   listShape,
   ruleBetween,
   type SubtreeContext,
@@ -366,7 +367,7 @@ function buildNOwnWrites(
   const parent = nNode.parent;
   const key = parentRule.property;
   const propertyParents = nOwnPropertyParents(nNode, parent);
-  const keep = new Set(propertyParents.slice(1)); // drop `parent` itself, keep only the extras
+  const keep = keepTargetsFor(nNode, parent);
   const inputs: EdgeWriteInputs = {
     snapshot: ctx.snapshot,
     node: action.node,
@@ -431,9 +432,7 @@ function childRewriteWrites(
   const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
   const writes: KeyWrite[] = [];
   const newCur = cLinks[newKey] ?? [];
-  const keep = new Set(
-    childNode.extras.filter((extra) => extra.kind === 'property').map((extra) => extra.parent),
-  );
+  const keep = keepTargetsFor(childNode, null);
   const { remove: newRemove, add: newAdd } = edgeTargets(newCur, node, keep);
   if (newRemove.length > 0 || newAdd.length > 0) {
     writes.push({

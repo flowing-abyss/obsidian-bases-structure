@@ -146,6 +146,20 @@ export function edgeTargets(
   return { remove, add };
 }
 
+/** The values in a node's own edge-key property that must survive a rewrite untouched: its
+ * genuine property-kind extras (other structurally-recognized parent candidates tied on the same
+ * rule) plus its `alsoIn` targets — real, resolved links that just aren't part of the structure's
+ * own node set (outside the base's results, e.g.), which the view itself shows as "also in".
+ * Every other value currently sitting in the same property slot is either the old parent being
+ * replaced or a stale/inherited one, and both are dropped by `edgeTargets`. `exclude` (typically
+ * the old parent) is dropped from the extras half, since it would otherwise also show up there. */
+export function keepTargetsFor(node: StructureNode, exclude: string | null): ReadonlySet<string> {
+  const extras = node.extras
+    .filter((extra) => extra.kind === 'property' && extra.parent !== exclude)
+    .map((extra) => extra.parent);
+  return new Set([...extras, ...node.alsoIn]);
+}
+
 export interface SubtreeContext {
   readonly schema: Schema;
   readonly snapshot: Snapshot;

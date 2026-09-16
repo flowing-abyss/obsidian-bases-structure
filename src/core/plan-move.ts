@@ -2,7 +2,7 @@
 // cascades link updates to its descendants, or a rejection with a stable, user-facing reason. No
 // Obsidian imports.
 
-import { deriveSubtreeWrites, ruleBetween, type SubtreeContext } from './derive.js';
+import { deriveSubtreeWrites, keepTargetsFor, ruleBetween, type SubtreeContext } from './derive.js';
 import {
   buildEdgeWrites,
   firstChangedOtherNode,
@@ -168,7 +168,7 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     newParent: action.parent,
     oldEdge,
     key: rule.property,
-    keep: new Set(propertyExtras),
+    keep: keepTargetsFor(nNode, oldParent),
   });
   const propertyParents = [action.parent, ...propertyExtras];
   const inheritWrites = inheritWritesFor(ctx, action.node, rule.property, propertyParents);
