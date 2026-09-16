@@ -79,10 +79,9 @@ function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx, isOrphanTop =
   }
 }
 
+/** Only ever called with a non-empty `paths` (its one call site already guards on
+ * `children.length > 0`), so there's no empty-list case to short-circuit here. */
 function renderChildren(li: HTMLElement, paths: readonly string[], ctx: RenderCtx): void {
-  if (paths.length === 0) {
-    return;
-  }
   const ul = li.createEl('ul', { cls: LIST_CLASS });
   for (const path of paths) {
     renderNode(ul, path, ctx);
@@ -124,6 +123,7 @@ export class OutlineRenderer implements StructureRenderer {
     });
     this.disposeInteractions = attachNodeInteractions(this.nodeCtx, this.outlineEl);
     this.outlineEl.addEventListener('click', this.handleToggleClick);
+    this.outlineEl.addEventListener('scroll', this.handleScroll);
   }
 
   update(input: RenderInput): void {
@@ -156,6 +156,7 @@ export class OutlineRenderer implements StructureRenderer {
 
   destroy(): void {
     this.outlineEl.removeEventListener('click', this.handleToggleClick);
+    this.outlineEl.removeEventListener('scroll', this.handleScroll);
     this.disposeInteractions();
     this.containerEl.empty();
   }
@@ -184,5 +185,16 @@ export class OutlineRenderer implements StructureRenderer {
       collapsed.add(path);
     }
     this.update(this.lastInput);
+  };
+
+  /** Mirrors the graph's `handleScroll`: keeps `state.scrollTop` live as the user scrolls, so a
+   * later `update()` (e.g. from `handleToggleClick`'s re-render on collapse/expand, or a layout
+   * switch back to the graph) restores the position instead of snapping back to whatever was
+   * current the last time `update` itself ran. */
+  private readonly handleScroll = (): void => {
+    if (this.lastInput === null) {
+      return;
+    }
+    this.lastInput.state.scrollTop = this.outlineEl.scrollTop;
   };
 }

@@ -583,6 +583,52 @@ describe('OutlineRenderer', () => {
     expect(outlineEl(container).scrollTop).toBe(42);
   });
 
+  it('keeps a scrolled position across a toggle-triggered update (regression)', () => {
+    // Reviewer-reported sequence: scroll down, then collapse/expand a node — `handleToggleClick`
+    // re-runs `update(lastInput)`, which re-applies `state.scrollTop` to the DOM. Before this fix,
+    // nothing ever wrote the live scroll position *back* into `state`, so that re-render snapped
+    // the view back to whatever `state.scrollTop` was left at (0, by default).
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-scroll-toggle');
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const outline = outlineEl(container);
+
+    outline.scrollTop = 77;
+    outline.dispatchEvent(new Event('scroll'));
+    expect(state.scrollTop).toBe(77);
+
+    container
+      .querySelector('[data-path="root.md"] .bases-structure-toggle')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(state.scrollTop).toBe(77);
+    expect(outlineEl(container).scrollTop).toBe(77);
+  });
+
+  it('stops writing scrollTop into state once destroyed', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md')], { results: ['a.md'] });
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-scroll-destroy');
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const outline = outlineEl(container);
+
+    renderer.destroy();
+    outline.scrollTop = 99;
+    outline.dispatchEvent(new Event('scroll'));
+
+    expect(state.scrollTop).toBe(0);
+  });
+
   it('destroy empties the container and removes its listeners', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot([note('a.md')], { results: ['a.md'] });
