@@ -21,6 +21,7 @@ export type TransactionStep =
       readonly deleted: boolean;
     }
   | { readonly kind: 'create'; readonly path: string; readonly content: string }
+  | { readonly kind: 'createFolder'; readonly path: string }
   | { readonly kind: 'append'; readonly path: string; readonly text: string }
   | { readonly kind: 'rename'; readonly from: string; readonly to: string };
 
@@ -34,9 +35,11 @@ export interface ApplyOutcome {
   readonly error: unknown;
 }
 
-/** Creates every path segment of `folderPath` that doesn't already exist, parent-first. A no-op
- * for the vault root (`''`). */
-async function ensureFolder(app: App, folderPath: string): Promise<void> {
+/** Creates every path segment of `folderPath` that doesn't already exist, parent-first, recording
+ * a `'createFolder'` step for each one actually created — so a folder this step (a create or a
+ * move) had to make gets cleaned up on undo, not left behind as an orphan (M2). A no-op for the
+ * vault root (`''`). */
+async function ensureFolder(app: App, folderPath: string, steps: TransactionStep[]): Promise<void> {
   if (folderPath === '') {
     return;
   }
@@ -45,6 +48,7 @@ async function ensureFolder(app: App, folderPath: string): Promise<void> {
     cumulative = cumulative === '' ? segment : `${cumulative}/${segment}`;
     if (app.vault.getFolderByPath(cumulative) === null) {
       await app.vault.createFolder(cumulative);
+      steps.push({ kind: 'createFolder', path: cumulative });
     }
   }
 }
@@ -88,21 +92,28 @@ function renderBody(app: App, bodyLinks: readonly string[], sourcePath: string):
   return `${bodyLinks.map((target) => linkLine(app, target, sourcePath)).join('\n')}\n`;
 }
 
+/** Creates the note and records its `'create'` step *immediately*, before writing frontmatter —
+ * with the note's initial (pre-frontmatter) content. If `processFrontMatter` then fails partway,
+ * the step already in `steps` still lets `UndoManager` trash the orphaned note; if it succeeds,
+ * the step is updated in place to the final content, matching what undo will actually compare
+ * against (M2 — a failing frontmatter write used to leave the created note un-undoable). */
 async function applyCreation(
   app: App,
   creation: Plan['creations'][number],
   steps: TransactionStep[],
 ): Promise<void> {
-  await ensureFolder(app, folderOf(creation.path));
+  await ensureFolder(app, folderOf(creation.path), steps);
   const body = renderBody(app, creation.bodyLinks, creation.path);
   const file = await app.vault.create(creation.path, body);
+  const stepIndex = steps.length;
+  steps.push({ kind: 'create', path: creation.path, content: body });
   await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
     for (const write of creation.writes) {
       applyWrite(app, frontmatter, write, creation.path);
     }
   });
   const content = await app.vault.read(file);
-  steps.push({ kind: 'create', path: creation.path, content });
+  steps.splice(stepIndex, 1, { kind: 'create', path: creation.path, content });
 }
 
 async function applyChange(
@@ -152,7 +163,7 @@ async function applyMove(
   steps: TransactionStep[],
 ): Promise<void> {
   const file = requireFile(app, move.from);
-  await ensureFolder(app, folderOf(move.to));
+  await ensureFolder(app, folderOf(move.to), steps);
   await app.fileManager.renameFile(file, move.to);
   steps.push({ kind: 'rename', from: move.from, to: move.to });
 }

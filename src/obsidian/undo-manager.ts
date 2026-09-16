@@ -59,6 +59,7 @@ type RenameStep = Extract<TransactionStep, { kind: 'rename' }>;
 type AppendStep = Extract<TransactionStep, { kind: 'append' }>;
 type FrontmatterStep = Extract<TransactionStep, { kind: 'frontmatter' }>;
 type CreateStep = Extract<TransactionStep, { kind: 'create' }>;
+type CreateFolderStep = Extract<TransactionStep, { kind: 'createFolder' }>;
 
 /** `true` when reverted, `false` when skipped — never throws (callers catch around it). */
 async function revertRename(app: App, step: RenameStep): Promise<boolean> {
@@ -125,7 +126,25 @@ async function revertCreate(app: App, step: CreateStep): Promise<boolean> {
   return true;
 }
 
-function revertStep(app: App, step: TransactionStep): Promise<boolean> {
+/** Removes a folder this same transaction had to create, but only when it's still empty — a
+ * folder that picked up other content since (including a step from the same transaction that got
+ * skipped, e.g. its own note not reverting cleanly) is left alone rather than deleted out from
+ * under whatever's now in it (M2). Deliberately reports no conflict either way (unlike every other
+ * step kind): an already-gone folder, one left alone because it's non-empty, and one actually
+ * removed are all unremarkable outcomes for a folder specifically, which is why this isn't part of
+ * the shared `revertStep`/`skipped` protocol — see `revertOne`. */
+async function revertCreateFolder(app: App, step: CreateFolderStep): Promise<void> {
+  const folder = app.vault.getFolderByPath(step.path);
+  if (folder === null || folder.children.length > 0) {
+    return;
+  }
+  await app.fileManager.trashFile(folder);
+}
+
+function revertStep(
+  app: App,
+  step: Exclude<TransactionStep, { kind: 'createFolder' }>,
+): Promise<boolean> {
   switch (step.kind) {
     case 'rename':
       return revertRename(app, step);
@@ -180,6 +199,14 @@ export class UndoManager {
   }
 
   private async revertOne(step: TransactionStep, skipped: string[]): Promise<void> {
+    if (step.kind === 'createFolder') {
+      try {
+        await revertCreateFolder(this.app, step);
+      } catch (error) {
+        console.error('[bases-structure]', error);
+      }
+      return;
+    }
     try {
       const handled = await revertStep(this.app, step);
       if (!handled) {

@@ -301,6 +301,59 @@ describe('UndoManager', () => {
     expect(app.vault.getFileByPath('moved.md')).not.toBeNull();
   });
 
+  it('removes a folder it created when it is still empty, in reverse (deepest first) order, alongside the note that used to live in it (M2)', async () => {
+    const app = App.createConfigured__({});
+    const undo = new UndoManager(app.asOriginalType__());
+    const plan: Plan = {
+      creations: [{ path: 'projects/sub/child.md', writes: [], bodyLinks: [] }],
+      changes: [],
+      appends: [],
+      moves: [],
+    };
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested');
+    expect(outcome.error).toBeNull();
+    undo.push(outcome.transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Create nested', skipped: [] });
+    expect(app.vault.getFileByPath('projects/sub/child.md')).toBeNull();
+    expect(app.vault.getFolderByPath('projects/sub')).toBeNull();
+    expect(app.vault.getFolderByPath('projects')).toBeNull();
+  });
+
+  it('leaves a created folder alone (no skip reported) when something else now lives in it (M2)', async () => {
+    const app = App.createConfigured__({});
+    const undo = new UndoManager(app.asOriginalType__());
+    await app.vault.createFolder('projects');
+    await app.vault.create('projects/unrelated.md', '');
+    const transaction: Transaction = {
+      label: 'Folder now occupied',
+      steps: [{ kind: 'createFolder', path: 'projects' }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Folder now occupied', skipped: [] });
+    expect(app.vault.getFolderByPath('projects')).not.toBeNull();
+    expect(app.vault.getFileByPath('projects/unrelated.md')).not.toBeNull();
+  });
+
+  it('does nothing (and does not skip) when a created folder is already gone', async () => {
+    const app = App.createConfigured__({});
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Folder already gone',
+      steps: [{ kind: 'createFolder', path: 'never-existed' }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Folder already gone', skipped: [] });
+  });
+
   it('logs and skips a step that throws while reverting', async () => {
     const app = App.createConfigured__({ files: { 'note.md': 'original' } });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);

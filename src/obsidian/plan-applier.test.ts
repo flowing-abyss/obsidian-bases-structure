@@ -65,6 +65,8 @@ describe('applyPlan — creations', () => {
     expect(cache?.frontmatter?.['up']).toBe('[[parent]]');
     expect(outcome.transaction.label).toBe('Create child');
     expect(outcome.transaction.steps).toStrictEqual([
+      { kind: 'createFolder', path: 'projects' },
+      { kind: 'createFolder', path: 'projects/sub' },
       { kind: 'create', path: 'projects/sub/child.md', content },
     ]);
     expect(file.path).toBe('projects/sub/child.md');
@@ -97,6 +99,56 @@ describe('applyPlan — creations', () => {
     expect(outcome.error).toBeNull();
     expect(createFolderSpy).toHaveBeenCalledExactlyOnceWith('projects/sub');
     expect(app.vault.getFileByPath('projects/sub/child.md')).not.toBeNull();
+  });
+
+  it('only records a createFolder step for a segment it actually created (not one that already existed)', async () => {
+    const app = App.createConfigured__({});
+    await app.vault.createFolder('projects');
+    const plan: Plan = {
+      ...emptyPlan(),
+      creations: [{ path: 'projects/sub/child.md', writes: [], bodyLinks: [] }],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested');
+
+    const content = await app.vault.read(mustFile(app, 'projects/sub/child.md'));
+    expect(outcome.transaction.steps).toStrictEqual([
+      { kind: 'createFolder', path: 'projects/sub' },
+      { kind: 'create', path: 'projects/sub/child.md', content },
+    ]);
+  });
+
+  it('records the create step with the initial (pre-frontmatter) content when processFrontMatter fails partway (M2)', async () => {
+    const app = App.createConfigured__({});
+    vi.spyOn(app.fileManager, 'processFrontMatter').mockRejectedValue(
+      new Error('frontmatter boom'),
+    );
+    const plan: Plan = {
+      ...emptyPlan(),
+      creations: [
+        {
+          path: 'a.md',
+          writes: [{ key: 'status', value: { kind: 'literal', value: 'x' } }],
+          bodyLinks: [],
+        },
+      ],
+    };
+
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      plan,
+      'Create with failing frontmatter',
+    );
+
+    expect(outcome.error).toBeInstanceOf(Error);
+    // Even though writing frontmatter failed, the note itself was created — and its 'create' step
+    // was already recorded (with its actual, pre-frontmatter content) before that failure, so undo
+    // can still find and trash it (the bug this fixes: it used to be recorded only after
+    // `processFrontMatter` succeeded, leaving a partially-created note un-undoable).
+    expect(outcome.transaction.steps).toStrictEqual([
+      { kind: 'create', path: 'a.md', content: '' },
+    ]);
+    expect(app.vault.getFileByPath('a.md')).not.toBeNull();
   });
 });
 
@@ -259,6 +311,8 @@ describe('applyPlan — moves', () => {
     expect(app.vault.getFileByPath('source.md')).toBeNull();
     expect(app.vault.getFileByPath('newfolder/sub/source.md')).not.toBeNull();
     expect(outcome.transaction.steps).toStrictEqual([
+      { kind: 'createFolder', path: 'newfolder' },
+      { kind: 'createFolder', path: 'newfolder/sub' },
       { kind: 'rename', from: 'source.md', to: 'newfolder/sub/source.md' },
     ]);
   });
