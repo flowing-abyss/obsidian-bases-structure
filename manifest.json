@@ -1,9 +1,10 @@
 {
-  "id": "your-id-here",
-  "name": "Your Title Here",
+  "id": "bases-structure",
+  "name": "Bases Structure",
   "version": "0.1.0",
   "minAppVersion": "1.10.3",
-  "description": "Describe what this does in one sentence.",
-  "author": "Your Name",
+  "description": "Draw and edit a typed note hierarchy as a Bases view.",
+  "author": "flowing-abyss",
+  "authorUrl": "https://github.com/flowing-abyss",
   "isDesktopOnly": false
 }

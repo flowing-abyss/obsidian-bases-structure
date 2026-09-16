@@ -5,10 +5,37 @@ prefer Obsidian's CSS custom properties over hardcoded colors, so the plugin fol
 the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interface/CSS
 */
 
-.your-id-here-example {
+.bases-structure {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   color: var(--text-normal);
-  background-color: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
+}
+
+.bases-structure-issues {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
   padding: var(--size-4-2);
+  color: var(--text-warning);
+  background-color: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.bases-structure-issues.is-hidden {
+  display: none;
+}
+
+.bases-structure-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: var(--size-4-2);
+}
+
+.bases-structure-node {
+  color: var(--text-normal);
+}
+
+.bases-structure-orphans {
+  color: var(--text-muted);
 }
