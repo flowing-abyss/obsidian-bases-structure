@@ -460,6 +460,24 @@ describe('GraphRenderer', () => {
     expect(state.zoom).toBeCloseTo(0.5);
   });
 
+  it('does not latch auto-fit against a zero-size container, and fits once a real size appears', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState();
+
+    // jsdom always reports 0 for clientWidth/clientHeight, so this first render must not spend
+    // its one auto-fit attempt on a bogus 0x0 box — it should stay untouched instead, leaving
+    // the zoom at its default.
+    renderer.update(makeInput({ state }));
+    expect(state.zoom).toBe(1);
+    expect(state.zoomTouched).toBe(false);
+
+    fakeGraphViewport(container, 228, 22);
+    renderer.update(makeInput({ state }));
+
+    expect(state.zoom).toBeCloseTo(0.5);
+  });
+
   it('exposes aria-labels for the three toolbar controls with no leftover text labels', () => {
     const container = createDiv();
     expect(new GraphRenderer(container, makeCtx(), { measure: fixedMeasure })).toBeInstanceOf(

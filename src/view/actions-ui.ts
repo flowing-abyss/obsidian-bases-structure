@@ -38,6 +38,9 @@ interface DraftState {
 
 const DRAFT_CLASS = 'bases-structure-draft';
 const DRAFT_INPUT_CLASS = 'bases-structure-draft-input';
+// Marks the node an open draft belongs to, so `styles.css` can give it a dedicated typing layout
+// (siblings hidden, own width) instead of squeezing the input in next to them.
+const DRAFTING_CLASS = 'is-drafting';
 const UNDO_CLASS = 'bases-structure-undo';
 const NODE_SELECTOR = '.bases-structure-node';
 const ROOT_SELECTOR = '.bases-structure-body';
@@ -163,6 +166,9 @@ export class StructureActions {
     this.showTypeMenu(parentPath, anchorEl, options, event);
   }
 
+  /** The only teardown path for a draft — Escape, blur, opening a different draft, and a
+   * successful/failed commit all funnel through this, so it's the single place that has to undo
+   * `openDraft`'s `DRAFTING_CLASS`. */
   cancelDraft(): void {
     const draft = this.draft;
     if (draft === null) {
@@ -170,6 +176,7 @@ export class StructureActions {
     }
     draft.inputEl.removeEventListener('keydown', this.handleDraftKeydown);
     draft.inputEl.removeEventListener('blur', this.handleDraftBlur);
+    draft.anchorEl.classList.remove(DRAFTING_CLASS);
     draft.wrapperEl.remove();
     this.draft = null;
   }
@@ -364,8 +371,13 @@ export class StructureActions {
     this.showMenuAt(menu, anchorEl, event);
   }
 
+  /** `anchorEl` gets `DRAFTING_CLASS` for the draft's whole lifetime (removed in `cancelDraft`,
+   * the only teardown path — see its own doc comment): CSS keys off that class to give the node
+   * its own typing-sized layout instead of squeezing the input in alongside the title, "+",
+   * toggle and alsoIn chip that are still otherwise present. */
   private openDraft(parentPath: string, anchorEl: HTMLElement, type: string): void {
     this.cancelDraft();
+    anchorEl.classList.add(DRAFTING_CLASS);
     const wrapperEl = anchorEl.createDiv(DRAFT_CLASS);
     const inputEl = wrapperEl.createEl('input', {
       cls: DRAFT_INPUT_CLASS,

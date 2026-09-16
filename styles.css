@@ -280,28 +280,31 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   color: var(--text-muted);
 }
 
-/* The inline "name this note" input the "+" flow opens inside the node it was clicked on: it's
-   appended as an extra flex child of that node (alongside its still-present title and "+"), not a
-   replacement, so it takes over the title's own flex slot (same `flex: 1 1 auto; min-width: 0`)
-   only by *hiding* the title via `:has()` below — otherwise the fixed pixel width `graph-renderer.ts`
-   applies after measuring (see `.is-positioned`) leaves no room to grow into, and the title and
-   input squeeze into it together. */
-.bases-structure-draft {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.bases-structure-node:has(> .bases-structure-draft) > .bases-structure-title {
+/* The inline "name this note" input the "+" flow opens inside the node it was clicked on.
+   `StructureActions.openDraft` marks the node itself `.is-drafting` for the draft's whole
+   lifetime (removed in `cancelDraft`, its one teardown path) — that drives the node's own layout
+   here, rather than the input trying to squeeze in alongside a still-visible title, "+", toggle
+   and alsoIn chip. */
+.bases-structure-node.is-drafting > .bases-structure-title,
+.bases-structure-node.is-drafting > .bases-structure-add,
+.bases-structure-node.is-drafting > .bases-structure-toggle,
+.bases-structure-node.is-drafting > .bases-structure-alsoin {
   display: none;
 }
 
-/* An in-progress draft is itself the only thing that should read as "active" on this node — the
-   "+" would otherwise flare up too, since focusing the draft's input makes the node
-   `:focus-within` just like focusing "+" itself would. Placed after the reveal rules above so it
-   wins at equal specificity. */
-.bases-structure-node:has(> .bases-structure-draft) > .bases-structure-add {
-  opacity: 0;
-  pointer-events: none;
+/* A drafting node gets a sensible typing width instead of its usual label-derived one — the
+   graph applies that as an inline pixel `style="width: …px"` right after measuring (see
+   `.is-positioned`), which only `!important` can override from a stylesheet. Nothing else in this
+   file sets `width` on `.bases-structure-node`, so this can't start a specificity war anywhere
+   else. */
+.bases-structure-node.is-drafting {
+  width: auto !important;
+  min-width: 12rem;
+}
+
+.bases-structure-draft {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .bases-structure-draft-input {

@@ -220,6 +220,18 @@ function pressKey(inputEl: HTMLInputElement, key: string): void {
   inputEl.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 }
 
+/** `makeTree`'s nodes are bare `[data-path]` divs (all the chaining logic needs); the
+ * `is-drafting` layout tests need a node that actually looks like a renderer's own output — a
+ * collapse toggle, a title, the "+" button and an alsoIn chip — since the whole point of
+ * `is-drafting` is hiding those specific siblings while a draft is open. */
+function attachRendererChildren(nodeEl: HTMLElement): void {
+  const toggle = createEl('button', { cls: 'bases-structure-toggle' });
+  nodeEl.prepend(toggle);
+  nodeEl.createEl('a', { cls: 'bases-structure-title', text: 'Leaf' });
+  nodeEl.createEl('button', { cls: 'bases-structure-add' });
+  nodeEl.createSpan({ cls: 'bases-structure-alsoin', text: 'also in' });
+}
+
 afterEach(() => {
   NoticeMock.instances.length = 0;
   vi.restoreAllMocks();
@@ -300,6 +312,58 @@ describe('startCreate', () => {
     expect(drafts).toHaveLength(1);
     expect(otherEl.querySelector('.bases-structure-draft')).not.toBeNull();
     expect(leafEl.querySelector('.bases-structure-draft')).toBeNull();
+  });
+});
+
+describe('is-drafting node state', () => {
+  it('marks the node is-drafting and keeps its toggle/title/add/alsoIn siblings in the DOM (CSS hides them) when opening a draft on a node that has them', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    attachRendererChildren(leafEl);
+
+    h.actions.startCreate('leaf.md', leafEl);
+
+    expect(leafEl.classList.contains('is-drafting')).toBe(true);
+    expect(leafEl.querySelector('.bases-structure-toggle')).not.toBeNull();
+    expect(leafEl.querySelector('.bases-structure-title')).not.toBeNull();
+    expect(leafEl.querySelector('.bases-structure-add')).not.toBeNull();
+    expect(leafEl.querySelector('.bases-structure-alsoin')).not.toBeNull();
+    expect(leafEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
+  });
+
+  it('cancelling (Escape) removes is-drafting from the node', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    attachRendererChildren(leafEl);
+    h.actions.startCreate('leaf.md', leafEl);
+    expect(leafEl.classList.contains('is-drafting')).toBe(true);
+
+    pressKey(draftInput(h.root), 'Escape');
+
+    expect(leafEl.classList.contains('is-drafting')).toBe(false);
+  });
+
+  it('committing removes is-drafting from the node once nothing chains back onto it', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    attachRendererChildren(leafEl);
+    h.actions.startCreate('leaf.md', leafEl);
+    expect(leafEl.classList.contains('is-drafting')).toBe(true);
+    const draftEl = draftInput(h.root);
+    draftEl.value = 'Leaf Sub';
+
+    // Tab-chains onto the newly created `Sub` note, which has no schema children of its own (see
+    // "does not open a new draft..." below) — so, unlike Enter's same-parent chaining, nothing
+    // reopens a draft on `leafEl` itself and `is-drafting` should end up removed for good.
+    pressKey(draftEl, 'Tab');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    expect(leafEl.classList.contains('is-drafting')).toBe(false);
   });
 });
 

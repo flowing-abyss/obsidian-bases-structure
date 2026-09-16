@@ -502,8 +502,15 @@ export class GraphRenderer implements StructureRenderer {
    * succeeds while the user hasn't zoomed by hand — an embed opens showing the full tree instead
    * of a corner of it. Mutates `state.zoom` directly (not through `setZoom`) so this never marks
    * the zoom as user-touched. */
+  /** Only latches `hasAutoFitted` once the container actually has a measured size — an embed
+   * whose first render lands before the surrounding layout settles (`clientWidth`/`clientHeight`
+   * still 0) would otherwise fit against a bogus 0×0 box, lock in that no-op "fit", and never get
+   * another chance once the container is really laid out. */
   private applyAutoFit(state: ViewUiState): void {
     if (state.zoomTouched || this.hasAutoFitted) {
+      return;
+    }
+    if (this.graphEl.clientWidth === 0 || this.graphEl.clientHeight === 0) {
       return;
     }
     this.hasAutoFitted = true;
