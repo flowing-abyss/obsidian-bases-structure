@@ -386,8 +386,11 @@ function childEdgeChange(
   return { childNode, oldKey: childNode.edge.property, newKey: rule.property };
 }
 
-/** The new-key write (N prepended, deduped) and, unless the old key is itself an inherit key, the
- * old-key cleanup write (N removed) for one child whose edge property is moving. */
+/** The new-key write (N added) and the old-key cleanup write (N removed) for one child whose edge
+ * property is moving — the old key is always cleaned up here, even when it's also a
+ * `schema.inherit` key: the generic inherit recompute (`deriveSubtreeWrites`) never touches it
+ * either, since it excludes a descendant's *own* (pre-action) edge property from that recompute
+ * (see `inheritKeysFor` in `derive.ts`) — so if this step skipped it too, nothing would (I3). */
 function childRewriteWrites(
   ctx: SubtreeContext,
   childPath: string,
@@ -414,20 +417,18 @@ function childRewriteWrites(
     });
     recordOverride(ctx, childPath, newKey, resultingTargets(newCur, newRemove, newAdd));
   }
-  if (!ctx.schema.inherit.includes(oldKey)) {
-    const oldCur = cLinks[oldKey] ?? [];
-    if (oldCur.includes(node)) {
-      writes.push({
-        key: oldKey,
-        value: {
-          kind: 'links',
-          remove: [node],
-          add: [],
-          list: listShape(ctx.snapshot, oldKey, childPath),
-        },
-      });
-      recordOverride(ctx, childPath, oldKey, resultingTargets(oldCur, [node], []));
-    }
+  const oldCur = cLinks[oldKey] ?? [];
+  if (oldCur.includes(node)) {
+    writes.push({
+      key: oldKey,
+      value: {
+        kind: 'links',
+        remove: [node],
+        add: [],
+        list: listShape(ctx.snapshot, oldKey, childPath),
+      },
+    });
+    recordOverride(ctx, childPath, oldKey, resultingTargets(oldCur, [node], []));
   }
   return writes;
 }
@@ -454,7 +455,7 @@ function retypedChildWrites(
 
 /** Merges two per-path write lists into one entry per path, preserving first-seen path order;
  * when both sides write the same key for the same path, `second`'s value wins. */
-function mergeWritesByPath(
+export function mergeWritesByPath(
   first: readonly ChildWriteEntry[],
   second: readonly ChildWriteEntry[],
 ): readonly ChildWriteEntry[] {

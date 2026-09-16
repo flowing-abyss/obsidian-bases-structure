@@ -4,7 +4,7 @@ import {
   knowledgeBaseSnapshot,
 } from './__tests__/knowledge-base.fixture.js';
 import { note, snapshot } from './__tests__/notes.js';
-import { retypeOptions } from './plan-retype.js';
+import { mergeWritesByPath, retypeOptions } from './plan-retype.js';
 import { planAction } from './planner.js';
 import { parseSchema } from './schema.js';
 import { applyPlan } from './simulate.js';
@@ -695,6 +695,84 @@ describe('planAction — retype: own edge-key change where the new key is itself
           { key: 'other', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
         ],
       },
+    ]);
+  });
+});
+
+describe('planAction — retype: I3 — a child edge key that changes is cleaned up even when the old key is also an inherit key', () => {
+  it('retyping Project->Goal rewrites T from project to goal and removes T from project (the reviewer’s probe2 scenario)', () => {
+    // Area links Project/Goal children via the same "area" key (retyping Pr never touches that),
+    // but Project and Goal link their own Task children via different keys ("project"/"goal") —
+    // both of which are also schema.inherit keys. Before the fix, `childRewriteWrites` skipped the
+    // old-key ("project") cleanup because it's an inherit key, while `inheritKeysFor` excluded that
+    // exact key from the generic recompute (it's T's own edge property) — so neither ever wrote it,
+    // leaving T with both the new "goal" link and a stale "project" one.
+    const schema = schemaFrom({
+      inherit: ['area', 'project'],
+      types: {
+        Area: { tag: 'area', children: { Project: 'area', Goal: 'area' } },
+        Project: { tag: 'project', children: { Task: 'project' } },
+        Goal: { tag: 'goal', children: { Task: 'goal' } },
+        Task: { tag: 'task' },
+      },
+    });
+    const snap = snapshot(
+      [
+        note('A.md', { tags: ['area'] }),
+        note('Pr.md', {
+          tags: ['project'],
+          frontmatter: { tags: ['project'], area: ['[[A]]'] },
+          propertyLinks: { area: ['A.md'] },
+        }),
+        note('T.md', {
+          tags: ['task'],
+          frontmatter: { tags: ['task'], project: ['[[Pr]]'], area: ['[[A]]'] },
+          propertyLinks: { project: ['Pr.md'], area: ['A.md'] },
+        }),
+      ],
+      { host: 'A.md', results: ['Pr.md', 'T.md'] },
+    );
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'Pr.md', type: 'Goal' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      { path: 'Pr.md', writes: [{ key: 'tags', value: { kind: 'literal', value: ['goal'] } }] },
+      {
+        path: 'T.md',
+        writes: [
+          { key: 'goal', value: { kind: 'links', remove: [], add: ['Pr.md'], list: true } },
+          { key: 'project', value: { kind: 'links', remove: ['Pr.md'], add: [], list: true } },
+        ],
+      },
+    ]);
+  });
+});
+
+describe('mergeWritesByPath', () => {
+  it('lets the second list win a same-key collision on the same path, preserving first-seen path order', () => {
+    const first = [
+      { path: 'a.md', writes: [{ key: 'k', value: { kind: 'literal' as const, value: 'first' } }] },
+      { path: 'b.md', writes: [{ key: 'other', value: { kind: 'literal' as const, value: 'b' } }] },
+    ];
+    const second = [
+      {
+        path: 'a.md',
+        writes: [{ key: 'k', value: { kind: 'literal' as const, value: 'second' } }],
+      },
+    ];
+
+    const result = mergeWritesByPath(first, second);
+
+    expect(result).toStrictEqual([
+      { path: 'a.md', writes: [{ key: 'k', value: { kind: 'literal', value: 'second' } }] },
+      { path: 'b.md', writes: [{ key: 'other', value: { kind: 'literal', value: 'b' } }] },
     ]);
   });
 });
