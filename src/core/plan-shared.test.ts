@@ -156,7 +156,7 @@ describe('buildEdgeWrites', () => {
     });
 
     expect(result).toStrictEqual([
-      { key: 'up', value: { kind: 'links', targets: ['p.md'], list: true } },
+      { key: 'up', value: { kind: 'links', remove: [], add: ['p.md'], list: true } },
     ]);
   });
 });

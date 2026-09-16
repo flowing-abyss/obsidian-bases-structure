@@ -9,6 +9,11 @@ import type { EdgeRule, Schema, TypeDef } from './schema.js';
 import type { Snapshot } from './snapshot.js';
 import type { Structure, StructureNode } from './structure.js';
 
+export interface LinkPatch {
+  readonly remove: readonly string[];
+  readonly add: readonly string[];
+}
+
 /** The property names used by `type.children` rules of kind `'property'` — the keys through
  * which `type`'s own children point back at it. `'links'`/`'backlinks'` rules aren't backed by a
  * frontmatter property at all, so they never contribute here. */
@@ -121,46 +126,24 @@ export function ruleBetween(
   return lowestLevelRuleFor(schema, childType);
 }
 
-/** Keeps only `list`'s first occurrence of every value, in order. */
-function dedupeKeepFirst(list: readonly string[]): readonly string[] {
-  const seen = new Set<string>();
-  return list.filter((item) => {
-    if (seen.has(item)) {
-      return false;
-    }
-    seen.add(item);
-    return true;
-  });
-}
-
-/** The value an edge-key write should take, given the note's `current` value at that key: keeps
- * only `oldParent` (so it can be replaced), `newParent`, and genuine extra parents (`keep` —
- * `StructureNode.extras` of kind `'property'`) — every other value in `current` is a merely
- * *inherited* one (an ancestor's cascade), never an intentional extra, and is dropped rather than
- * carried forward. When `sameKey` (the old primary edge was already a property edge on this same
- * key) and `oldParent` is still present after that filtering, it's replaced in place (preserving
- * position and any other kept entries); otherwise `newParent` is prepended ahead of whatever
- * else survived. Shared by move's own edge-key write, retype's own edge-key write (where
- * `oldParent === newParent`, since retype never changes N's parent), and retype's per-child
- * new-key write (`oldParent: null`, `sameKey: false`). */
-export interface EdgeTargetOptions {
-  readonly keep: ReadonlySet<string>; // paths of the node's extras with kind 'property'
-  readonly sameKey: boolean; // the old primary edge was a property edge on this same key
-}
-
+/** The patch an edge-key write should apply, given the note's `current` (resolved) values at that
+ * key: keeps only `newParent` and genuine extra parents (`keep` — `StructureNode.extras` of kind
+ * `'property'`); every other resolved value in `current` — including the old parent — is either
+ * the value being replaced or a merely *inherited* one (an ancestor's cascade, never an
+ * intentional extra), and is removed rather than carried forward. `newParent` is added unless
+ * already present. The actual old-parent-shaped raw element (its wikilink, alias, or heading form)
+ * is left untouched by this step; the applier/simulator drops it because its *resolved* path is in
+ * `remove`, and inserts `add` at that same position — see `patchLinksValue` in `link-patch.ts`.
+ * Shared by move's own edge-key write, retype's own edge-key write, and retype's per-child new-key
+ * write. */
 export function edgeTargets(
   current: readonly string[],
-  oldParent: string | null,
   newParent: string,
-  options: EdgeTargetOptions,
-): readonly string[] {
-  const { keep, sameKey } = options;
-  const kept = current.filter((t) => t === oldParent || t === newParent || keep.has(t));
-  const replaceInPlace = sameKey && oldParent !== null && kept.includes(oldParent);
-  const result = replaceInPlace
-    ? kept.map((t) => (t === oldParent ? newParent : t))
-    : [newParent, ...kept.filter((t) => t !== newParent && t !== oldParent)];
-  return dedupeKeepFirst(result);
+  keep: ReadonlySet<string>,
+): LinkPatch {
+  const remove = [...new Set(current.filter((t) => t !== newParent && !keep.has(t)))];
+  const add = current.includes(newParent) ? [] : [newParent];
+  return { remove, add };
 }
 
 export interface SubtreeContext {
@@ -218,14 +201,6 @@ export function unionInheritedTargets(
   return result;
 }
 
-function sameSet(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const setB = new Set(b);
-  return a.every((item) => setB.has(item));
-}
-
 /** D's "property parents" for inheritance purposes: its primary parent (when any) first, then
  * every `extras` entry that is itself a `'property'`-kind edge — the set of parents whose own
  * `inherit`-key values D's own values should be a union of. */
@@ -265,12 +240,14 @@ function writesForDescendant(
   for (const key of inheritKeysFor(ctx.schema, node)) {
     const desired = unionInheritedTargets(ctx, propertyParentsOf(node), key);
     const current = ctx.snapshot.notes.get(path)?.propertyLinks[key] ?? [];
-    if (sameSet(desired, current)) {
+    const remove = current.filter((target) => !desired.includes(target));
+    const add = desired.filter((target) => !current.includes(target));
+    if (remove.length === 0 && add.length === 0) {
       continue;
     }
     writes.push({
       key,
-      value: { kind: 'links', targets: desired, list: listShape(ctx.snapshot, key, path) },
+      value: { kind: 'links', remove, add, list: listShape(ctx.snapshot, key, path) },
     });
     overrides[key] = desired;
     changed = true;

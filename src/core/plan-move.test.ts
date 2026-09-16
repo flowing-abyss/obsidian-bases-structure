@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  KB_CATEGORY,
   KNOWLEDGE_BASE_CONFIG,
   knowledgeBaseWithLinuxSnapshot,
   LINUX_CATEGORY,
@@ -194,7 +195,10 @@ describe('planAction — move: keeps extra values in the same edge property', ()
           {
             path: 'hier.md',
             writes: [
-              { key: 'meta', value: { kind: 'links', targets: ['c.md', 'b.md'], list: true } },
+              {
+                key: 'meta',
+                value: { kind: 'links', remove: ['a.md'], add: ['c.md'], list: true },
+              },
             ],
           },
         ],
@@ -276,7 +280,10 @@ describe('planAction — move: vault schema', () => {
     const categoryWrite = (path: string) => ({
       path,
       writes: [
-        { key: 'category', value: { kind: 'links', targets: [LINUX_CATEGORY], list: true } },
+        {
+          key: 'category',
+          value: { kind: 'links', remove: [KB_CATEGORY], add: [LINUX_CATEGORY], list: true },
+        },
       ],
     });
     expect(result.plan.changes).toStrictEqual([
@@ -309,8 +316,24 @@ describe('planAction — move: vault schema', () => {
       {
         path: READING_STRATEGIES,
         writes: [
-          { key: 'meta', value: { kind: 'links', targets: [NOTE_TAKING], list: true } },
-          { key: 'problem', value: { kind: 'links', targets: [], list: true } },
+          {
+            key: 'meta',
+            value: {
+              kind: 'links',
+              remove: ['base/_meta-notes/information processing.md'],
+              add: [NOTE_TAKING],
+              list: true,
+            },
+          },
+          {
+            key: 'problem',
+            value: {
+              kind: 'links',
+              remove: ['base/_problems/information acquisition.md'],
+              add: [],
+              list: true,
+            },
+          },
         ],
       },
     ]);

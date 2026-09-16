@@ -21,7 +21,7 @@ export const KNOWLEDGE_BASE_CONFIG = {
   },
 };
 
-const KB_CATEGORY = 'base/categories/knowledge base.md';
+export const KB_CATEGORY = 'base/categories/knowledge base.md';
 
 const INFO_PROCESSING = 'base/_meta-notes/information processing.md';
 const LEARNING = 'base/_meta-notes/learning.md';

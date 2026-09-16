@@ -1,75 +1,161 @@
 import { App } from 'obsidian-test-mocks/obsidian';
 import { describe, expect, it } from 'vitest';
-import { linkLine, toFrontmatterValue } from './link-writer.js';
+import { applyLinksWrite, applyListItemWrite, linkLine } from './link-writer.js';
 
 function createApp(): App {
   return App.createConfigured__({
     files: {
       'notes/target.md': '',
       'other.md': '',
+      'A.md': '',
+      'Ext.md': '',
+      'M2.md': '',
     },
   });
 }
 
-describe('toFrontmatterValue — links', () => {
-  it.each<[string, readonly string[], boolean, unknown]>([
-    [
-      'a list of targets, one wikilink per target, in order',
-      ['notes/target.md', 'other.md'],
-      true,
-      ['[[target]]', '[[other]]'],
-    ],
-    ['a single scalar target', ['notes/target.md'], false, '[[target]]'],
-    ['an empty scalar as null', [], false, null],
-    ['an empty list as an empty array', [], true, []],
-    [
-      'a scalar target that does not exist yet, falling back to its basename',
-      ['new/created.md'],
-      false,
-      '[[created]]',
-    ],
-    [
-      'a scalar target with no .md extension, falling back to it as-is',
-      ['no-extension'],
-      false,
-      '[[no-extension]]',
-    ],
-  ])('renders %s', (_description, targets, list, expected) => {
+interface FreshCase {
+  readonly description: string;
+  readonly add: readonly string[];
+  readonly list: boolean;
+  readonly expected: unknown;
+}
+
+describe('applyLinksWrite — building a fresh value (no current content)', () => {
+  it.each<FreshCase>([
+    {
+      description: 'a list of targets, one wikilink per target, in order',
+      add: ['notes/target.md', 'other.md'],
+      list: true,
+      expected: ['[[target]]', '[[other]]'],
+    },
+    {
+      description: 'a single scalar target',
+      add: ['notes/target.md'],
+      list: false,
+      expected: '[[target]]',
+    },
+    {
+      description: 'a scalar target that does not exist yet, falling back to its basename',
+      add: ['new/created.md'],
+      list: false,
+      expected: '[[created]]',
+    },
+    {
+      description: 'a scalar target with no .md extension, falling back to it as-is',
+      add: ['no-extension'],
+      list: false,
+      expected: '[[no-extension]]',
+    },
+  ])('renders $description', ({ add, list, expected }) => {
     const app = createApp();
+    const frontmatter: Record<string, unknown> = {};
 
-    const value = toFrontmatterValue(
-      app.asOriginalType__(),
-      { kind: 'links', targets, list },
-      'source.md',
-    );
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'key',
+      value: { kind: 'links', remove: [], add, list },
+      sourcePath: 'source.md',
+    });
 
-    expect(value).toStrictEqual(expected);
+    expect(frontmatter['key']).toStrictEqual(expected);
+  });
+
+  it('deletes the key when there is nothing to add (an empty write)', () => {
+    const app = createApp();
+    const frontmatter: Record<string, unknown> = {};
+
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'key',
+      value: { kind: 'links', remove: [], add: [], list: true },
+      sourcePath: 'source.md',
+    });
+
+    expect('key' in frontmatter).toBe(false);
   });
 });
 
-describe('toFrontmatterValue — literal', () => {
-  it('passes literal values through unchanged', () => {
+describe('applyLinksWrite — patching existing content (C1)', () => {
+  it('replaces the old parent in place, preserving an unresolved link, plain text, and a link outside the base exactly as written', () => {
     const app = createApp();
+    const frontmatter: Record<string, unknown> = {
+      meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]'],
+    };
 
-    const value = toFrontmatterValue(
-      app.asOriginalType__(),
-      { kind: 'literal', value: 'plain text' },
-      'source.md',
-    );
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'meta',
+      value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true },
+      sourcePath: 'source.md',
+    });
 
-    expect(value).toBe('plain text');
+    expect(frontmatter['meta']).toStrictEqual([
+      '[[M2]]',
+      '[[Not yet written]]',
+      'some text',
+      '[[Ext]]',
+    ]);
   });
 
-  it('passes a literal null through unchanged (not the link "no targets" null)', () => {
+  it('drops an aliased/headed link when its resolved path is removed, leaving other elements untouched', () => {
     const app = createApp();
+    const frontmatter: Record<string, unknown> = { meta: ['[[A|Alias]]', '[[A#Heading]]', 'kept'] };
 
-    const value = toFrontmatterValue(
-      app.asOriginalType__(),
-      { kind: 'literal', value: null },
-      'source.md',
-    );
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'meta',
+      value: { kind: 'links', remove: ['A.md'], add: [], list: true },
+      sourcePath: 'source.md',
+    });
 
-    expect(value).toBeNull();
+    expect(frontmatter['meta']).toStrictEqual(['kept']);
+  });
+
+  it('turns an existing scalar into a list only once the result holds more than one target (M1)', () => {
+    const app = createApp();
+    const frontmatter: Record<string, unknown> = { meta: '[[A]]' };
+
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'meta',
+      value: { kind: 'links', remove: [], add: ['other.md'], list: false },
+      sourcePath: 'source.md',
+    });
+
+    expect(frontmatter['meta']).toStrictEqual(['[[A]]', '[[other]]']);
+  });
+
+  it('deletes the key once the patch leaves nothing behind', () => {
+    const app = createApp();
+    const frontmatter: Record<string, unknown> = { meta: '[[A]]' };
+
+    applyLinksWrite(app.asOriginalType__(), {
+      frontmatter,
+      key: 'meta',
+      value: { kind: 'links', remove: ['A.md'], add: [], list: false },
+      sourcePath: 'source.md',
+    });
+
+    expect('meta' in frontmatter).toBe(false);
+  });
+});
+
+describe('applyListItemWrite', () => {
+  it('replaces the old element with the new one at its position, keeping an unrelated element (type: [project, archived] -> task)', () => {
+    const frontmatter: Record<string, unknown> = { type: ['project', 'archived'] };
+
+    applyListItemWrite(frontmatter, 'type', { kind: 'listItem', remove: 'project', add: 'task' });
+
+    expect(frontmatter['type']).toStrictEqual(['task', 'archived']);
+  });
+
+  it('deletes the key once the patch leaves nothing behind', () => {
+    const frontmatter: Record<string, unknown> = { type: ['project'] };
+
+    applyListItemWrite(frontmatter, 'type', { kind: 'listItem', remove: 'project' });
+
+    expect('type' in frontmatter).toBe(false);
   });
 });
 

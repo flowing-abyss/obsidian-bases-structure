@@ -112,7 +112,8 @@ function addRuleWrite(writes: Map<string, WriteValue>, ctx: CreateCtx, rule: Edg
   }
   writes.set(rule.property, {
     kind: 'links',
-    targets: [ctx.parent],
+    remove: [],
+    add: [ctx.parent],
     list: listShape(ctx.snapshot, rule.property, null),
   });
 }
@@ -136,7 +137,12 @@ function addInheritWrites(writes: Map<string, WriteValue>, ctx: CreateCtx, rule:
       key,
     );
     if (targets.length > 0) {
-      writes.set(key, { kind: 'links', targets, list: listShape(ctx.snapshot, key, null) });
+      writes.set(key, {
+        kind: 'links',
+        remove: [],
+        add: targets,
+        list: listShape(ctx.snapshot, key, null),
+      });
     }
   }
 }

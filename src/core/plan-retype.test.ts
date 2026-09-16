@@ -292,15 +292,15 @@ describe('planAction — retype: own edge-key change cascades to children', () =
         path: 'm.md',
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['prob2'] } },
-          { key: 'cat2', value: { kind: 'links', targets: ['cat.md'], list: true } },
+          { key: 'cat2', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
         ],
       },
       {
         path: 'h.md',
         writes: [
-          { key: 'prob2', value: { kind: 'links', targets: ['m.md'], list: true } },
-          { key: 'meta', value: { kind: 'links', targets: [], list: true } },
-          { key: 'category', value: { kind: 'links', targets: ['cat.md'], list: true } },
+          { key: 'prob2', value: { kind: 'links', remove: [], add: ['m.md'], list: true } },
+          { key: 'meta', value: { kind: 'links', remove: ['m.md'], add: [], list: true } },
+          { key: 'category', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
         ],
       },
     ]);
@@ -357,7 +357,7 @@ describe('planAction — retype: old-type property cleanup and new-type property
       {
         path: 'n.md',
         writes: [
-          { key: 'status', value: { kind: 'literal', value: ['other'] } },
+          { key: 'status', value: { kind: 'listItem', remove: 'todo' } },
           { key: 'kind', value: null },
           { key: 'changed', value: { kind: 'literal', value: 'new' } },
         ],
@@ -538,8 +538,8 @@ describe('planAction — retype: the untyped root, and a child of one', () => {
         path: 'a.md',
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['c'] } },
-          { key: 'link2', value: { kind: 'links', targets: ['hub.md'], list: true } },
-          { key: 'link', value: { kind: 'links', targets: [], list: true } },
+          { key: 'link2', value: { kind: 'links', remove: [], add: ['hub.md'], list: true } },
+          { key: 'link', value: { kind: 'links', remove: ['hub.md'], add: [], list: true } },
         ],
       },
     ]);
@@ -574,8 +574,8 @@ describe('planAction — retype: own edge-key change, old key not owned by inher
         path: 'n.md',
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['y'] } },
-          { key: 'viaY', value: { kind: 'links', targets: ['cat.md'], list: true } },
-          { key: 'viaX', value: { kind: 'links', targets: [], list: true } },
+          { key: 'viaY', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
+          { key: 'viaX', value: { kind: 'links', remove: ['cat.md'], add: [], list: true } },
         ],
       },
     ]);
@@ -655,8 +655,8 @@ describe('planAction — retype: N and a rewritten child each keep a genuine pro
       {
         path: 'h.md',
         writes: [
-          { key: 'viaQ', value: { kind: 'links', targets: ['m.md'], list: true } },
-          { key: 'viaM', value: { kind: 'links', targets: [], list: true } },
+          { key: 'viaQ', value: { kind: 'links', remove: [], add: ['m.md'], list: true } },
+          { key: 'viaM', value: { kind: 'links', remove: ['m.md'], add: [], list: true } },
         ],
       },
     ]);
@@ -692,7 +692,7 @@ describe('planAction — retype: own edge-key change where the new key is itself
         path: 'n.md',
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['q'] } },
-          { key: 'other', value: { kind: 'links', targets: ['cat.md'], list: true } },
+          { key: 'other', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
         ],
       },
     ]);

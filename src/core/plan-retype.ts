@@ -9,6 +9,7 @@ import {
   ruleBetween,
   type SubtreeContext,
 } from './derive.js';
+import { looseEqual } from './link-patch.js';
 import {
   arraysEqual,
   buildEdgeWrites,
@@ -17,6 +18,7 @@ import {
   inheritWritesFor,
   recordAllOverrides,
   recordOverride,
+  resultingTargets,
   textLinkReason,
 } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanEnv, PlanResult } from './plan-types.js';
@@ -213,60 +215,90 @@ function computeTagsWrite(
   return { key: 'tags', value: { kind: 'literal', value: result } };
 }
 
-function looseEqual(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
+/** The array-current branch of `propertyPatchWrite`: a single-element patch that only touches the
+ * old value's own slot, so an unrelated element already in the list (e.g. `archived` in
+ * `type: [project, archived]`) survives instead of the whole array being clobbered by a literal
+ * set (the bug C1 fixes). `null` when neither the old value is present nor the new one is
+ * missing. */
+function arrayPropertyWrite(
+  name: string,
+  items: readonly unknown[],
+  oldExpected: string | undefined,
+  newValue: string | undefined,
+): KeyWrite | null {
+  const hasOld =
+    oldExpected !== undefined &&
+    items.some((item) => typeof item === 'string' && looseEqual(item, oldExpected));
+  const needsNew =
+    newValue !== undefined &&
+    !items.some((item) => typeof item === 'string' && looseEqual(item, newValue));
+  if (!hasOld && !needsNew) {
+    return null;
+  }
+  return {
+    key: name,
+    value: {
+      kind: 'listItem',
+      ...(hasOld ? { remove: oldExpected } : {}),
+      ...(needsNew ? { add: newValue } : {}),
+    },
+  };
 }
 
-/** One old-type property's cleanup write, when its name isn't also a `newType` property: `null`
- * (delete) when the note's current scalar value matches the old recipe value; the array without
- * that element when it's a list; otherwise nothing to do. */
-function oldPropertyCleanupWrite(
-  frontmatter: Readonly<Record<string, unknown>>,
+/** The scalar/absent-current branch of `propertyPatchWrite`: today's literal set/delete behaviour,
+ * untouched by C1. */
+function scalarPropertyWrite(
   name: string,
-  expected: string,
+  current: unknown,
+  oldExpected: string | undefined,
+  newValue: string | undefined,
 ): KeyWrite | null {
-  const value = frontmatter[name];
-  if (typeof value === 'string') {
-    return looseEqual(value, expected) ? { key: name, value: null } : null;
+  if (newValue !== undefined) {
+    return current === newValue ? null : { key: name, value: { kind: 'literal', value: newValue } };
   }
-  if (Array.isArray(value)) {
-    const filtered = (value as unknown[]).filter(
-      (item) => !(typeof item === 'string' && looseEqual(item, expected)),
-    );
-    return filtered.length === value.length
-      ? null
-      : { key: name, value: { kind: 'literal', value: filtered } };
+  if (
+    oldExpected !== undefined &&
+    typeof current === 'string' &&
+    looseEqual(current, oldExpected)
+  ) {
+    return { key: name, value: null };
   }
   return null;
 }
 
-function oldPropertyCleanupWrites(
+/** One recipe property's retype write, given the old recipe's expected value for `name` (when the
+ * old type had one) and the new recipe's value (when the new type has one). `null` when nothing
+ * would actually change. */
+function propertyPatchWrite(
+  frontmatter: Readonly<Record<string, unknown>>,
+  name: string,
+  oldExpected: string | undefined,
+  newValue: string | undefined,
+): KeyWrite | null {
+  const current = frontmatter[name];
+  return Array.isArray(current)
+    ? arrayPropertyWrite(name, current as unknown[], oldExpected, newValue)
+    : scalarPropertyWrite(name, current, oldExpected, newValue);
+}
+
+/** Every recipe-property write for the old-type → new-type transition, over the union of both
+ * recipes' property names (old-type names first, in their own order, then any new-type-only
+ * names) — a single pass replaces the old `oldPropertyCleanupWrites`/`newPropertyWrites` pair so a
+ * name common to both recipes (e.g. `type`) gets one combined remove+add patch instead of a
+ * skipped cleanup plus a clobbering literal set. */
+function propertyWrites(
   frontmatter: Readonly<Record<string, unknown>>,
   oldMatch: TypeMatch,
   newType: TypeDef,
 ): readonly KeyWrite[] {
-  const newNames = new Set(newType.match.properties.map(([name]) => name));
+  const oldByName = new Map(oldMatch.properties);
+  const newByName = new Map(newType.match.properties);
+  const names = new Set([...oldByName.keys(), ...newByName.keys()]);
   const writes: KeyWrite[] = [];
-  for (const [name, expected] of oldMatch.properties) {
-    if (newNames.has(name)) {
-      continue;
-    }
-    const write = oldPropertyCleanupWrite(frontmatter, name, expected);
+  for (const name of names) {
+    const write = propertyPatchWrite(frontmatter, name, oldByName.get(name), newByName.get(name));
     if (write !== null) {
       writes.push(write);
-    }
-  }
-  return writes;
-}
-
-function newPropertyWrites(
-  frontmatter: Readonly<Record<string, unknown>>,
-  newType: TypeDef,
-): readonly KeyWrite[] {
-  const writes: KeyWrite[] = [];
-  for (const [name, value] of newType.match.properties) {
-    if (frontmatter[name] !== value) {
-      writes.push({ key: name, value: { kind: 'literal', value } });
     }
   }
   return writes;
@@ -369,31 +401,32 @@ function childRewriteWrites(
   const keep = new Set(
     childNode.extras.filter((extra) => extra.kind === 'property').map((extra) => extra.parent),
   );
-  const newTargets = edgeTargets(newCur, null, node, { keep, sameKey: false });
-  if (!arraysEqual(newTargets, newCur)) {
+  const { remove: newRemove, add: newAdd } = edgeTargets(newCur, node, keep);
+  if (newRemove.length > 0 || newAdd.length > 0) {
     writes.push({
       key: newKey,
       value: {
         kind: 'links',
-        targets: newTargets,
+        remove: newRemove,
+        add: newAdd,
         list: listShape(ctx.snapshot, newKey, childPath),
       },
     });
-    recordOverride(ctx, childPath, newKey, newTargets);
+    recordOverride(ctx, childPath, newKey, resultingTargets(newCur, newRemove, newAdd));
   }
   if (!ctx.schema.inherit.includes(oldKey)) {
     const oldCur = cLinks[oldKey] ?? [];
-    const filtered = oldCur.filter((item) => item !== node);
-    if (!arraysEqual(filtered, oldCur)) {
+    if (oldCur.includes(node)) {
       writes.push({
         key: oldKey,
         value: {
           kind: 'links',
-          targets: filtered,
+          remove: [node],
+          add: [],
           list: listShape(ctx.snapshot, oldKey, childPath),
         },
       });
-      recordOverride(ctx, childPath, oldKey, filtered);
+      recordOverride(ctx, childPath, oldKey, resultingTargets(oldCur, [node], []));
     }
   }
   return writes;
@@ -479,8 +512,7 @@ function literalRetypeWrites(
   const tagsWrite = computeTagsWrite(tags, oldMatch, newType);
   return [
     ...(tagsWrite === null ? [] : [tagsWrite]),
-    ...oldPropertyCleanupWrites(frontmatter, oldMatch, newType),
-    ...newPropertyWrites(frontmatter, newType),
+    ...propertyWrites(frontmatter, oldMatch, newType),
   ];
 }
 

@@ -203,7 +203,7 @@ describe('planAction — create: vault schema', () => {
           { key: 'tags', value: { kind: 'literal', value: ['system/high/meta'] } },
           {
             key: 'category',
-            value: { kind: 'links', targets: [KB_CATEGORY], list: true },
+            value: { kind: 'links', remove: [], add: [KB_CATEGORY], list: true },
           },
         ],
         bodyLinks: [],
@@ -232,9 +232,12 @@ describe('planAction — create: vault schema', () => {
         path: 'base/_hierarchy/New Reading.md',
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['system/high/hierarchy'] } },
-          { key: 'problem', value: { kind: 'links', targets: [INFO_ACQUISITION], list: true } },
-          { key: 'category', value: { kind: 'links', targets: [KB_CATEGORY], list: true } },
-          { key: 'meta', value: { kind: 'links', targets: [INFO_PROCESSING], list: true } },
+          {
+            key: 'problem',
+            value: { kind: 'links', remove: [], add: [INFO_ACQUISITION], list: true },
+          },
+          { key: 'category', value: { kind: 'links', remove: [], add: [KB_CATEGORY], list: true } },
+          { key: 'meta', value: { kind: 'links', remove: [], add: [INFO_PROCESSING], list: true } },
         ],
         bodyLinks: [],
       },
@@ -261,9 +264,12 @@ describe('planAction — create: vault schema', () => {
         path,
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['system/high/hierarchy'] } },
-          { key: 'category', value: { kind: 'links', targets: [KB_CATEGORY], list: true } },
-          { key: 'meta', value: { kind: 'links', targets: [INFO_PROCESSING], list: true } },
-          { key: 'problem', value: { kind: 'links', targets: [INFO_ACQUISITION], list: true } },
+          { key: 'category', value: { kind: 'links', remove: [], add: [KB_CATEGORY], list: true } },
+          { key: 'meta', value: { kind: 'links', remove: [], add: [INFO_PROCESSING], list: true } },
+          {
+            key: 'problem',
+            value: { kind: 'links', remove: [], add: [INFO_ACQUISITION], list: true },
+          },
         ],
         bodyLinks: [],
       },
@@ -319,7 +325,7 @@ describe('planAction — create: literal property recipe', () => {
     if (!result.ok) return;
     expect(result.plan.creations[0]?.writes).toStrictEqual([
       { key: 'type', value: { kind: 'literal', value: 'task' } },
-      { key: 'parent', value: { kind: 'links', targets: ['project.md'], list: true } },
+      { key: 'parent', value: { kind: 'links', remove: [], add: ['project.md'], list: true } },
     ]);
   });
 });
@@ -430,7 +436,7 @@ describe('planAction — create: untyped mode ("parent: up")', () => {
     expect(result.plan.creations).toStrictEqual([
       {
         path: 'Child.md',
-        writes: [{ key: 'up', value: { kind: 'links', targets: ['root.md'], list: true } }],
+        writes: [{ key: 'up', value: { kind: 'links', remove: [], add: ['root.md'], list: true } }],
         bodyLinks: [],
       },
     ]);
@@ -514,7 +520,7 @@ describe('planAction — create: untyped root, competing parent-type rules (hand
     if (!result.ok) return;
     expect(result.plan.creations[0]?.writes).toStrictEqual([
       { key: 'tags', value: { kind: 'literal', value: ['leaf'] } },
-      { key: 'viaB', value: { kind: 'links', targets: ['hub.md'], list: true } },
+      { key: 'viaB', value: { kind: 'links', remove: [], add: ['hub.md'], list: true } },
     ]);
   });
 });
@@ -542,7 +548,7 @@ describe('planAction — create: a key written twice keeps the first write', () 
     if (!result.ok) return;
     expect(result.plan.creations[0]?.writes).toStrictEqual([
       { key: 'tags', value: { kind: 'literal', value: ['weird'] } },
-      { key: 'up', value: { kind: 'links', targets: ['cat.md'], list: true } },
+      { key: 'up', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
     ]);
   });
 
@@ -569,7 +575,7 @@ describe('planAction — create: a key written twice keeps the first write', () 
     if (!result.ok) return;
     expect(result.plan.creations[0]?.writes).toStrictEqual([
       { key: 'category', value: { kind: 'literal', value: 'Lit' } },
-      { key: 'up', value: { kind: 'links', targets: ['cat.md'], list: true } },
+      { key: 'up', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
     ]);
   });
 });

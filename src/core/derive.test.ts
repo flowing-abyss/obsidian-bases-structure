@@ -157,66 +157,55 @@ describe('listShape', () => {
 });
 
 describe('edgeTargets', () => {
-  it('replaces oldParent with newParent in place when sameKey, preserving a genuine extra', () => {
-    // meta: [A, B] moving from A to C -> meta: [C, B] (B is a genuine property-kind extra).
-    const result = edgeTargets(['A', 'B'], 'A', 'C', { keep: new Set(['B']), sameKey: true });
+  it('removes everything except newParent/keep and adds newParent (sameKey-style in-place replace)', () => {
+    // meta: [A, B] moving from A to C -> remove A, add C (B is a genuine property-kind extra, kept).
+    const result = edgeTargets(['A', 'B'], 'C', new Set(['B']));
 
-    expect(result).toStrictEqual(['C', 'B']);
+    expect(result).toStrictEqual({ remove: ['A'], add: ['C'] });
   });
 
-  it('drops a merely-inherited (ancestor) value even when sameKey and oldParent is present', () => {
+  it('drops a merely-inherited (ancestor) value even when it sits in the same property slot', () => {
     // The bug this helper fixes: "information processing" is an inherited/ancestor value sitting
-    // in the same property slot, not oldParent, newParent, or a genuine extra — it must not survive.
-    const result = edgeTargets(
-      ['information processing'],
-      'information acquisition',
-      'note taking',
-      { keep: new Set(), sameKey: false },
-    );
+    // in the same property slot, not the new parent or a genuine extra — it must not survive.
+    const result = edgeTargets(['information processing'], 'note taking', new Set());
 
-    expect(result).toStrictEqual(['note taking']);
+    expect(result).toStrictEqual({ remove: ['information processing'], add: ['note taking'] });
   });
 
-  it('prepends newParent and drops non-extra values when the key differs (sameKey: false)', () => {
-    const result = edgeTargets(['old-value'], 'O', 'P', { keep: new Set(), sameKey: false });
+  it('removes a non-extra old value and adds newParent when the key differs', () => {
+    const result = edgeTargets(['old-value'], 'P', new Set());
 
-    expect(result).toStrictEqual(['P']);
+    expect(result).toStrictEqual({ remove: ['old-value'], add: ['P'] });
   });
 
-  it('prepends newParent but keeps a genuine extra even when the key differs', () => {
-    const result = edgeTargets(['O', 'extra'], 'O', 'P', {
-      keep: new Set(['extra']),
-      sameKey: false,
-    });
+  it('keeps a genuine extra out of remove even when the key differs', () => {
+    const result = edgeTargets(['O', 'extra'], 'P', new Set(['extra']));
 
-    expect(result).toStrictEqual(['P', 'extra']);
+    expect(result).toStrictEqual({ remove: ['O'], add: ['P'] });
   });
 
-  it('falls back to prepending when sameKey but oldParent is not actually present', () => {
-    const result = edgeTargets(['other'], 'O', 'P', { keep: new Set(), sameKey: true });
+  it('removes whatever else is present when the "old parent" is not actually there', () => {
+    const result = edgeTargets(['other'], 'P', new Set());
 
-    expect(result).toStrictEqual(['P']);
+    expect(result).toStrictEqual({ remove: ['other'], add: ['P'] });
   });
 
-  it('treats oldParent: null the same as "no old parent to replace" (retype child rewrite shape)', () => {
-    const result = edgeTargets([], null, 'N', { keep: new Set(), sameKey: false });
+  it('adds newParent with nothing to remove from an empty current value (retype child rewrite shape)', () => {
+    const result = edgeTargets([], 'N', new Set());
 
-    expect(result).toStrictEqual(['N']);
+    expect(result).toStrictEqual({ remove: [], add: ['N'] });
   });
 
-  it('does not duplicate newParent when it is already present', () => {
-    const result = edgeTargets(['P', 'extra'], 'O', 'P', {
-      keep: new Set(['extra']),
-      sameKey: false,
-    });
+  it('is a no-op to add newParent when it is already present', () => {
+    const result = edgeTargets(['P', 'extra'], 'P', new Set(['extra']));
 
-    expect(result).toStrictEqual(['P', 'extra']);
+    expect(result).toStrictEqual({ remove: [], add: [] });
   });
 
-  it('collapses duplicate occurrences of oldParent after an in-place replace', () => {
-    const result = edgeTargets(['A', 'A'], 'A', 'C', { keep: new Set(), sameKey: true });
+  it('dedupes repeated occurrences of a removed value', () => {
+    const result = edgeTargets(['A', 'A'], 'C', new Set());
 
-    expect(result).toStrictEqual(['C']);
+    expect(result).toStrictEqual({ remove: ['A'], add: ['C'] });
   });
 });
 
@@ -362,7 +351,12 @@ describe('deriveSubtreeWrites', () => {
         writes: [
           {
             key: 'k',
-            value: { kind: 'links', targets: ['root.md', 'override-target.md'], list: true },
+            value: {
+              kind: 'links',
+              remove: ['old-value.md'],
+              add: ['root.md', 'override-target.md'],
+              list: true,
+            },
           },
         ],
       },

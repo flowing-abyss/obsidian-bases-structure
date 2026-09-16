@@ -13,8 +13,8 @@ describe('applyPlan — creations', () => {
     const writes: readonly KeyWrite[] = [
       { key: 'tags', value: { kind: 'literal', value: ['#type/x'] } },
       { key: 'status', value: { kind: 'literal', value: 'done' } },
-      { key: 'category', value: { kind: 'links', targets: ['cat.md'], list: true } },
-      { key: 'meta', value: { kind: 'links', targets: ['meta.md'], list: false } },
+      { key: 'category', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
+      { key: 'meta', value: { kind: 'links', remove: [], add: ['meta.md'], list: false } },
     ];
     const plan = emptyPlan({
       creations: [{ path: 'new.md', writes, bodyLinks: ['cat.md', 'extra.md'] }],
@@ -115,7 +115,9 @@ describe('applyPlan — changes', () => {
       changes: [
         {
           path: 'x.md',
-          writes: [{ key: 'category', value: { kind: 'links', targets: ['cat.md'], list: true } }],
+          writes: [
+            { key: 'category', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
+          ],
         },
       ],
     });
@@ -177,6 +179,7 @@ describe('applyPlan — changes', () => {
 
   it('replacing a links write with a different target removes the old one and keeps order (existing then new)', () => {
     const snap = snapshot([
+      note('old.md'),
       note('x.md', {
         frontmatter: { meta: '[[old]]' },
         propertyLinks: { meta: ['old.md'] },
@@ -187,7 +190,12 @@ describe('applyPlan — changes', () => {
       changes: [
         {
           path: 'x.md',
-          writes: [{ key: 'meta', value: { kind: 'links', targets: ['new.md'], list: false } }],
+          writes: [
+            {
+              key: 'meta',
+              value: { kind: 'links', remove: ['old.md'], add: ['new.md'], list: false },
+            },
+          ],
         },
       ],
     });
@@ -197,6 +205,79 @@ describe('applyPlan — changes', () => {
     const changed = result.notes.get('x.md');
     expect(changed?.links).toStrictEqual(['before.md', 'new.md']);
     expect(changed?.propertyLinks['meta']).toStrictEqual(['new.md']);
+  });
+
+  it('replaces the old parent in place, preserving an unresolved link, plain text, and a link outside the base exactly as written (C1)', () => {
+    const snap = snapshot([
+      note('A.md'),
+      note('Ext.md'),
+      note('M2.md'),
+      note('H.md', {
+        frontmatter: { meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]'] },
+        propertyLinks: { meta: ['A.md', 'Ext.md'] },
+      }),
+    ]);
+    const plan = emptyPlan({
+      changes: [
+        {
+          path: 'H.md',
+          writes: [
+            { key: 'meta', value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true } },
+          ],
+        },
+      ],
+    });
+
+    const result = applyPlan(snap, plan);
+
+    const changed = result.notes.get('H.md');
+    expect(changed?.frontmatter['meta']).toStrictEqual([
+      '[[M2]]',
+      '[[Not yet written]]',
+      'some text',
+      '[[Ext]]',
+    ]);
+    expect(changed?.propertyLinks['meta']).toStrictEqual(['M2.md', 'Ext.md']);
+  });
+
+  it('turns an existing scalar into a list only once the result holds more than one target (M1)', () => {
+    const snap = snapshot([
+      note('a.md'),
+      note('b.md'),
+      note('x.md', { frontmatter: { meta: '[[a]]' }, propertyLinks: { meta: ['a.md'] } }),
+    ]);
+    const plan = emptyPlan({
+      changes: [
+        {
+          path: 'x.md',
+          writes: [
+            { key: 'meta', value: { kind: 'links', remove: [], add: ['b.md'], list: false } },
+          ],
+        },
+      ],
+    });
+
+    const result = applyPlan(snap, plan);
+
+    const changed = result.notes.get('x.md');
+    expect(changed?.frontmatter['meta']).toStrictEqual(['[[a]]', '[[b]]']);
+    expect(changed?.propertyLinks['meta']).toStrictEqual(['a.md', 'b.md']);
+  });
+
+  it('applies a listItem write, keeping an unrelated element (retype recipe property patch)', () => {
+    const snap = snapshot([note('n.md', { frontmatter: { type: ['project', 'archived'] } })]);
+    const plan = emptyPlan({
+      changes: [
+        {
+          path: 'n.md',
+          writes: [{ key: 'type', value: { kind: 'listItem', remove: 'project', add: 'task' } }],
+        },
+      ],
+    });
+
+    const result = applyPlan(snap, plan);
+
+    expect(result.notes.get('n.md')?.frontmatter['type']).toStrictEqual(['task', 'archived']);
   });
 });
 

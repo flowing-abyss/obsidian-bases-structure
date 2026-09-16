@@ -7,7 +7,7 @@ import type { App, TFile } from 'obsidian';
 import { Notice } from 'obsidian';
 import type { KeyWrite, Plan } from '../core/plan-types.js';
 import { folderOf } from '../core/snapshot.js';
-import { linkLine, toFrontmatterValue } from './link-writer.js';
+import { applyLinksWrite, applyListItemWrite, linkLine } from './link-writer.js';
 import type { UndoManager } from './undo-manager.js';
 
 export type TransactionStep =
@@ -65,11 +65,20 @@ function applyWrite(
   write: KeyWrite,
   sourcePath: string,
 ): void {
-  if (write.value === null) {
-    delete frontmatter[write.key];
+  const { key, value } = write;
+  if (value === null) {
+    delete frontmatter[key];
     return;
   }
-  frontmatter[write.key] = toFrontmatterValue(app, write.value, sourcePath);
+  if (value.kind === 'links') {
+    applyLinksWrite(app, { frontmatter, key, value, sourcePath });
+    return;
+  }
+  if (value.kind === 'listItem') {
+    applyListItemWrite(frontmatter, key, value);
+    return;
+  }
+  frontmatter[key] = value.value;
 }
 
 function renderBody(app: App, bodyLinks: readonly string[], sourcePath: string): string {

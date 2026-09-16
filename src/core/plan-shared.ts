@@ -33,15 +33,6 @@ export function arraysEqual(a: readonly string[], b: readonly string[]): boolean
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-/** Set equality (order-independent). */
-function sameSet(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const setB = new Set(b);
-  return a.every((item) => setB.has(item));
-}
-
 export function recordOverride(
   ctx: SubtreeContext,
   path: string,
@@ -52,18 +43,46 @@ export function recordOverride(
   ctx.linkOverrides.set(path, { ...existing, [key]: targets });
 }
 
+/** The full resolved target list a `'links'` patch leaves a key holding: `current` minus `remove`,
+ * plus any `add` target it didn't already have. */
+export function resultingTargets(
+  current: readonly string[],
+  remove: readonly string[],
+  add: readonly string[],
+): readonly string[] {
+  const removeSet = new Set(remove);
+  const kept: string[] = [];
+  let insertIndex: number | null = null;
+  for (const target of current) {
+    if (removeSet.has(target)) {
+      insertIndex ??= kept.length;
+      continue;
+    }
+    kept.push(target);
+  }
+  const toInsert = add.filter((target) => !kept.includes(target));
+  kept.splice(insertIndex ?? kept.length, 0, ...toInsert);
+  return kept;
+}
+
 /** Records every `'links'`-kind write in `writes` into `ctx.linkOverrides` for `path`, so a later
  * step in the same walk (a descendant's inherit recompute, a sibling's own edge write) sees the
- * new values instead of the stale snapshot ones. Literal writes (tags, recipe properties) carry no
- * "targets" and are skipped. */
+ * new values instead of the stale snapshot ones. Literal/list-item writes carry no link targets
+ * and are skipped. */
 export function recordAllOverrides(
   ctx: SubtreeContext,
   path: string,
   writes: readonly KeyWrite[],
 ): void {
+  const current = ctx.snapshot.notes.get(path)?.propertyLinks ?? {};
   for (const write of writes) {
     if (write.value !== null && write.value.kind === 'links') {
-      recordOverride(ctx, path, write.key, write.value.targets);
+      const targets = resultingTargets(
+        current[write.key] ?? [],
+        write.value.remove,
+        write.value.add,
+      );
+      recordOverride(ctx, path, write.key, targets);
     }
   }
 }
@@ -78,25 +97,21 @@ export interface EdgeWriteInputs {
   readonly keep: ReadonlySet<string>; // the node's genuine property-kind extras
 }
 
-/** The edge-key write itself: keeps only the old parent, the new parent, and genuine extras from
- * the current value (see `derive.ts`'s `edgeTargets`), replacing the old parent in place when the
- * edge property hasn't changed, otherwise prepending the new parent. `null` when nothing actually
- * changes. Shared by move (`oldParent`/`newParent` differ) and retype's own-N edge handling
- * (`oldParent === newParent`, since retype never reparents N). */
+/** The edge-key write itself: a patch that removes everything except the new parent and genuine
+ * extras from the current value, and adds the new parent (see `derive.ts`'s `edgeTargets`). `null`
+ * when nothing actually changes. Shared by move (`oldParent`/`newParent` differ) and retype's
+ * own-N edge handling (`oldParent === newParent`, since retype never reparents N). */
 function computeEdgeWrite(inputs: EdgeWriteInputs, cur: readonly string[]): KeyWrite | null {
-  const sameKey = inputs.oldEdge?.kind === 'property' && inputs.oldEdge.property === inputs.key;
-  const newTargets = edgeTargets(cur, inputs.oldParent, inputs.newParent, {
-    keep: inputs.keep,
-    sameKey,
-  });
-  if (arraysEqual(newTargets, cur)) {
+  const { remove, add } = edgeTargets(cur, inputs.newParent, inputs.keep);
+  if (remove.length === 0 && add.length === 0) {
     return null;
   }
   return {
     key: inputs.key,
     value: {
       kind: 'links',
-      targets: newTargets,
+      remove,
+      add,
       list: listShape(inputs.snapshot, inputs.key, inputs.node),
     },
   };
@@ -120,15 +135,15 @@ export function computeOldEdgeCleanup(
   }
   const oldKey = inputs.oldEdge.property;
   const cur2 = nLinks[oldKey] ?? [];
-  const filtered = cur2.filter((item) => item !== inputs.oldParent);
-  if (arraysEqual(filtered, cur2)) {
+  if (!cur2.includes(inputs.oldParent)) {
     return null;
   }
   return {
     key: oldKey,
     value: {
       kind: 'links',
-      targets: filtered,
+      remove: [inputs.oldParent],
+      add: [],
       list: listShape(inputs.snapshot, oldKey, inputs.node),
     },
   };
@@ -166,12 +181,14 @@ export function inheritWritesFor(
     }
     const desired = unionInheritedTargets(ctx, propertyParents, key);
     const current = nLinks[key] ?? [];
-    if (sameSet(desired, current)) {
+    const remove = current.filter((target) => !desired.includes(target));
+    const add = desired.filter((target) => !current.includes(target));
+    if (remove.length === 0 && add.length === 0) {
       continue;
     }
     writes.push({
       key,
-      value: { kind: 'links', targets: desired, list: listShape(ctx.snapshot, key, node) },
+      value: { kind: 'links', remove, add, list: listShape(ctx.snapshot, key, node) },
     });
     recordOverride(ctx, node, key, desired);
   }

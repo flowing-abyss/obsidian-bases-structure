@@ -3,6 +3,7 @@
 // preview/apply steps. Never mutates its input — always returns a new `Snapshot`. No Obsidian
 // imports.
 
+import { patchLinksValue, patchListItem, rawLinkText } from './link-patch.js';
 import type { KeyWrite, Plan } from './plan-types.js';
 import type { NoteData, Snapshot } from './snapshot.js';
 
@@ -33,29 +34,84 @@ function wikilink(path: string): string {
   return `[[${basenameOf(path)}]]`;
 }
 
-/** The frontmatter value for a `'links'` write: every target as a wikilink when `list`, otherwise
- * a single wikilink string for the first (and, by construction, only meaningful) target. */
-function linksFrontmatterValue(targets: readonly string[], list: boolean): unknown {
-  if (list) {
-    return targets.map(wikilink);
+/** A pure, `Snapshot`-only stand-in for `getFirstLinkpathDest`/`getLinkpath`: extracts a raw
+ * frontmatter element's linktext (stripping any `#heading`, which `getLinkpath` itself would
+ * strip) and resolves it against every note currently in `notes` — an exact path, an exact path
+ * once `.md` is added, or (falling back, same as real link resolution) a case-insensitive
+ * basename match. `null` for plain text or a link that doesn't resolve to anything in the
+ * snapshot — both are left untouched by `patchLinksValue`, exactly like an unresolved link in the
+ * real vault. */
+function resolveRawLink(notes: ReadonlyMap<string, NoteData>, raw: string): string | null {
+  const linktext = rawLinkText(raw);
+  if (linktext === null) {
+    return null;
   }
-  const [first] = targets;
-  return first === undefined ? '' : wikilink(first);
+  const bare = linktext.split('#')[0]?.trim() ?? '';
+  if (bare === '') {
+    return null;
+  }
+  if (notes.has(bare)) {
+    return bare;
+  }
+  const withExt = bare.endsWith('.md') ? bare : `${bare}.md`;
+  if (notes.has(withExt)) {
+    return withExt;
+  }
+  const targetBasename = withExt
+    .slice(withExt.lastIndexOf('/') + 1)
+    .replace(/\.md$/, '')
+    .toLowerCase();
+  for (const note of notes.values()) {
+    if (note.basename.toLowerCase() === targetBasename) {
+      return note.path;
+    }
+  }
+  return null;
+}
+
+/** The full resolved target list a `'links'` patch leaves a key holding: `current` minus
+ * `remove`, plus any `add` target it didn't already have — mirrors what `patchLinksValue` does to
+ * the raw frontmatter value, but over already-resolved paths (`propertyLinks` never holds
+ * unresolved/plain-text entries, so no resolver is needed here). */
+function resultingTargets(
+  current: readonly string[],
+  remove: readonly string[],
+  add: readonly string[],
+): readonly string[] {
+  const removeSet = new Set(remove);
+  const kept: string[] = [];
+  let insertIndex: number | null = null;
+  for (const target of current) {
+    if (removeSet.has(target)) {
+      insertIndex ??= kept.length;
+      continue;
+    }
+    kept.push(target);
+  }
+  const toInsert = add.filter((target) => !kept.includes(target));
+  kept.splice(insertIndex ?? kept.length, 0, ...toInsert);
+  return kept;
 }
 
 function stripHash(tag: string): string {
   return tag.startsWith('#') ? tag.slice(1) : tag;
 }
 
-/** Pulls the tag list back out of a literal `tags` write's raw value. Anything that isn't an
- * array, or isn't a string once inside it, is dropped rather than crashing — the schema recipe is
- * the only producer of this value and always supplies an array of strings, but this stays
- * defensive against a malformed `Plan` built by hand (e.g. in a test). */
-function literalTags(value: unknown): readonly string[] {
-  if (!Array.isArray(value)) {
+/** `undefined`/`null` → `[]`, an array → itself, anything else → a single-element array wrapping
+ * it. */
+function asItems(value: unknown): readonly unknown[] {
+  if (value === undefined || value === null) {
     return [];
   }
-  return (value as unknown[])
+  return Array.isArray(value) ? value : [value];
+}
+
+/** Pulls a tag list back out of a literal `tags` write's raw value (already applied — an array of
+ * strings, or a single scalar string). Anything else is dropped rather than crashing — the schema
+ * recipe / retype planning are the only producers, and always supply a string or an array of
+ * strings, but this stays defensive against a malformed `Plan` built by hand (e.g. in a test). */
+function tagsFromFrontmatterValue(value: unknown): readonly string[] {
+  return asItems(value)
     .filter((item): item is string => typeof item === 'string')
     .map(stripHash);
 }
@@ -72,11 +128,63 @@ function uniqueInOrder(items: readonly string[]): readonly string[] {
   return result;
 }
 
+/** Applies one `'links'`-kind write to `draft`: patches the raw frontmatter value (preserving
+ * unresolved links, plain text, aliases/headings, and links outside the base exactly as written —
+ * see `patchLinksValue`) and recomputes `propertyLinks[key]` from the same `remove`/`add` patch
+ * over already-resolved targets. */
+function applyLinksWrite(
+  notes: ReadonlyMap<string, NoteData>,
+  draft: NoteDraft,
+  key: string,
+  value: Extract<KeyWrite['value'], { kind: 'links' }>,
+): void {
+  const patched = patchLinksValue(draft.frontmatter[key], {
+    remove: new Set(value.remove),
+    add: value.add,
+    list: value.list,
+    resolve: (raw) => resolveRawLink(notes, raw),
+    format: wikilink,
+  });
+  if (patched === null) {
+    delete draft.frontmatter[key];
+  } else {
+    draft.frontmatter[key] = patched;
+  }
+  const newTargets = resultingTargets(draft.propertyLinks[key] ?? [], value.remove, value.add);
+  if (newTargets.length === 0) {
+    delete draft.propertyLinks[key];
+  } else {
+    draft.propertyLinks[key] = newTargets;
+  }
+}
+
+/** Applies one `'listItem'`-kind write to `draft`: patches a plain (non-link) list-shaped value by
+ * element (see `patchListItem`) — used by retype's recipe-property writes. */
+function applyListItemWrite(
+  draft: NoteDraft,
+  key: string,
+  value: Extract<KeyWrite['value'], { kind: 'listItem' }>,
+): void {
+  const patched = patchListItem(draft.frontmatter[key], {
+    ...(value.remove === undefined ? {} : { remove: value.remove }),
+    ...(value.add === undefined ? {} : { add: value.add }),
+  });
+  if (patched === null) {
+    delete draft.frontmatter[key];
+  } else {
+    draft.frontmatter[key] = patched;
+  }
+}
+
 /** Applies one write's effect to `frontmatter`/`propertyLinks`/`tags`. Shared by creation (fresh
  * draft) and change (draft seeded from the existing note) application — `links` recomputation for
  * changes happens separately in `applyChangeWrite`, since creation instead rebuilds `links` from
  * scratch once at the end (see `buildCreationLinks`). */
-function applyWriteToDraft(draft: NoteDraft, write: KeyWrite): void {
+function applyWriteToDraft(
+  notes: ReadonlyMap<string, NoteData>,
+  draft: NoteDraft,
+  write: KeyWrite,
+): void {
   const { key, value } = write;
   if (value === null) {
     delete draft.frontmatter[key];
@@ -84,13 +192,19 @@ function applyWriteToDraft(draft: NoteDraft, write: KeyWrite): void {
     return;
   }
   if (value.kind === 'links') {
-    draft.frontmatter[key] = linksFrontmatterValue(value.targets, value.list);
-    draft.propertyLinks[key] = [...value.targets];
+    applyLinksWrite(notes, draft, key, value);
+    return;
+  }
+  if (value.kind === 'listItem') {
+    applyListItemWrite(draft, key, value);
+    if (key === 'tags') {
+      draft.tags = [...tagsFromFrontmatterValue(draft.frontmatter[key])];
+    }
     return;
   }
   draft.frontmatter[key] = value.value;
   if (key === 'tags') {
-    draft.tags = [...literalTags(value.value)];
+    draft.tags = [...tagsFromFrontmatterValue(value.value)];
   }
 }
 
@@ -106,7 +220,7 @@ function applyCreations(state: SimState, creations: Plan['creations']): void {
   for (const creation of creations) {
     const draft: NoteDraft = { tags: [], frontmatter: {}, propertyLinks: {}, links: [] };
     for (const write of creation.writes) {
-      applyWriteToDraft(draft, write);
+      applyWriteToDraft(state.notes, draft, write);
     }
     const noteData: NoteData = {
       path: creation.path,
@@ -149,11 +263,17 @@ function recomputeLinks(
   return kept;
 }
 
-function applyChangeWrite(draft: NoteDraft, write: KeyWrite): void {
+function applyChangeWrite(
+  notes: ReadonlyMap<string, NoteData>,
+  draft: NoteDraft,
+  write: KeyWrite,
+): void {
   const oldTargets = draft.propertyLinks[write.key] ?? [];
   const newTargets =
-    write.value !== null && write.value.kind === 'links' ? write.value.targets : [];
-  applyWriteToDraft(draft, write);
+    write.value !== null && write.value.kind === 'links'
+      ? resultingTargets(oldTargets, write.value.remove, write.value.add)
+      : [];
+  applyWriteToDraft(notes, draft, write);
   draft.links = recomputeLinks(draft.links, draft.propertyLinks, oldTargets, newTargets);
 }
 
@@ -165,7 +285,7 @@ function applyChanges(state: SimState, changes: Plan['changes']): void {
     }
     const draft = draftFromNote(existing);
     for (const write of change.writes) {
-      applyChangeWrite(draft, write);
+      applyChangeWrite(state.notes, draft, write);
     }
     state.notes.set(change.path, {
       path: existing.path,

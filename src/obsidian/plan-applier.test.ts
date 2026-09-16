@@ -45,7 +45,7 @@ describe('applyPlan — creations', () => {
           path: 'projects/sub/child.md',
           writes: [
             { key: 'status', value: { kind: 'literal', value: 'active' } },
-            { key: 'up', value: { kind: 'links', targets: ['parent.md'], list: false } },
+            { key: 'up', value: { kind: 'links', remove: [], add: ['parent.md'], list: false } },
           ],
           bodyLinks: ['parent.md'],
         },
@@ -144,6 +144,55 @@ describe('applyPlan — changes', () => {
     const cache = app.metadataCache.getFileCache(mustFile(app, 'note.md'));
     expect(cache?.frontmatter?.['status']).toBeUndefined();
     expect(cache?.frontmatter?.['tags']).toStrictEqual(['x']);
+  });
+
+  it('patches an existing links value in place, preserving an unresolved link, plain text, and a link outside the base exactly as written, and undo restores the original text (C1)', async () => {
+    const app = App.createConfigured__({
+      files: {
+        'A.md': '',
+        'Ext.md': '',
+        'M2.md': '',
+        'H.md':
+          '---\nmeta:\n  - "[[A]]"\n  - "[[Not yet written]]"\n  - some text\n  - "[[Ext]]"\n---\nBody\n',
+      },
+    });
+    const undo = new UndoManager(app.asOriginalType__());
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        {
+          path: 'H.md',
+          writes: [
+            { key: 'meta', value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true } },
+          ],
+        },
+      ],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move');
+
+    expect(outcome.error).toBeNull();
+    if (outcome.transaction.steps.length > 0) {
+      undo.push(outcome.transaction);
+    }
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'H.md'));
+    expect(cache?.frontmatter?.['meta']).toStrictEqual([
+      '[[M2]]',
+      '[[Not yet written]]',
+      'some text',
+      '[[Ext]]',
+    ]);
+
+    const undoResult = await undo.undo();
+
+    expect(undoResult.skipped).toStrictEqual([]);
+    const restoredCache = app.metadataCache.getFileCache(mustFile(app, 'H.md'));
+    expect(restoredCache?.frontmatter?.['meta']).toStrictEqual([
+      '[[A]]',
+      '[[Not yet written]]',
+      'some text',
+      '[[Ext]]',
+    ]);
   });
 });
 
