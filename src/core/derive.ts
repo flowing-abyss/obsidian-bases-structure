@@ -126,38 +126,22 @@ export function ruleBetween(
   return lowestLevelRuleFor(schema, childType);
 }
 
-/** The patch an edge-key write should apply, given the note's `current` (resolved) values at that
- * key: keeps only `newParent` and genuine extra parents (`keep` — `StructureNode.extras` of kind
- * `'property'`); every other resolved value in `current` — including the old parent — is either
- * the value being replaced or a merely *inherited* one (an ancestor's cascade, never an
- * intentional extra), and is removed rather than carried forward. `newParent` is added unless
- * already present. The actual old-parent-shaped raw element (its wikilink, alias, or heading form)
- * is left untouched by this step; the applier/simulator drops it because its *resolved* path is in
- * `remove`, and inserts `add` at that same position — see `patchLinksValue` in `link-patch.ts`.
- * Shared by move's own edge-key write, retype's own edge-key write, and retype's per-child new-key
- * write. */
-export function edgeTargets(
+/** A patch for a brand-new-relationship edge write: nothing is invalidated (`stale` is whatever
+ * the caller has determined is genuinely no longer valid — see `oldContribOf`/round 2's C1 rule),
+ * `newParent` is added unless already present. Only elements resolving to a path in `stale` are
+ * ever removed — a value the action doesn't explain (an untagged existing note, a link outside the
+ * base, a genuine sibling candidate, …) is never touched, regardless of whether it's "recognized"
+ * by the structure. The actual raw element (wikilink, alias, heading form) is left untouched by
+ * this step; the applier/simulator drops it because its *resolved* path is in `remove`, and
+ * inserts `add` at that same position — see `patchLinksValue` in `link-patch.ts`. */
+export function edgeKeyPatch(
   current: readonly string[],
+  stale: ReadonlySet<string>,
   newParent: string,
-  keep: ReadonlySet<string>,
 ): LinkPatch {
-  const remove = [...new Set(current.filter((t) => t !== newParent && !keep.has(t)))];
+  const remove = [...new Set(current.filter((t) => stale.has(t)))];
   const add = current.includes(newParent) ? [] : [newParent];
   return { remove, add };
-}
-
-/** The values in a node's own edge-key property that must survive a rewrite untouched: its
- * genuine property-kind extras (other structurally-recognized parent candidates tied on the same
- * rule) plus its `alsoIn` targets — real, resolved links that just aren't part of the structure's
- * own node set (outside the base's results, e.g.), which the view itself shows as "also in".
- * Every other value currently sitting in the same property slot is either the old parent being
- * replaced or a stale/inherited one, and both are dropped by `edgeTargets`. `exclude` (typically
- * the old parent) is dropped from the extras half, since it would otherwise also show up there. */
-export function keepTargetsFor(node: StructureNode, exclude: string | null): ReadonlySet<string> {
-  const extras = node.extras
-    .filter((extra) => extra.kind === 'property' && extra.parent !== exclude)
-    .map((extra) => extra.parent);
-  return new Set([...extras, ...node.alsoIn]);
 }
 
 export interface SubtreeContext {
@@ -166,6 +150,37 @@ export interface SubtreeContext {
   readonly structure: Structure;
   readonly typeOverrides: ReadonlyMap<string, string>; // path → type name after the action
   readonly linkOverrides: Map<string, Record<string, readonly string[]>>; // path → key → desired targets
+}
+
+/** `ctx` with every override cleared — the "before the action" view of every node's type/links,
+ * used to compute what an old parent chain used to contribute to a key (`oldContribOf`,
+ * `unionInheritedTargets` called with this in place of the live `ctx`). Shares `schema`/`snapshot`/
+ * `structure` (those never change during planning) with the context it's derived from. */
+export function bareContext(ctx: SubtreeContext): SubtreeContext {
+  return {
+    schema: ctx.schema,
+    snapshot: ctx.snapshot,
+    structure: ctx.structure,
+    typeOverrides: new Map(),
+    linkOverrides: new Map(),
+  };
+}
+
+/** What `parentPath` currently (pre-action) contributes to `key`, straight from the *live*
+ * `structure`/`snapshot` — the single old parent's own share of round 2's `U_old`, used for the
+ * moved/retyped node's own edge-key write (its other old property parents, if any, never
+ * contributed to *this* key in a way the action invalidates, so they're deliberately excluded —
+ * see the C1 round 2 report for why folding them in here broke the "keeps a genuine extra" case). */
+export function oldContribOf(
+  live: Pick<SubtreeContext, 'schema' | 'structure' | 'snapshot'>,
+  parentPath: string,
+  key: string,
+): readonly string[] {
+  const { schema, structure, snapshot } = live;
+  const typeName = structure.nodes.get(parentPath)?.type ?? null;
+  const type = typeName === null ? null : (schema.typeByName.get(typeName) ?? null);
+  const links = snapshot.notes.get(parentPath)?.propertyLinks ?? {};
+  return inheritedTargets(schema, { path: parentPath, type, links }, key);
 }
 
 /** `path`'s `TypeDef` as it will be after the action: `typeOverrides` wins when it names a path,
@@ -215,10 +230,37 @@ export function unionInheritedTargets(
   return result;
 }
 
+/** The full resolved target list a `'links'` patch leaves a key holding: `current` minus `remove`,
+ * plus any `add` target it didn't already have, inserted where the first removed value sat (or at
+ * the end, when nothing was removed). Round 2 C1: overrides recorded from this — the *resulting*
+ * targets — not from a "desired" value computed independently of what was actually there. */
+export function resultingTargets(
+  current: readonly string[],
+  remove: readonly string[],
+  add: readonly string[],
+): readonly string[] {
+  const removeSet = new Set(remove);
+  const kept: string[] = [];
+  let insertIndex: number | null = null;
+  for (const target of current) {
+    if (removeSet.has(target)) {
+      insertIndex ??= kept.length;
+      continue;
+    }
+    kept.push(target);
+  }
+  const toInsert = add.filter((target) => !kept.includes(target));
+  kept.splice(insertIndex ?? kept.length, 0, ...toInsert);
+  return kept;
+}
+
 /** D's "property parents" for inheritance purposes: its primary parent (when any) first, then
  * every `extras` entry that is itself a `'property'`-kind edge — the set of parents whose own
- * `inherit`-key values D's own values should be a union of. */
-function propertyParentsOf(node: StructureNode): readonly string[] {
+ * `inherit`-key values D's own values should be a union of. Round 2 C1: this same structural list
+ * serves as both "old" and "new" property parents for a descendant in a cascade (an ancestor's
+ * move/retype doesn't restructure the descendant's own parent/extras) — only the *values* each
+ * parent contributes differ, between a bare (`bareContext`) and the live/overridden context. */
+export function propertyParentsOf(node: StructureNode): readonly string[] {
   const parents: string[] = [];
   if (node.parent !== null) {
     parents.push(node.parent);
@@ -242,20 +284,29 @@ function inheritKeysFor(schema: Schema, node: StructureNode): readonly string[] 
 /** Every `inherit`-key write D needs given the (possibly overridden) state of its property
  * parents, in `schema.inherit` order; records each changed key into `ctx.linkOverrides` as it
  * goes, so a later descendant that treats D as one of its own property parents sees D's new
- * values. `null` when D needs no writes at all (omit D from the plan entirely). */
+ * values. `null` when D needs no writes at all (omit D from the plan entirely).
+ *
+ * Round 2 C1 rule: `remove = (U_old(key) − U_new(key)) ∩ current`, `add = U_new(key) − current` —
+ * `U_old` evaluated through `oldCtx` (no overrides — the true pre-action state of D's property
+ * parents), `U_new` through the live `ctx`. A value D holds that no property parent ever
+ * contributed (a user-added value, an "also in" link) is in neither set and is never removed. */
 function writesForDescendant(
   ctx: SubtreeContext,
+  oldCtx: SubtreeContext,
   path: string,
   node: StructureNode,
 ): readonly KeyWrite[] | null {
   const writes: KeyWrite[] = [];
   const overrides: Record<string, readonly string[]> = {};
   let changed = false;
+  const parents = propertyParentsOf(node);
   for (const key of inheritKeysFor(ctx.schema, node)) {
-    const desired = unionInheritedTargets(ctx, propertyParentsOf(node), key);
+    const uOld = unionInheritedTargets(oldCtx, parents, key);
+    const uNew = unionInheritedTargets(ctx, parents, key);
     const current = ctx.snapshot.notes.get(path)?.propertyLinks[key] ?? [];
-    const remove = current.filter((target) => !desired.includes(target));
-    const add = desired.filter((target) => !current.includes(target));
+    const staleSet = new Set(uOld.filter((target) => !uNew.includes(target)));
+    const remove = current.filter((target) => staleSet.has(target));
+    const add = uNew.filter((target) => !current.includes(target));
     if (remove.length === 0 && add.length === 0) {
       continue;
     }
@@ -263,7 +314,7 @@ function writesForDescendant(
       key,
       value: { kind: 'links', remove, add, list: listShape(ctx.snapshot, key, path) },
     });
-    overrides[key] = desired;
+    overrides[key] = resultingTargets(current, remove, add);
     changed = true;
   }
   if (!changed) {
@@ -294,10 +345,12 @@ function collectDescendants(structure: Structure, start: string): readonly strin
 
 /** The cascade step shared by move and retype planning: recomputes every `schema.inherit` key for
  * each descendant of `start` in the *original* (pre-action) primary tree, using `ctx.typeOverrides`
- * / `ctx.linkOverrides` to see the action's effect on ancestors as the walk proceeds top-down.
- * Descendants that need no change are omitted from the result. */
+ * / `ctx.linkOverrides` to see the action's effect on ancestors as the walk proceeds top-down, and
+ * `oldCtx` (`bareContext(ctx)`, built once by the caller) as the pre-action baseline for round 2's
+ * `U_old`. Descendants that need no change are omitted from the result. */
 export function deriveSubtreeWrites(
   ctx: SubtreeContext,
+  oldCtx: SubtreeContext,
   start: string,
 ): ReadonlyArray<{ path: string; writes: readonly KeyWrite[] }> {
   const results: Array<{ path: string; writes: readonly KeyWrite[] }> = [];
@@ -306,7 +359,7 @@ export function deriveSubtreeWrites(
     if (node === undefined) {
       continue;
     }
-    const writes = writesForDescendant(ctx, path, node);
+    const writes = writesForDescendant(ctx, oldCtx, path, node);
     if (writes !== null) {
       results.push({ path, writes });
     }

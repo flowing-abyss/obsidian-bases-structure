@@ -2,7 +2,14 @@
 // cascades link updates to its descendants, or a rejection with a stable, user-facing reason. No
 // Obsidian imports.
 
-import { deriveSubtreeWrites, keepTargetsFor, ruleBetween, type SubtreeContext } from './derive.js';
+import {
+  bareContext,
+  deriveSubtreeWrites,
+  oldContribOf,
+  propertyParentsOf,
+  ruleBetween,
+  type SubtreeContext,
+} from './derive.js';
 import {
   buildEdgeWrites,
   firstChangedOtherNode,
@@ -158,9 +165,13 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     typeOverrides: new Map(),
     linkOverrides: new Map(),
   };
-  const propertyExtras = nNode.extras
-    .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
-    .map((extra) => extra.parent);
+  const oldCtx = bareContext(ctx);
+  // Round 2 C1: the edge key's stale set is the old parent itself plus whatever it used to
+  // contribute to this specific key (`U_old(k)`, just the *single* old parent — not the node's
+  // other old property parents, which never contributed to `k` in a way this move invalidates).
+  const staleForNewKey = new Set(
+    oldParent === null ? [] : [oldParent, ...oldContribOf(ctx, oldParent, rule.property)],
+  );
   const edgeWrites = buildEdgeWrites(schema, {
     snapshot,
     node: action.node,
@@ -168,13 +179,22 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     newParent: action.parent,
     oldEdge,
     key: rule.property,
-    keep: keepTargetsFor(nNode, oldParent),
+    staleForNewKey,
   });
-  const propertyParents = [action.parent, ...propertyExtras];
-  const inheritWrites = inheritWritesFor(ctx, action.node, rule.property, propertyParents);
+  const propertyExtras = nNode.extras
+    .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
+    .map((extra) => extra.parent);
+  const oldPropertyParents = propertyParentsOf(nNode);
+  const newPropertyParents = [action.parent, ...propertyExtras];
+  const inheritWrites = inheritWritesFor(ctx, oldCtx, {
+    node: action.node,
+    excludeKey: rule.property,
+    oldPropertyParents,
+    newPropertyParents,
+  });
   const nWrites = [...edgeWrites, ...inheritWrites];
   recordAllOverrides(ctx, action.node, nWrites);
-  const subtreeWrites = deriveSubtreeWrites(ctx, action.node);
+  const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
   const changes =
     nWrites.length > 0 ? [{ path: action.node, writes: nWrites }, ...subtreeWrites] : subtreeWrites;
   const plan: Plan = { creations: [], changes, appends: [], moves: [] };

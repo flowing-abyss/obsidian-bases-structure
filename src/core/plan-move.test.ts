@@ -253,6 +253,107 @@ describe('planAction — move: preserves an unresolved link, plain text, and a l
   });
 });
 
+describe('planAction — move: round 2 C1 — remove only what the action invalidates', () => {
+  it('keeps an untagged existing note and a wrong-type note sitting in the edge key — neither is contributed by the old parent, so neither is stale', () => {
+    const schema = schemaFrom({
+      types: {
+        MetaT: { tag: 'meta', children: { Hier: 'meta' } },
+        Hier: { tag: 'hier' },
+        Other: { tag: 'other' },
+      },
+    });
+    const snap = snapshot([
+      note('a.md', { tags: ['meta'] }),
+      note('c.md', { tags: ['meta'] }),
+      // An existing note the user linked into `meta` that has no type/tag at all (e.g. created by
+      // clicking an unresolved link) — not contributed by "a.md", so never stale.
+      note('random.md'),
+      // A note of a completely different, unrelated type — also never contributed by "a.md".
+      note('wrong-type.md', { tags: ['other'] }),
+      note('hier.md', {
+        tags: ['hier'],
+        frontmatter: { meta: ['[[a]]', '[[random]]', '[[wrong-type]]'] },
+        propertyLinks: { meta: ['a.md', 'random.md', 'wrong-type.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'hier.md', parent: 'c.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'hier.md',
+        writes: [
+          { key: 'meta', value: { kind: 'links', remove: ['a.md'], add: ['c.md'], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('hier.md')?.frontmatter['meta']).toStrictEqual([
+      '[[c]]',
+      '[[random]]',
+      '[[wrong-type]]',
+    ]);
+  });
+
+  it('cascades a category change to a grandchild\'s inherited key while keeping a typed "also in" link and a user-added value already sitting there', () => {
+    const schema = schemaFrom({
+      types: {
+        Category: { tag: 'cat', children: { MetaT: 'category' } },
+        MetaT: { tag: 'meta', children: { Hier: 'meta' } },
+        Hier: { tag: 'hier' },
+      },
+      inherit: ['category'],
+    });
+    const c1 = note('c1.md', { tags: ['cat'] });
+    const c2 = note('c2.md', { tags: ['cat'] });
+    // A typed Category note outside the base's own results ("also in" in the view) and a plain
+    // user-added value, both already sitting in the grandchild's inherited `category` alongside
+    // what it currently inherits from "m.md" (c1).
+    const extCat = note('ext-cat.md', { tags: ['cat'] });
+    const m = note('m.md', {
+      tags: ['meta'],
+      frontmatter: { category: ['[[c1]]'] },
+      propertyLinks: { category: ['c1.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['hier'],
+      frontmatter: { meta: ['[[m]]'], category: ['[[c1]]', '[[ext-cat]]', '[[user added]]'] },
+      propertyLinks: { meta: ['m.md'], category: ['c1.md', 'ext-cat.md', 'user added.md'] },
+    });
+    const snap = snapshot([c1, c2, extCat, m, h], {
+      results: ['c1.md', 'c2.md', 'm.md', 'h.md'],
+    });
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'm.md', parent: 'c2.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hChange = result.plan.changes.find((change) => change.path === 'h.md');
+    expect(hChange).toStrictEqual({
+      path: 'h.md',
+      writes: [
+        {
+          key: 'category',
+          value: { kind: 'links', remove: ['c1.md'], add: ['c2.md'], list: true },
+        },
+      ],
+    });
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.frontmatter['category']).toStrictEqual([
+      '[[c2]]',
+      '[[ext-cat]]',
+      '[[user added]]',
+    ]);
+  });
+});
+
 describe('moveTargets', () => {
   const schema = schemaFrom({
     types: {

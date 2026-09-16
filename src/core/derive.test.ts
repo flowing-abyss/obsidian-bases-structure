@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
 import {
+  bareContext,
   deriveSubtreeWrites,
+  edgeKeyPatch,
   edgeProperties,
-  edgeTargets,
   inheritedTargets,
   listShape,
   ruleBetween,
@@ -156,54 +157,61 @@ describe('listShape', () => {
   });
 });
 
-describe('edgeTargets', () => {
-  it('removes everything except newParent/keep and adds newParent (sameKey-style in-place replace)', () => {
-    // meta: [A, B] moving from A to C -> remove A, add C (B is a genuine property-kind extra, kept).
-    const result = edgeTargets(['A', 'B'], 'C', new Set(['B']));
+describe('edgeKeyPatch', () => {
+  it('removes only what stale names and adds newParent (sameKey-style in-place replace)', () => {
+    // meta: [A, B] moving from A to C -> remove A (stale), add C; B is untouched regardless of
+    // whether it's "recognized" by the structure — round 2 C1: only stale values are ever removed.
+    const result = edgeKeyPatch(['A', 'B'], new Set(['A']), 'C');
 
     expect(result).toStrictEqual({ remove: ['A'], add: ['C'] });
   });
 
-  it('drops a merely-inherited (ancestor) value even when it sits in the same property slot', () => {
-    // The bug this helper fixes: "information processing" is an inherited/ancestor value sitting
-    // in the same property slot, not the new parent or a genuine extra — it must not survive.
-    const result = edgeTargets(['information processing'], 'note taking', new Set());
+  it('removes a stale ancestor-contributed value even when it sits in the same property slot', () => {
+    // The bug this helper fixes: "information processing" is a stale ancestor-contributed value
+    // sitting in the same property slot as the new parent — it must not survive.
+    const result = edgeKeyPatch(
+      ['information processing'],
+      new Set(['information processing']),
+      'note taking',
+    );
 
     expect(result).toStrictEqual({ remove: ['information processing'], add: ['note taking'] });
   });
 
-  it('removes a non-extra old value and adds newParent when the key differs', () => {
-    const result = edgeTargets(['old-value'], 'P', new Set());
+  it('removes a value the caller has determined is stale and adds newParent', () => {
+    const result = edgeKeyPatch(['old-value'], new Set(['old-value']), 'P');
 
     expect(result).toStrictEqual({ remove: ['old-value'], add: ['P'] });
   });
 
-  it('keeps a genuine extra out of remove even when the key differs', () => {
-    const result = edgeTargets(['O', 'extra'], 'P', new Set(['extra']));
+  it('leaves a non-stale old value untouched and adds newParent', () => {
+    const result = edgeKeyPatch(['O', 'extra'], new Set(['O']), 'P');
 
     expect(result).toStrictEqual({ remove: ['O'], add: ['P'] });
   });
 
-  it('removes whatever else is present when the "old parent" is not actually there', () => {
-    const result = edgeTargets(['other'], 'P', new Set());
+  it("round 2 C1: never removes a value the caller hasn't named stale, however unrecognized", () => {
+    // The regression this rule fixes: an untagged existing note, a wrong-type note, an "also in"
+    // link — none of these are ever removed just because they aren't a recognized parent/extra.
+    const result = edgeKeyPatch(['other'], new Set(), 'P');
 
-    expect(result).toStrictEqual({ remove: ['other'], add: ['P'] });
+    expect(result).toStrictEqual({ remove: [], add: ['P'] });
   });
 
   it('adds newParent with nothing to remove from an empty current value (retype child rewrite shape)', () => {
-    const result = edgeTargets([], 'N', new Set());
+    const result = edgeKeyPatch([], new Set(), 'N');
 
     expect(result).toStrictEqual({ remove: [], add: ['N'] });
   });
 
   it('is a no-op to add newParent when it is already present', () => {
-    const result = edgeTargets(['P', 'extra'], 'P', new Set(['extra']));
+    const result = edgeKeyPatch(['P', 'extra'], new Set(), 'P');
 
     expect(result).toStrictEqual({ remove: [], add: [] });
   });
 
   it('dedupes repeated occurrences of a removed value', () => {
-    const result = edgeTargets(['A', 'A'], 'C', new Set());
+    const result = edgeKeyPatch(['A', 'A'], new Set(['A']), 'C');
 
     expect(result).toStrictEqual({ remove: ['A'], add: ['C'] });
   });
@@ -326,6 +334,9 @@ describe('deriveSubtreeWrites', () => {
     ]);
     const snap = snapshot([
       note('root.md'),
+      // Round 2 C1: "old-value.md" is a value nobody currently contributes to d.md's `k` — under
+      // the pre-round-2 rule it was wiped just for not being "desired"; now it survives, since no
+      // old parent ever contributed it (it isn't in `U_old(k)` either).
       note('d.md', { propertyLinks: { k: ['old-value.md'] } }),
       note('e.md', { propertyLinks: { k: ['root.md', 'override-target.md'] } }),
       note('extraProp.md', { propertyLinks: { k: ['snapshot-value.md'] } }),
@@ -342,8 +353,9 @@ describe('deriveSubtreeWrites', () => {
       ]),
       linkOverrides: new Map([['extraProp.md', { k: ['override-target.md'] }]]),
     };
+    const oldCtx = bareContext(ctx);
 
-    const result = deriveSubtreeWrites(ctx, 'root.md');
+    const result = deriveSubtreeWrites(ctx, oldCtx, 'root.md');
 
     expect(result).toStrictEqual([
       {
@@ -352,18 +364,33 @@ describe('deriveSubtreeWrites', () => {
           {
             key: 'k',
             value: {
+              // "old-value.md" survives (round 2 C1): it's in neither U_old(k) (extraProp.md's old
+              // contribution was "snapshot-value.md", not this) nor U_new(k). root.md/
+              // override-target.md are added: root.md now links children via k (RootNew), and
+              // extraProp.md's overridden value is override-target.md.
               kind: 'links',
-              remove: ['old-value.md'],
+              remove: [],
               add: ['root.md', 'override-target.md'],
               list: true,
             },
           },
         ],
       },
+      {
+        path: 'e.md',
+        writes: [
+          {
+            key: 'k',
+            // e.md inherits from its parent d.md, whose *resulting* k (round 2: recorded from
+            // current − remove + add, not from a "desired" value) now includes "old-value.md" —
+            // so e picks it up too, maintaining the inherit-cascade invariant.
+            value: { kind: 'links', remove: [], add: ['old-value.md'], list: true },
+          },
+        ],
+      },
     ]);
-    // "missingChild.md" (a phantom entry in root's own `children`) and "e.md" (whose desired value
-    // already matches its current one, once d.md's own override is folded in) are both omitted.
+    // "missingChild.md" (a phantom entry in root's own `children`) is omitted: it's absent from
+    // `structure.nodes` entirely.
     expect(result.map((entry) => entry.path)).not.toContain('missingChild.md');
-    expect(result.map((entry) => entry.path)).not.toContain('e.md');
   });
 });

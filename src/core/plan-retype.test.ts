@@ -251,6 +251,46 @@ describe('planAction — retype: property-typed schema literal swap', () => {
   });
 });
 
+describe('planAction — retype: round 2 C1 — no edge write at all when the edge key does not change', () => {
+  it('retyping under a parent that links both old and new type via the same property emits no write for that property, even with an unrelated value already sitting there', () => {
+    // Task and Project are both linked from Cat via "up" — retyping task.md to Project never
+    // changes its edge key, so no edge write should be emitted for "up" at all. Before round 2,
+    // `buildNOwnWrites` called `buildEdgeWrites` unconditionally, which could strip an unrelated
+    // value ("random.md", not a parent — this reproduces the reviewer's `meta: {remove:
+    // ["Random.md"]}` regression, generalised to any property this retype doesn't touch).
+    const schema = schemaFrom({
+      types: {
+        Cat: { tag: 'cat', children: { Task: 'up', Project: 'up' } },
+        Task: { property: { type: 'task' } },
+        Project: { property: { type: 'project' } },
+      },
+    });
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('random.md'),
+      note('task.md', {
+        frontmatter: { type: 'task', up: ['[[cat]]', '[[random]]'] },
+        propertyLinks: { up: ['cat.md', 'random.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'task.md', type: 'Project' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      { path: 'task.md', writes: [{ key: 'type', value: { kind: 'literal', value: 'project' } }] },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('task.md')?.frontmatter['up']).toStrictEqual(['[[cat]]', '[[random]]']);
+  });
+});
+
 describe('planAction — retype: own edge-key change cascades to children', () => {
   it('changing the property that links N to its parent rewrites a child that used the old key', () => {
     // Cat links Meta children via "category" but Prob2 children via "cat2" — retyping m.md from

@@ -3,10 +3,11 @@
 // uses), or a rejection with a stable, user-facing reason. No Obsidian imports.
 
 import {
+  bareContext,
   deriveSubtreeWrites,
-  edgeTargets,
-  keepTargetsFor,
+  edgeKeyPatch,
   listShape,
+  resultingTargets,
   ruleBetween,
   type SubtreeContext,
 } from './derive.js';
@@ -18,7 +19,6 @@ import {
   inheritWritesFor,
   recordAllOverrides,
   recordOverride,
-  resultingTargets,
   textLinkReason,
 } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanEnv, PlanResult } from './plan-types.js';
@@ -351,12 +351,18 @@ function nOwnPropertyParents(nNode: StructureNode, parent: string): readonly str
 /** N's own edge + inherit-key writes, only when N has a parent and the new parent rule is a
  * `'property'` rule (a text-only rule means the relationship stays exactly as it was in note
  * text — nothing to write). N's parent never changes during a retype, so `oldParent === newParent`
- * (see `plan-shared.ts`'s `EdgeWriteInputs`/`buildEdgeWrites`). The inherit recompute only runs
- * when N's edge key is actually changing; otherwise nothing downstream of N's own relationship to
- * its parent needs touching. */
+ * (see `plan-shared.ts`'s `EdgeWriteInputs`/`buildEdgeWrites`).
+ *
+ * Round 2 C1: when N's edge key isn't actually changing, this emits *no* edge write at all — the
+ * relationship is already sitting in the right key, so there's nothing an edge write could
+ * legitimately do (the earlier bug: calling `buildEdgeWrites` unconditionally could strip an
+ * unrelated value already sitting in that same property). When the key *is* changing, the new key
+ * never held this relationship before, so nothing in it is stale — `staleForNewKey` is empty
+ * (add-only) — and the inherit recompute only runs in that case too, since nothing downstream of
+ * N's own relationship to its parent needs touching otherwise. */
 function buildNOwnWrites(
-  schema: Schema,
   ctx: SubtreeContext,
+  oldCtx: SubtreeContext,
   fields: RetypeFields,
   action: RetypeAction,
 ): readonly KeyWrite[] {
@@ -366,8 +372,10 @@ function buildNOwnWrites(
   }
   const parent = nNode.parent;
   const key = parentRule.property;
+  if (nNode.edge?.property === key) {
+    return [];
+  }
   const propertyParents = nOwnPropertyParents(nNode, parent);
-  const keep = keepTargetsFor(nNode, parent);
   const inputs: EdgeWriteInputs = {
     snapshot: ctx.snapshot,
     node: action.node,
@@ -375,13 +383,18 @@ function buildNOwnWrites(
     newParent: parent,
     oldEdge: nNode.edge,
     key,
-    keep,
+    staleForNewKey: new Set(),
   };
-  const writes = buildEdgeWrites(schema, inputs);
-  if (nNode.edge?.property === key) {
-    return writes;
-  }
-  return [...writes, ...inheritWritesFor(ctx, action.node, key, propertyParents)];
+  const writes = buildEdgeWrites(ctx.schema, inputs);
+  return [
+    ...writes,
+    ...inheritWritesFor(ctx, oldCtx, {
+      node: action.node,
+      excludeKey: key,
+      oldPropertyParents: propertyParents,
+      newPropertyParents: propertyParents,
+    }),
+  ];
 }
 
 // -- Children whose edge property must move from the old key to the new one -----------------
@@ -392,7 +405,6 @@ interface ChildWriteEntry {
 }
 
 interface ChildEdgeChange {
-  readonly childNode: StructureNode;
   readonly oldKey: string;
   readonly newKey: string;
 }
@@ -414,26 +426,29 @@ function childEdgeChange(
   if (rule?.kind !== 'property' || childNode.edge.property === rule.property) {
     return null;
   }
-  return { childNode, oldKey: childNode.edge.property, newKey: rule.property };
+  return { oldKey: childNode.edge.property, newKey: rule.property };
 }
 
 /** The new-key write (N added) and the old-key cleanup write (N removed) for one child whose edge
  * property is moving — the old key is always cleaned up here, even when it's also a
  * `schema.inherit` key: the generic inherit recompute (`deriveSubtreeWrites`) never touches it
  * either, since it excludes a descendant's *own* (pre-action) edge property from that recompute
- * (see `inheritKeysFor` in `derive.ts`) — so if this step skipped it too, nothing would (I3). */
+ * (see `inheritKeysFor` in `derive.ts`) — so if this step skipped it too, nothing would (I3).
+ *
+ * Round 2 C1: the new key never held this relationship before, so the write is add-only (nothing
+ * is stale, hence the empty set below) — a value already sitting in that property for an unrelated
+ * reason (an untagged note, a wrong-type note, an "also in" link) survives untouched. */
 function childRewriteWrites(
   ctx: SubtreeContext,
   childPath: string,
   change: ChildEdgeChange,
   node: string,
 ): readonly KeyWrite[] {
-  const { childNode, oldKey, newKey } = change;
+  const { oldKey, newKey } = change;
   const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
   const writes: KeyWrite[] = [];
   const newCur = cLinks[newKey] ?? [];
-  const keep = keepTargetsFor(childNode, null);
-  const { remove: newRemove, add: newAdd } = edgeTargets(newCur, node, keep);
+  const { remove: newRemove, add: newAdd } = edgeKeyPatch(newCur, new Set(), node);
   if (newRemove.length > 0 || newAdd.length > 0) {
     writes.push({
       key: newKey,
@@ -594,14 +609,15 @@ export function planRetype(
     typeOverrides: new Map([[action.node, action.type]]),
     linkOverrides: new Map(),
   };
+  const oldCtx = bareContext(ctx);
   const nWrites = [
     ...literalRetypeWrites(nNote, oldMatch, newType),
-    ...buildNOwnWrites(schema, ctx, validation.fields, action),
+    ...buildNOwnWrites(ctx, oldCtx, validation.fields, action),
   ];
   recordAllOverrides(ctx, action.node, nWrites);
 
   const childWrites = retypedChildWrites(schema, ctx, nNode, action);
-  const subtreeWrites = deriveSubtreeWrites(ctx, action.node);
+  const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
   const mergedDescendantWrites = mergeWritesByPath(childWrites, subtreeWrites);
   const changes =
     nWrites.length > 0

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
-import type { SubtreeContext } from './derive.js';
+import { bareContext, type SubtreeContext } from './derive.js';
 import {
   buildEdgeWrites,
   computeOldEdgeCleanup,
@@ -111,7 +111,7 @@ describe('computeOldEdgeCleanup', () => {
       newParent: 'new-parent.md',
       oldEdge: { kind: 'property', property: 'oldKey' },
       key: 'newKey',
-      keep: new Set(),
+      staleForNewKey: new Set(),
     };
 
     const result = computeOldEdgeCleanup(
@@ -132,7 +132,7 @@ describe('computeOldEdgeCleanup', () => {
       newParent: 'new-parent.md',
       oldEdge: { kind: 'property', property: 'oldKey' },
       key: 'newKey',
-      keep: new Set(),
+      staleForNewKey: new Set(),
     };
 
     const result = computeOldEdgeCleanup(emptySchema, inputs, {});
@@ -152,7 +152,7 @@ describe('buildEdgeWrites', () => {
       newParent: 'p.md',
       oldEdge: null,
       key: 'up',
-      keep: new Set(),
+      staleForNewKey: new Set(),
     });
 
     expect(result).toStrictEqual([
@@ -172,7 +172,12 @@ describe('inheritWritesFor', () => {
       linkOverrides: new Map(),
     };
 
-    const result = inheritWritesFor(ctx, 'ghost.md', 'unrelated-key', ['p.md']);
+    const result = inheritWritesFor(ctx, bareContext(ctx), {
+      node: 'ghost.md',
+      excludeKey: 'unrelated-key',
+      oldPropertyParents: ['p.md'],
+      newPropertyParents: ['p.md'],
+    });
 
     // "category" isn't provided by p.md's (untyped, here) edgeProperties nor by any links value,
     // so desired is [] and current (missing note, defensive `?? {}`) is also [] -> no write.

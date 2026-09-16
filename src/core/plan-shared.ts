@@ -5,7 +5,13 @@
 // planAction/childOptions (planner.ts), planMove/moveTargets (plan-move.ts), and
 // planRetype/retypeOptions (plan-retype.ts) are. No Obsidian imports.
 
-import { edgeTargets, listShape, unionInheritedTargets, type SubtreeContext } from './derive.js';
+import {
+  edgeKeyPatch,
+  listShape,
+  resultingTargets,
+  unionInheritedTargets,
+  type SubtreeContext,
+} from './derive.js';
 import type { KeyWrite } from './plan-types.js';
 import type { EdgeRule, Schema } from './schema.js';
 import { displayName, type Snapshot } from './snapshot.js';
@@ -38,28 +44,6 @@ export function recordOverride(
   ctx.linkOverrides.set(path, { ...existing, [key]: targets });
 }
 
-/** The full resolved target list a `'links'` patch leaves a key holding: `current` minus `remove`,
- * plus any `add` target it didn't already have. */
-export function resultingTargets(
-  current: readonly string[],
-  remove: readonly string[],
-  add: readonly string[],
-): readonly string[] {
-  const removeSet = new Set(remove);
-  const kept: string[] = [];
-  let insertIndex: number | null = null;
-  for (const target of current) {
-    if (removeSet.has(target)) {
-      insertIndex ??= kept.length;
-      continue;
-    }
-    kept.push(target);
-  }
-  const toInsert = add.filter((target) => !kept.includes(target));
-  kept.splice(insertIndex ?? kept.length, 0, ...toInsert);
-  return kept;
-}
-
 /** Records every `'links'`-kind write in `writes` into `ctx.linkOverrides` for `path`, so a later
  * step in the same walk (a descendant's inherit recompute, a sibling's own edge write) sees the
  * new values instead of the stale snapshot ones. Literal/list-item writes carry no link targets
@@ -85,19 +69,20 @@ export function recordAllOverrides(
 export interface EdgeWriteInputs {
   readonly snapshot: Snapshot;
   readonly node: string;
-  readonly oldParent: string | null; // O
+  readonly oldParent: string | null; // O — used only for the old-key cleanup (I3)
   readonly newParent: string; // P
   readonly oldEdge: EdgeRule | null; // E
   readonly key: string; // k = rule.property
-  readonly keep: ReadonlySet<string>; // the node's genuine property-kind extras
+  readonly staleForNewKey: ReadonlySet<string>; // round 2 C1: {O} ∪ U_old(k) for a move; ∅ when k is brand new to N (retype/child key change)
 }
 
-/** The edge-key write itself: a patch that removes everything except the new parent and genuine
- * extras from the current value, and adds the new parent (see `derive.ts`'s `edgeTargets`). `null`
- * when nothing actually changes. Shared by move (`oldParent`/`newParent` differ) and retype's
- * own-N edge handling (`oldParent === newParent`, since retype never reparents N). */
+/** The edge-key write itself: a patch that removes only what `staleForNewKey` says the action
+ * invalidates, and adds the new parent (see `derive.ts`'s `edgeKeyPatch`). `null` when nothing
+ * actually changes. Shared by move (`staleForNewKey` = `{O} ∪ U_old(k)`) and retype/child
+ * key-change writes (`staleForNewKey` = `∅`, since the key wasn't holding this relationship
+ * before — nothing in it is stale, only the new parent needs adding). */
 function computeEdgeWrite(inputs: EdgeWriteInputs, cur: readonly string[]): KeyWrite | null {
-  const { remove, add } = edgeTargets(cur, inputs.newParent, inputs.keep);
+  const { remove, add } = edgeKeyPatch(cur, inputs.staleForNewKey, inputs.newParent);
   if (remove.length === 0 && add.length === 0) {
     return null;
   }
@@ -158,26 +143,38 @@ export function buildEdgeWrites(schema: Schema, inputs: EdgeWriteInputs): readon
   );
 }
 
-/** Every `schema.inherit` key except `excludeKey` (the node's own, just-written edge property),
- * given the property parents `propertyParents`. Mutates `ctx.linkOverrides` for `node` as writes
- * are found — mirrors `deriveSubtreeWrites`'s per-descendant recompute, applied to the node itself
- * with a caller-supplied parent list instead of the structure's own `parent`/`extras`. */
+export interface InheritWriteInputs {
+  readonly node: string;
+  readonly excludeKey: string; // the node's own, just-written edge property
+  readonly oldPropertyParents: readonly string[]; // evaluated through oldCtx — no overrides, pre-action state
+  readonly newPropertyParents: readonly string[]; // evaluated through the live ctx
+}
+
+/** Every `schema.inherit` key except `inputs.excludeKey`, given the node's property parents before
+ * and after the action. Round 2 C1 rule: `remove = (U_old(q) − U_new(q)) ∩ current`,
+ * `add = U_new(q) − current` — a value the user added that no old parent contributed (an "also in"
+ * link, a value from an untracked source) is in neither `U_old` nor `U_new`'s removal side, so it's
+ * never touched. Mutates `ctx.linkOverrides` for `node` as writes are found — mirrors
+ * `deriveSubtreeWrites`'s per-descendant recompute, applied to the node itself with caller-supplied
+ * parent lists instead of the structure's own `parent`/`extras`. */
 export function inheritWritesFor(
   ctx: SubtreeContext,
-  node: string,
-  excludeKey: string,
-  propertyParents: readonly string[],
+  oldCtx: SubtreeContext,
+  inputs: InheritWriteInputs,
 ): readonly KeyWrite[] {
+  const { node, excludeKey, oldPropertyParents, newPropertyParents } = inputs;
   const writes: KeyWrite[] = [];
   const nLinks = ctx.snapshot.notes.get(node)?.propertyLinks ?? {};
   for (const key of ctx.schema.inherit) {
     if (key === excludeKey) {
       continue;
     }
-    const desired = unionInheritedTargets(ctx, propertyParents, key);
+    const uOld = unionInheritedTargets(oldCtx, oldPropertyParents, key);
+    const uNew = unionInheritedTargets(ctx, newPropertyParents, key);
     const current = nLinks[key] ?? [];
-    const remove = current.filter((target) => !desired.includes(target));
-    const add = desired.filter((target) => !current.includes(target));
+    const staleSet = new Set(uOld.filter((target) => !uNew.includes(target)));
+    const remove = current.filter((target) => staleSet.has(target));
+    const add = uNew.filter((target) => !current.includes(target));
     if (remove.length === 0 && add.length === 0) {
       continue;
     }
@@ -185,7 +182,7 @@ export function inheritWritesFor(
       key,
       value: { kind: 'links', remove, add, list: listShape(ctx.snapshot, key, node) },
     });
-    recordOverride(ctx, node, key, desired);
+    recordOverride(ctx, node, key, resultingTargets(current, remove, add));
   }
   return writes;
 }
