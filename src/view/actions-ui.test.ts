@@ -540,6 +540,88 @@ describe('edge cases', () => {
     });
   });
 
+  it('resets the committing lock after a thrown commit error, so a blur can cancel the draft', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    vi.spyOn(h.app.fileManager, 'getNewFileParent').mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.actions.startCreate('leaf.md', leafEl);
+    const inputEl = draftInput(h.root);
+    inputEl.value = 'Boom Blur';
+
+    pressKey(inputEl, 'Enter');
+    await vi.waitFor(() => {
+      expect(
+        NoticeMock.instances.some(
+          (notice) =>
+            typeof notice.message === 'string' &&
+            notice.message.includes('could not create the note'),
+        ),
+      ).toBe(true);
+    });
+
+    // Before the fix, `committing` stayed `true` forever once the commit threw, so blur (guarded
+    // by `!committing`) silently did nothing and the draft was stuck open until Escape.
+    inputEl.dispatchEvent(new Event('blur'));
+
+    expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
+  });
+
+  it('resets the committing lock after a thrown commit error, so a second Enter can retry the commit', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const getNewFileParentSpy = vi
+      .spyOn(h.app.fileManager, 'getNewFileParent')
+      .mockImplementationOnce(() => {
+        throw new Error('boom');
+      });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.actions.startCreate('leaf.md', leafEl);
+    const inputEl = draftInput(h.root);
+    inputEl.value = 'Retry Me';
+
+    pressKey(inputEl, 'Enter');
+    await vi.waitFor(() => {
+      expect(getNewFileParentSpy).toHaveBeenCalledTimes(1);
+    });
+    // `mockImplementationOnce` only throws the first time — before the fix, `commitDraft` would
+    // have silently ignored this second Enter because `committing` was never reset to `false`.
+    pressKey(inputEl, 'Enter');
+
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('Retry Me.md')).not.toBeNull();
+    });
+  });
+
+  it('does not resurrect a draft that was cancelled before its own commit attempt throws', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    vi.spyOn(h.app.fileManager, 'getNewFileParent').mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.actions.startCreate('leaf.md', leafEl);
+    const inputEl = draftInput(h.root);
+    const selectSpy = vi.spyOn(inputEl, 'select');
+    inputEl.value = 'Cancelled While Throwing';
+
+    pressKey(inputEl, 'Enter');
+    // Cancelled synchronously — before the rejected commit's `.catch()` runs as a microtask —
+    // simulating Escape/blur racing a commit that's about to fail.
+    h.actions.cancelDraft();
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+    });
+    // The draft is already gone; the catch handler must not reset/reselect the discarded input.
+    expect(selectSpy).not.toHaveBeenCalled();
+  });
+
   it('does not reopen the chained sibling draft when the parent element cannot be relocated after refresh', async () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
@@ -556,6 +638,29 @@ describe('edge cases', () => {
       expect(h.refresh).toHaveBeenCalled();
     });
 
+    expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
+  });
+
+  it('does not reopen a chained sibling draft when the user cancelled it (Escape) while the commit was still in flight', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    const inputEl = draftInput(h.root);
+    inputEl.value = 'Escaped Mid Commit';
+
+    pressKey(inputEl, 'Enter');
+    // Dispatched synchronously, before `commitPlan`'s promise settles — Escape isn't guarded by
+    // `committing` (only blur is), so the draft closes right away while the commit keeps running
+    // in the background.
+    pressKey(inputEl, 'Escape');
+    expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
+
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('Escaped Mid Commit.md')).not.toBeNull();
+    });
+    // The in-flight commit wasn't aborted (the note above proves it landed), but nothing should
+    // have silently reopened a chained draft once it finished.
     expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
   });
 

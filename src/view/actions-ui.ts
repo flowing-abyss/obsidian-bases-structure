@@ -171,6 +171,15 @@ export class StructureActions {
     }
   };
 
+  /** Whether `draft` is still the session the user is looking at — `false` once it's been
+   * replaced or cancelled (Escape/blur/a new "+" elsewhere), which can happen while an earlier
+   * draft's commit is still in flight. Reference equality against `this.draft` doubles as a
+   * session token: every draft is a fresh object, so an old reference stops matching the moment
+   * it's superseded, without needing a separate id. */
+  private isCurrentDraft(draft: DraftState): boolean {
+    return this.draft === draft;
+  }
+
   private commitDraft(mode: ChainMode): void {
     const draft = this.draft;
     if (draft === null || draft.committing) {
@@ -184,6 +193,13 @@ export class StructureActions {
     this.runCommit(draft, name, mode).catch((error: unknown) => {
       logError(error);
       notifyError(`could not create the note. ${errorMessage(error)}`);
+      // Undo the `committing` lock so the draft (if it's still the one on screen) is usable
+      // again: blur can cancel it, and the user can edit the name and retry with Enter/Tab.
+      if (!this.isCurrentDraft(draft)) {
+        return;
+      }
+      draft.committing = false;
+      draft.inputEl.select();
     });
   }
 
@@ -213,6 +229,10 @@ export class StructureActions {
       result.plan,
       `Create "${name}"`,
     );
+    // Captured before this method's own cleanup below touches `this.draft`: if the user cancelled
+    // this draft (Escape/blur) or opened a different one while the commit was in flight, `draft`
+    // no longer matches, and chaining has nothing sensible to re-anchor to.
+    const wasCurrent = this.isCurrentDraft(draft);
     this.pendingFocus = result.focus;
     this.cancelDraft();
     this.deps.refresh();
@@ -220,6 +240,9 @@ export class StructureActions {
       return;
     }
     this.showUndoNotice(`Created "${name}"`);
+    if (!wasCurrent) {
+      return;
+    }
     this.continueChain({
       root,
       parentPath: draft.parentPath,
