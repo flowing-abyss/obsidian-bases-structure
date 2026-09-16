@@ -4,6 +4,7 @@
 // as skipped, never overwritten and never thrown past this boundary.
 
 import type { App } from 'obsidian';
+import { getFrontMatterInfo } from 'obsidian';
 import type { Transaction, TransactionStep } from './plan-applier.js';
 
 export interface UndoResult {
@@ -113,13 +114,24 @@ async function revertFrontmatter(app: App, step: FrontmatterStep): Promise<boole
   return handled;
 }
 
+/** The content after the frontmatter block (including any leading blank line) — everything the
+ * user actually typed, as opposed to the frontmatter block another plugin commonly fills in on a
+ * newly created note (a metadata/template plugin, e.g.) before the user gets to it. */
+function bodyOf(content: string): string {
+  return content.slice(getFrontMatterInfo(content).contentStart);
+}
+
+/** Trashes the created note when its *body* is unchanged, regardless of frontmatter — another
+ * plugin filling in frontmatter fields on a newly created note is common and shouldn't block
+ * undo, which only cares whether the user's own text is still there (I11). Skips (reports a
+ * conflict) only when the body itself was edited. */
 async function revertCreate(app: App, step: CreateStep): Promise<boolean> {
   const file = app.vault.getFileByPath(step.path);
   if (file === null) {
     return true;
   }
   const content = await app.vault.read(file);
-  if (content !== step.content) {
+  if (bodyOf(content) !== bodyOf(step.content)) {
     return false;
   }
   await app.fileManager.trashFile(file);

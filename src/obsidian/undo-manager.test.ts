@@ -284,6 +284,44 @@ describe('UndoManager', () => {
     expect(app.vault.getFileByPath('note.md')).not.toBeNull();
   });
 
+  it('trashes a created note on undo even when another plugin added frontmatter, as long as the body is unchanged (I11)', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\nstatus: active\nplugin_added: true\n---\nOriginal body\n' },
+    });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Create with plugin edit',
+      steps: [
+        { kind: 'create', path: 'note.md', content: '---\nstatus: active\n---\nOriginal body\n' },
+      ],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Create with plugin edit', skipped: [] });
+    expect(app.vault.getFileByPath('note.md')).toBeNull();
+  });
+
+  it('skips (and names) a created note whose body was edited since, even if the frontmatter still matches (I11)', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\nstatus: active\n---\nEdited body\n' },
+    });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Create then edit',
+      steps: [
+        { kind: 'create', path: 'note.md', content: '---\nstatus: active\n---\nOriginal body\n' },
+      ],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Create then edit', skipped: ['note.md'] });
+    expect(app.vault.getFileByPath('note.md')).not.toBeNull();
+  });
+
   it('skips a rename step when something now occupies the original path', async () => {
     const app = App.createConfigured__({
       files: { 'moved.md': 'content', 'original.md': 'a different note now lives here' },
