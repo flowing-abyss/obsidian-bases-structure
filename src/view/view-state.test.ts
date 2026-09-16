@@ -7,7 +7,13 @@ describe('getUiState', () => {
 
     const state = getUiState('a::View');
 
-    expect(state).toStrictEqual({ collapsed: new Set(), zoom: 1, scrollLeft: 0, scrollTop: 0 });
+    expect(state).toStrictEqual({
+      collapsed: new Set(),
+      zoom: 1,
+      zoomTouched: false,
+      scrollLeft: 0,
+      scrollTop: 0,
+    });
   });
 
   it('returns the same object for the same key across calls', () => {

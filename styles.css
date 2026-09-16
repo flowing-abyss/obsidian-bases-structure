@@ -10,6 +10,17 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   flex-direction: column;
   height: 100%;
   color: var(--text-normal);
+
+  /* Every icon in the view goes through `setSizedIcon` (`src/view/icon.ts`), which classes the
+     `<svg>` `setIcon` inserts so it can be sized below without a bare tag selector — this project's
+     CSS conventions forbid those. Local overrides (see `.bases-structure-alsoin-icon`) rescope
+     this custom property to shrink just their own icon. */
+  --icon-size: 16px;
+}
+
+.bases-structure-icon {
+  width: var(--icon-size);
+  height: var(--icon-size);
 }
 
 .bases-structure .is-hidden {
@@ -47,19 +58,32 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
      containers (`.bases-structure-nodes`/`.bases-structure-canvas`) are only sized *from* that
      measurement, so relying on inherited/auto width here would be circular. */
   width: fit-content;
-  max-width: 240px;
-  padding: var(--size-4-1) var(--size-4-2);
+  max-width: 260px;
+  padding: 4px 8px;
   color: var(--text-normal);
-  background-color: var(--background-secondary);
+  background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+  line-height: 1.35;
+  transition:
+    background-color 100ms ease,
+    border-color 100ms ease;
 }
 
+.bases-structure-node:hover {
+  background: var(--background-primary-alt);
+  border-color: var(--background-modifier-border-hover);
+}
+
+/* No accent fill, no extra badge — only a subtler border, so the root reads as "this one matters"
+   without looking like a different kind of thing. The title's own font-weight change is declared
+   further down, after `.bases-structure-title`'s base rules (see the note there). */
 .bases-structure-node.is-root {
-  border-color: var(--color-accent);
-  border-width: 2px;
+  border-color: var(--background-modifier-border-hover);
 }
 
+/* Orphans (no parent) get a quieter outline and muted title text — no label, no badge. */
 .bases-structure-node.is-orphan {
   border-style: dashed;
 }
@@ -71,19 +95,20 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   opacity: 0.5;
 }
 
+/* A solid (not dashed) accent border marks every valid drop target; the one currently under the
+   pointer additionally gets a thin accent ring so it's unambiguous which target a drop would
+   land on. Invalid targets (`.is-drag-blocked`) are intentionally left unstyled — only the
+   dragged node itself dims. */
 .bases-structure-node.is-drop-target {
   border-color: var(--color-accent);
-  border-style: dashed;
+  border-style: solid;
 }
 
 .bases-structure-node.is-drop-hover {
   background-color: var(--background-modifier-hover);
   border-color: var(--color-accent);
   border-style: solid;
-}
-
-.bases-structure-node.is-drag-blocked {
-  opacity: 0.4;
+  box-shadow: 0 0 0 1px var(--color-accent);
 }
 
 /* The floating chip that follows the pointer while dragging — positioned in `drag.ts` via inline
@@ -136,6 +161,14 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   overflow-wrap: break-word;
   color: var(--text-normal);
   text-decoration: none;
+
+  /* Long titles wrap up to two lines, then ellipsize — a node never grows tall enough to make one
+     branch look visually heavier than another. */
+  display: -webkit-box;
+  overflow: hidden;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .bases-structure-title:hover {
@@ -148,35 +181,97 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   outline-offset: 2px;
 }
 
-.bases-structure-alsoin {
-  display: block;
-  margin-top: var(--size-2-1);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
+/* Root/orphan title treatment — placed after the base `.bases-structure-title` rules above so
+   ascending specificity order holds (`.bases-structure-node.is-root .bases-structure-title` is
+   more specific than a plain `.bases-structure-title:hover`/`:focus-visible`). `.is-root`/
+   `.is-orphan` themselves (border colour/style) are set on `.bases-structure-node` further up;
+   only the title's own `font-weight`/`color` has to target `.bases-structure-title` directly,
+   since it's an `<a class="internal-link">` with its own explicit styling that wins over
+   anything set only on the ancestor. */
+.bases-structure-node.is-root .bases-structure-title {
+  font-weight: var(--font-semibold);
 }
 
-.bases-structure-toggle {
+.bases-structure-node.is-orphan .bases-structure-title {
+  color: var(--text-muted);
+}
+
+.bases-structure-alsoin {
   display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  margin-top: var(--size-2-1);
+  color: var(--text-faint);
+  font-size: var(--font-smallest);
+}
+
+.bases-structure-alsoin-icon {
+  display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: var(--size-4-4);
-  height: var(--size-4-4);
-  margin: 0 var(--size-2-1) 0 calc(-1 * var(--size-2-1));
+
+  --icon-size: 10px;
+}
+
+/* Toggle and "+" share the same 20x20 icon box (see the `.bases-structure` `--icon-size` rule
+   above) and the same "invisible until the node is hovered/focused" behaviour: always in the DOM
+   (so revealing them never shifts layout), `opacity: 0` at rest, `.55` once the node is
+   hovered/contains focus, and `1` on their own hover/focus-visible. Keyboard focus always shows
+   them, per task 15's decisions. */
+.bases-structure-toggle,
+.bases-structure-add {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  color: var(--text-muted);
   background: transparent;
   border: none;
   border-radius: var(--radius-s);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease;
 }
 
-.bases-structure-toggle:hover {
+.bases-structure-toggle {
+  margin: 0 var(--size-2-1) 0 calc(-1 * var(--size-2-1));
+  color: var(--text-muted);
+}
+
+.bases-structure-add {
+  margin-left: var(--size-2-1);
+  color: var(--text-faint);
+}
+
+.bases-structure-node:hover .bases-structure-toggle,
+.bases-structure-node:focus-within .bases-structure-toggle,
+.bases-structure-node:hover .bases-structure-add,
+.bases-structure-node:focus-within .bases-structure-add {
+  opacity: 0.55;
+}
+
+/* Own hover/focus always wins over the node-hover reveal above, including while hovering the
+   button *inside* an already-hovered node — qualifying with the same `.bases-structure-node`
+   ancestor keeps this at equal specificity (rather than losing to it) so source order (this rule
+   comes later) is what decides, not an accidental specificity gap. */
+.bases-structure-node .bases-structure-toggle:hover,
+.bases-structure-node .bases-structure-toggle:focus-visible,
+.bases-structure-node .bases-structure-add:hover,
+.bases-structure-node .bases-structure-add:focus-visible {
+  opacity: 1;
+}
+
+.bases-structure-node .bases-structure-toggle:hover,
+.bases-structure-node .bases-structure-add:hover {
   color: var(--text-normal);
   background-color: var(--background-modifier-hover);
 }
 
-.bases-structure-toggle:focus-visible {
+.bases-structure-node .bases-structure-toggle:focus-visible,
+.bases-structure-node .bases-structure-add:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
@@ -185,45 +280,28 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   color: var(--text-muted);
 }
 
-/* "+" affordance: always in the DOM, only visible on hover/focus of its own node so the graph
-   doesn't get visually noisy at rest. */
-.bases-structure-add {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: var(--size-4-4);
-  height: var(--size-4-4);
-  margin-left: var(--size-2-1);
-  padding: 0;
-  color: var(--text-faint);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-s);
-  cursor: pointer;
-  opacity: 0;
-}
-
-.bases-structure-add:hover {
-  color: var(--text-normal);
-  background-color: var(--background-modifier-hover);
-}
-
-.bases-structure-add:focus-visible {
-  opacity: 1;
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
-}
-
-.bases-structure-node:hover .bases-structure-add,
-.bases-structure-node:focus-within .bases-structure-add {
-  opacity: 1;
-}
-
-/* The inline "name this note" input the "+" flow opens inside the node it was clicked on. */
+/* The inline "name this note" input the "+" flow opens inside the node it was clicked on: it's
+   appended as an extra flex child of that node (alongside its still-present title and "+"), not a
+   replacement, so it takes over the title's own flex slot (same `flex: 1 1 auto; min-width: 0`)
+   only by *hiding* the title via `:has()` below — otherwise the fixed pixel width `graph-renderer.ts`
+   applies after measuring (see `.is-positioned`) leaves no room to grow into, and the title and
+   input squeeze into it together. */
 .bases-structure-draft {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.bases-structure-node:has(> .bases-structure-draft) > .bases-structure-title {
+  display: none;
+}
+
+/* An in-progress draft is itself the only thing that should read as "active" on this node — the
+   "+" would otherwise flare up too, since focusing the draft's input makes the node
+   `:focus-within` just like focusing "+" itself would. Placed after the reveal rules above so it
+   wins at equal specificity. */
+.bases-structure-node:has(> .bases-structure-draft) > .bases-structure-add {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .bases-structure-draft-input {
@@ -265,6 +343,9 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   overflow: auto;
 }
 
+/* Icon-only toolbar (no text labels) plus a muted zoom percentage — the whole panel is invisible
+   at rest and fades in on hovering the graph or when a control holds focus, so it never competes
+   with the tree for attention. */
 .bases-structure-toolbar {
   position: sticky;
   top: var(--size-4-2);
@@ -281,20 +362,38 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   background-color: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.bases-structure-graph:hover .bases-structure-toolbar,
+.bases-structure-graph:focus-within .bases-structure-toolbar {
+  opacity: 0.55;
+}
+
+/* Same equal-specificity trick as the toggle/add rules above: hovering the toolbar itself (which
+   is always also hovering the graph it sits in) must win over the partial reveal above it. */
+.bases-structure-graph .bases-structure-toolbar:hover,
+.bases-structure-graph .bases-structure-toolbar:focus-within {
+  opacity: 1;
 }
 
 .bases-structure-toolbar-btn {
-  min-width: var(--size-4-6);
-  padding: var(--size-2-1) var(--size-2-2);
-  color: var(--text-normal);
-  font-size: var(--font-ui-small);
-  background-color: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-muted);
+  background-color: transparent;
+  border: none;
   border-radius: var(--radius-s);
   cursor: pointer;
 }
 
 .bases-structure-toolbar-btn:hover {
+  color: var(--text-normal);
   background-color: var(--background-modifier-hover);
 }
 
@@ -324,26 +423,42 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   pointer-events: none;
 }
 
+/* Plain tree edge: a quiet 1px line with no arrowhead — direction is implied by the left-to-right
+   layout, so a marker would only add noise. `.is-two-way` is the one case a tree edge carries
+   markers at all (see the `#bases-structure-arrow-tree` marker built in `graph-renderer.ts`), and
+   uses the brighter "hover" border colour to set it apart from a plain parent/child link.
+   `.is-edge-active` (toggled on hovering either endpoint node) always wins the opacity tug-of-war
+   with `.is-extra`, since it's declared after it below. */
 .bases-structure-edge {
   fill: none;
   stroke: var(--background-modifier-border);
-  stroke-width: 1.5;
-}
-
-.bases-structure-edge.is-extra {
-  stroke-dasharray: 4 3;
-  opacity: 0.7;
-}
-
-.bases-structure-arrowhead {
-  fill: var(--background-modifier-border);
-}
-
-.bases-structure-group {
-  fill: none;
-  stroke: var(--background-modifier-border);
   stroke-width: 1;
-  rx: var(--radius-m);
+}
+
+.bases-structure-edge.is-two-way {
+  stroke: var(--background-modifier-border-hover);
+}
+
+/* Secondary ("also lives here") edge: dashed, accent-tinted and quiet by default — it reads as a
+   second, weaker relationship rather than a second tree. `marker-end`
+   (`#bases-structure-arrow-extra`) is set in `graph-renderer.ts`, at the end only, so it reads as
+   "this node also hangs off that parent". */
+.bases-structure-edge.is-extra {
+  stroke: var(--color-accent);
+  stroke-dasharray: 4 3;
+  opacity: 0.45;
+}
+
+.bases-structure-edge.is-edge-active {
+  opacity: 1;
+}
+
+.bases-structure-arrowhead-tree {
+  fill: var(--background-modifier-border-hover);
+}
+
+.bases-structure-arrowhead-extra {
+  fill: var(--color-accent);
 }
 
 .bases-structure-nodes {
@@ -402,13 +517,7 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   background-color: var(--background-modifier-hover);
 }
 
-/* `.bases-structure-title` is an `<a>` with its own explicit `font-weight`/`color` (Obsidian's
-   internal-link styling), which wins over anything set only on the ancestor `.bases-structure-node`
-   — these have to target the title itself to actually show. */
-.bases-structure-outline .bases-structure-node.is-root .bases-structure-title {
-  font-weight: var(--font-semibold);
-}
-
-.bases-structure-outline .bases-structure-node.is-orphan .bases-structure-title {
-  color: var(--text-muted);
-}
+/* Root/orphan title weight and colour are handled by the shared `.bases-structure-node.is-root
+   .bases-structure-title` / `.is-orphan .bases-structure-title` rules above the "Graph renderer"
+   section — they apply here too since specificity is the same and there's nothing outline-only
+   about them. */

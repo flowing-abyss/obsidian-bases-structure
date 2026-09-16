@@ -30,7 +30,10 @@ export interface LayoutOptions {
   readonly topGap: number; // vertical gap between forest tops
 }
 
-export interface LayoutGroup {
+// Not exported: task 15 stopped drawing group frames, so nothing outside this module names the
+// type by import any more — `LayoutResult.groups` still exposes it structurally for the one
+// caller (`layout.test.ts`) that still inspects group boxes directly.
+interface LayoutGroup {
   readonly path: string;
   readonly box: Box;
 }

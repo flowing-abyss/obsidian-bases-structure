@@ -22,7 +22,27 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
 }
 
 function makeState(overrides: Partial<ViewUiState> = {}): ViewUiState {
-  return { collapsed: new Set(), zoom: 1, scrollLeft: 0, scrollTop: 0, ...overrides };
+  return {
+    collapsed: new Set(),
+    zoom: 1,
+    zoomTouched: false,
+    scrollLeft: 0,
+    scrollTop: 0,
+    ...overrides,
+  };
+}
+
+/** Fakes `.bases-structure-graph`'s `clientWidth`/`clientHeight` (jsdom always reports 0), the
+ * container-size half of the fit-zoom computation — mirrors what the "Fit to view" test already
+ * does, factored out since the auto-fit tests below need the same setup before their first
+ * `update()` call. */
+function fakeGraphViewport(container: HTMLElement, width: number, height: number): void {
+  const graphEl = container.querySelector<HTMLElement>('.bases-structure-graph');
+  if (graphEl === null) {
+    return;
+  }
+  Object.defineProperty(graphEl, 'clientWidth', { value: width, configurable: true });
+  Object.defineProperty(graphEl, 'clientHeight', { value: height, configurable: true });
 }
 
 const fixedMeasure = (): Size => ({ width: 100, height: 20 });
@@ -184,7 +204,7 @@ describe('GraphRenderer', () => {
     expect(renderer.getNodeElement('nope.md')).toBeNull();
   });
 
-  it('draws one tree edge per parent-child relationship and frames the depth-1 parent', () => {
+  it('draws one tree edge per parent-child relationship, with no markers and no group frames', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
 
@@ -197,23 +217,18 @@ describe('GraphRenderer', () => {
       'M 100 22 C 136 22, 136 22, 172 22',
       'M 272 22 C 308 22, 308 22, 344 22',
     ]);
-    expect(
-      edges.every((edge) => edge.getAttribute('marker-end') === 'url(#bases-structure-arrow)'),
-    ).toBe(true);
+    expect(edges.every((edge) => edge.getAttribute('marker-end') === null)).toBe(true);
     expect(edges.every((edge) => edge.getAttribute('marker-start') === null)).toBe(true);
+    expect(edges.every((edge) => edge.classList.contains('is-two-way'))).toBe(false);
 
-    const group = must(container.querySelector<SVGRectElement>('.bases-structure-group'));
-    expect(group.getAttribute('x')).toBe('160');
-    expect(group.getAttribute('y')).toBe('0');
-    expect(group.getAttribute('width')).toBe('296');
-    expect(group.getAttribute('height')).toBe('44');
+    expect(container.querySelector('.bases-structure-group')).toBeNull();
 
     const svg = must(container.querySelector('svg.bases-structure-edges'));
     expect(svg.getAttribute('width')).toBe('456');
     expect(svg.getAttribute('height')).toBe('44');
   });
 
-  it('draws a dashed edge for a visible extra parent, with marker-start on a two-way child', () => {
+  it('draws a dashed accent edge for a visible extra parent, with matching markers on a two-way child', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
 
@@ -225,8 +240,9 @@ describe('GraphRenderer', () => {
     const abEdge = treeEdges.find(
       (edge) => edge.getAttribute('d') === 'M 272 22 C 308 22, 308 22, 344 22',
     );
-    expect(abEdge?.getAttribute('marker-start')).toBe('url(#bases-structure-arrow)');
-    expect(abEdge?.getAttribute('marker-end')).toBe('url(#bases-structure-arrow)');
+    expect(abEdge?.classList.contains('is-two-way')).toBe(true);
+    expect(abEdge?.getAttribute('marker-start')).toBe('url(#bases-structure-arrow-tree)');
+    expect(abEdge?.getAttribute('marker-end')).toBe('url(#bases-structure-arrow-tree)');
 
     const extraEdges = Array.from(
       container.querySelectorAll<SVGPathElement>('.bases-structure-edge.is-extra'),
@@ -234,10 +250,60 @@ describe('GraphRenderer', () => {
     expect(extraEdges).toHaveLength(1);
     expect(extraEdges[0]?.getAttribute('d')).toBe('M 100 86 C 222 86, 222 22, 344 22');
     expect(extraEdges[0]?.getAttribute('marker-start')).toBeNull();
+    expect(extraEdges[0]?.getAttribute('marker-end')).toBe('url(#bases-structure-arrow-extra)');
 
     expect(container.querySelector('[data-path="extra.md"]')?.classList.contains('is-orphan')).toBe(
       true,
     );
+  });
+
+  it('hovering a node marks its own edges active, and mouseout clears them', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    const edges = Array.from(container.querySelectorAll<SVGPathElement>('.bases-structure-edge'));
+    const rootToA = must(
+      edges.find((edge) => edge.getAttribute('d') === 'M 100 22 C 136 22, 136 22, 172 22'),
+    );
+    const aToB = must(
+      edges.find((edge) => edge.getAttribute('d') === 'M 272 22 C 308 22, 308 22, 344 22'),
+    );
+
+    aEl.dispatchEvent(
+      new MouseEvent('mouseover', { bubbles: true, relatedTarget: container.parentElement }),
+    );
+
+    expect(rootToA.classList.contains('is-edge-active')).toBe(true);
+    expect(aToB.classList.contains('is-edge-active')).toBe(true);
+
+    aEl.dispatchEvent(
+      new MouseEvent('mouseout', { bubbles: true, relatedTarget: container.parentElement }),
+    );
+
+    expect(rootToA.classList.contains('is-edge-active')).toBe(false);
+    expect(aToB.classList.contains('is-edge-active')).toBe(false);
+  });
+
+  it('moving the pointer between elements inside the same node does not toggle edge state', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    const aTitle = must(aEl.querySelector<HTMLElement>('.bases-structure-title'));
+    const aAdd = must(aEl.querySelector<HTMLElement>('.bases-structure-add'));
+    const edges = Array.from(container.querySelectorAll<SVGPathElement>('.bases-structure-edge'));
+    const aToB = must(
+      edges.find((edge) => edge.getAttribute('d') === 'M 272 22 C 308 22, 308 22, 344 22'),
+    );
+    aEl.dispatchEvent(
+      new MouseEvent('mouseover', { bubbles: true, relatedTarget: container.parentElement }),
+    );
+    expect(aToB.classList.contains('is-edge-active')).toBe(true);
+
+    aTitle.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: aAdd }));
+
+    expect(aToB.classList.contains('is-edge-active')).toBe(true);
   });
 
   it('collapsing a node via its toggle hides its descendants and survives a later update', () => {
@@ -279,6 +345,7 @@ describe('GraphRenderer', () => {
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(state.zoom).toBeCloseTo(1.1);
+    expect(state.zoomTouched).toBe(true);
     expect(canvas?.style.transform).toBe('scale(1.1)');
     expect(container.querySelector('.bases-structure-zoom-label')?.textContent).toBe('110%');
 
@@ -291,7 +358,10 @@ describe('GraphRenderer', () => {
   it('zoom out steps down and clamps at the minimum', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    const state = makeState({ zoom: 0.35 });
+    // `zoomTouched: true` simulates a zoom the user already set previously — otherwise the first
+    // `update()` below would auto-fit over this starting value (see the auto-fit tests further
+    // down).
+    const state = makeState({ zoom: 0.35, zoomTouched: true });
     renderer.update(makeInput({ state }));
 
     container
@@ -348,6 +418,60 @@ describe('GraphRenderer', () => {
     fitBtn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(canvas?.style.transform).toBe('scale(0.5)');
+  });
+
+  it('auto-fits on the first render when zoom is untouched', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 228, 22);
+    const state = makeState();
+
+    renderer.update(makeInput({ state }));
+
+    // Layout is 456x44 (see the geometry test above); a 228x22 viewport fits at 0.5.
+    expect(state.zoom).toBeCloseTo(0.5);
+    expect(container.querySelector<HTMLElement>('.bases-structure-canvas')?.style.transform).toBe(
+      'scale(0.5)',
+    );
+  });
+
+  it('does not auto-fit when the zoom was already touched', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 228, 22);
+    const state = makeState({ zoomTouched: true });
+
+    renderer.update(makeInput({ state }));
+
+    expect(state.zoom).toBe(1);
+  });
+
+  it('only auto-fits once: a later untouched render keeps the first fit zoom', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 228, 22);
+    const state = makeState();
+    renderer.update(makeInput({ state }));
+    expect(state.zoom).toBeCloseTo(0.5);
+
+    fakeGraphViewport(container, 456, 44);
+    renderer.update(makeInput({ state }));
+
+    expect(state.zoom).toBeCloseTo(0.5);
+  });
+
+  it('exposes aria-labels for the three toolbar controls with no leftover text labels', () => {
+    const container = createDiv();
+    expect(new GraphRenderer(container, makeCtx(), { measure: fixedMeasure })).toBeInstanceOf(
+      GraphRenderer,
+    );
+
+    const zoomOut = must(container.querySelector<HTMLButtonElement>('[aria-label="Zoom out"]'));
+    const zoomIn = must(container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]'));
+    const fit = must(container.querySelector<HTMLButtonElement>('[aria-label="Fit to view"]'));
+    expect(zoomOut.textContent).toBe('');
+    expect(zoomIn.textContent).toBe('');
+    expect(fit.textContent).toBe('');
   });
 
   it('restores the scroll position from state after layout, and scrolling updates state back', () => {

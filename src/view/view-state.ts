@@ -5,6 +5,9 @@
 export interface ViewUiState {
   collapsed: Set<string>;
   zoom: number;
+  // Set once the user zooms/pans by hand (buttons, wheel or a future gesture); while `false`, the
+  // graph renderer keeps auto-fitting new layouts to the viewport instead of respecting `zoom`.
+  zoomTouched: boolean;
   scrollLeft: number;
   scrollTop: number;
 }
@@ -12,7 +15,7 @@ export interface ViewUiState {
 const states = new Map<string, ViewUiState>();
 
 function createDefaultState(): ViewUiState {
-  return { collapsed: new Set(), zoom: 1, scrollLeft: 0, scrollTop: 0 };
+  return { collapsed: new Set(), zoom: 1, zoomTouched: false, scrollLeft: 0, scrollTop: 0 };
 }
 
 /** The `ViewUiState` for `key`, creating and storing a fresh default the first time it's asked

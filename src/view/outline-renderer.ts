@@ -12,7 +12,7 @@
 //         div.bases-structure-node               (from node-element.ts, unchanged)
 //         ul.bases-structure-outline-list        (children, omitted when collapsed or empty)
 
-import { setIcon } from 'obsidian';
+import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
   attachNodeInteractions,
@@ -45,7 +45,7 @@ function addToggle(el: HTMLElement, collapsed: boolean): void {
       'aria-label': 'Toggle children',
     },
   });
-  setIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
+  setSizedIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
   el.prepend(toggle);
 }
 

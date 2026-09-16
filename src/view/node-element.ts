@@ -5,10 +5,11 @@
 // container, not per node) so callers never have to track per-node listeners.
 
 import type { App, Component } from 'obsidian';
-import { Keymap, setIcon } from 'obsidian';
+import { Keymap } from 'obsidian';
 import type { Snapshot } from '../core/snapshot.js';
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
+import { setSizedIcon } from './icon.js';
 import { reportOpenFailure } from './open-note.js';
 
 export interface NodeElementContext {
@@ -54,18 +55,20 @@ const HOVER_SOURCE = 'bases-structure';
 const TITLE_SELECTOR = '.bases-structure-title';
 const ADD_SELECTOR = '[data-action="add"]';
 const NODE_SELECTOR = '.bases-structure-node';
-const ALSO_IN_PREFIX = '↗ ';
 
+/** Muted, icon-led chip: an `arrow-up-right` SVG followed by the extra parents' display names —
+ * see task 15's decisions (no more text-glyph prefix). */
 function appendAlsoIn(el: HTMLElement, ctx: NodeElementContext, node: StructureNode): void {
   if (node.alsoIn.length === 0) {
     return;
   }
   const names = node.alsoIn.map((path) => displayName(ctx.snapshot, path));
-  el.createSpan({
+  const chip = el.createSpan({
     cls: 'bases-structure-alsoin',
-    text: `${ALSO_IN_PREFIX}${names.join(', ')}`,
     attr: { title: names.join(', ') },
   });
+  setSizedIcon(chip.createSpan({ cls: 'bases-structure-alsoin-icon' }), 'arrow-up-right');
+  chip.createSpan({ text: names.join(', ') });
 }
 
 /** The node card: `div.bases-structure-node` (`data-path`, `data-type`, `is-root`/`is-orphan`)
@@ -119,7 +122,7 @@ function appendAddButton(el: HTMLElement): void {
     cls: 'bases-structure-add',
     attr: { type: 'button', 'aria-label': 'Add child', 'data-action': 'add' },
   });
-  setIcon(button, 'plus');
+  setSizedIcon(button, 'plus');
 }
 
 function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } | null {

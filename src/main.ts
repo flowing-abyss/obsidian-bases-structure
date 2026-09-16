@@ -9,18 +9,13 @@ export { STRUCTURE_VIEW_ID };
 
 const UNDO_COMMAND_ID = 'undo-last-change';
 
-/** The Bases view's config controls: the frontmatter property that points at a note's parent,
- * and which renderer draws the tree. `config` is unused for now — every option here is static —
- * but the registration hook always passes it, so the parameter stays for signature parity. */
+/** The Bases view's only config control: which renderer draws the tree. The parent property
+ * itself is edited directly in the `.base` file (see `parseSchema`, which still reads `parent`
+ * from config) — the view's own options only ever hold things that change the picture. `config`
+ * is unused for now, but the registration hook always passes it, so the parameter stays for
+ * signature parity. */
 function buildViewOptions(_config: BasesViewConfig): BasesAllOptions[] {
   return [
-    {
-      type: 'property',
-      key: 'parent',
-      displayName: 'Parent property',
-      filter: (prop) => prop.startsWith('note.'),
-      default: '',
-    },
     {
       type: 'dropdown',
       key: 'layout',

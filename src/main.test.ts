@@ -1,4 +1,4 @@
-import type { BasesPropertyOption, PluginManifest } from 'obsidian';
+import type { PluginManifest } from 'obsidian';
 import { App, BasesViewConfig, Plugin, QueryController } from 'obsidian-test-mocks/obsidian';
 import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -64,7 +64,7 @@ describe('StructureViewPlugin.onload', () => {
     expect(view).toBeInstanceOf(StructureView);
   });
 
-  it('exposes exactly the parent property and layout dropdown options', () => {
+  it('exposes exactly the layout dropdown option', () => {
     const plugin = createPlugin();
     plugin.onload();
     const registration = mocked(plugin).basesViewRegistrations__.get(STRUCTURE_VIEW_ID);
@@ -72,33 +72,14 @@ describe('StructureViewPlugin.onload', () => {
 
     const options = registration?.options?.(config.asOriginalType__()) ?? [];
 
-    expect(options).toHaveLength(2);
+    expect(options).toHaveLength(1);
     expect(options[0]).toMatchObject({
-      type: 'property',
-      key: 'parent',
-      displayName: 'Parent property',
-      default: '',
-    });
-    expect(options[1]).toMatchObject({
       type: 'dropdown',
       key: 'layout',
       displayName: 'Layout',
       options: { graph: 'Graph', outline: 'Outline' },
       default: 'graph',
     });
-  });
-
-  it('filters the parent property option to note properties only', () => {
-    const plugin = createPlugin();
-    plugin.onload();
-    const registration = mocked(plugin).basesViewRegistrations__.get(STRUCTURE_VIEW_ID);
-    const config = BasesViewConfig.create__('', STRUCTURE_VIEW_ID, 'Structure');
-
-    const [parentOption] = registration?.options?.(config.asOriginalType__()) ?? [];
-
-    const filter = (parentOption as BasesPropertyOption | undefined)?.filter;
-    expect(filter?.('note.parent')).toBe(true);
-    expect(filter?.('file.name')).toBe(false);
   });
 
   it('registers the undo command with a check callback reflecting undo.canUndo', () => {

@@ -1,14 +1,15 @@
 // The default renderer: a left-to-right tidy tree, nodes as HTML (positioned absolutely from
-// `layoutTree`), edges as SVG (cubic beziers with arrowheads, dashed for extras), lightweight
-// frames around depth-1 branches that have children, a zoom/fit toolbar and collapse toggles.
+// `layoutTree`), edges as SVG (cubic beziers between node borders — no group frames, no arrows on
+// a plain tree edge, direction is implied by the left-to-right layout), a zoom/fit toolbar and
+// collapse toggles.
 // The DOM is built once in the constructor and reused across `update()` calls; only the nodes
 // layer and the SVG's dynamic content (everything after `<defs>`) are rebuilt each time.
 
-import { setIcon } from 'obsidian';
-import type { LayoutGroup, LayoutResult, Size } from '../core/layout.js';
+import type { LayoutResult, Size } from '../core/layout.js';
 import { DEFAULT_LAYOUT_OPTIONS, layoutTree } from '../core/layout.js';
 import type { ExtraLink, Structure, StructureNode } from '../core/structure.js';
 import { edgePath } from './edges.js';
+import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
   attachNodeInteractions,
@@ -30,9 +31,27 @@ interface VisibleEntry {
   readonly isOrphan: boolean;
 }
 
+interface ToolbarElements {
+  readonly toolbarEl: HTMLElement;
+  readonly zoomOutBtn: HTMLButtonElement;
+  readonly zoomLabelEl: HTMLElement;
+  readonly zoomInBtn: HTMLButtonElement;
+  readonly fitBtn: HTMLButtonElement;
+}
+
+interface CanvasElements {
+  readonly canvasEl: HTMLElement;
+  readonly svgEl: SVGSVGElement;
+  readonly defsEl: SVGDefsElement;
+  readonly nodesEl: HTMLElement;
+}
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const ARROW_MARKER_ID = 'bases-structure-arrow';
-const ARROW_MARKER_URL = `url(#${ARROW_MARKER_ID})`;
+const NODE_SELECTOR = '.bases-structure-node';
+const TREE_ARROW_MARKER_ID = 'bases-structure-arrow-tree';
+const TREE_ARROW_MARKER_URL = `url(#${TREE_ARROW_MARKER_ID})`;
+const EXTRA_ARROW_MARKER_ID = 'bases-structure-arrow-extra';
+const EXTRA_ARROW_MARKER_URL = `url(#${EXTRA_ARROW_MARKER_ID})`;
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 2;
 const ZOOM_STEP = 0.1;
@@ -40,7 +59,6 @@ const WHEEL_ZOOM_FACTOR = 0.002;
 const DEFAULT_NODE_WIDTH = 180;
 const DEFAULT_NODE_HEIGHT = 32;
 const EMPTY_MESSAGE = 'Nothing to show yet';
-const ZOOM_OUT_LABEL = '−';
 // `offsetWidth` rounds a fractional layout width (e.g. a CSS `width: fit-content` box sized to
 // wrap its title on one line) to the nearest whole pixel. Reapplying that rounded value verbatim
 // as the node's final `width` can round *down* just enough to push the title onto an extra line —
@@ -59,20 +77,70 @@ function createSvgEl<K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTa
   return document.createElementNS(SVG_NS, tag);
 }
 
-function buildArrowMarker(): SVGMarkerElement {
+/** One arrow marker definition, `id` and its arrowhead's class parameterized so the tree
+ * (two-way-only) and extra-edge markers can be styled with different colours in CSS without
+ * duplicating the marker geometry. */
+function buildArrowMarker(id: string, arrowClass: string): SVGMarkerElement {
   const marker = createSvgEl('marker');
-  marker.setAttribute('id', ARROW_MARKER_ID);
+  marker.setAttribute('id', id);
   marker.setAttribute('viewBox', '0 0 10 10');
   marker.setAttribute('refX', '8');
   marker.setAttribute('refY', '5');
-  marker.setAttribute('markerWidth', '8');
-  marker.setAttribute('markerHeight', '8');
+  marker.setAttribute('markerWidth', '6');
+  marker.setAttribute('markerHeight', '6');
   marker.setAttribute('orient', 'auto-start-reverse');
   const arrow = createSvgEl('path');
   arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
-  arrow.classList.add('bases-structure-arrowhead');
+  arrow.classList.add(arrowClass);
   marker.appendChild(arrow);
   return marker;
+}
+
+/** The `.bases-structure-node` ancestor of `target`, or `null` when `target` isn't inside one
+ * (including when it isn't an `HTMLElement` at all, e.g. a text node or a `mouseout`'s
+ * `relatedTarget` leaving the document entirely). */
+function closestNode(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+  return target.closest<HTMLElement>(NODE_SELECTOR);
+}
+
+function createToolbarButton(
+  toolbarEl: HTMLElement,
+  label: string,
+  icon: string,
+): HTMLButtonElement {
+  const button = toolbarEl.createEl('button', {
+    cls: 'bases-structure-toolbar-btn',
+    attr: { type: 'button', 'aria-label': label },
+  });
+  setSizedIcon(button, icon);
+  return button;
+}
+
+/** The toolbar is icon-only (see task 15's decisions): three buttons plus a muted zoom
+ * percentage, all revealed on hover/focus by CSS alone. */
+function buildToolbar(graphEl: HTMLElement): ToolbarElements {
+  const toolbarEl = graphEl.createDiv('bases-structure-toolbar');
+  const zoomOutBtn = createToolbarButton(toolbarEl, 'Zoom out', 'zoom-out');
+  const zoomLabelEl = toolbarEl.createSpan({ cls: 'bases-structure-zoom-label', text: '100%' });
+  const zoomInBtn = createToolbarButton(toolbarEl, 'Zoom in', 'zoom-in');
+  const fitBtn = createToolbarButton(toolbarEl, 'Fit to view', 'scan');
+  return { toolbarEl, zoomOutBtn, zoomLabelEl, zoomInBtn, fitBtn };
+}
+
+function buildCanvas(graphEl: HTMLElement): CanvasElements {
+  const canvasEl = graphEl.createDiv('bases-structure-canvas');
+  const svgEl = createSvgEl('svg');
+  svgEl.classList.add('bases-structure-edges');
+  const defsEl = createSvgEl('defs');
+  defsEl.appendChild(buildArrowMarker(TREE_ARROW_MARKER_ID, 'bases-structure-arrowhead-tree'));
+  defsEl.appendChild(buildArrowMarker(EXTRA_ARROW_MARKER_ID, 'bases-structure-arrowhead-extra'));
+  svgEl.appendChild(defsEl);
+  canvasEl.appendChild(svgEl);
+  const nodesEl = canvasEl.createDiv('bases-structure-nodes');
+  return { canvasEl, svgEl, defsEl, nodesEl };
 }
 
 /** Every node reachable from `forestTops` (the structure's tops plus its orphans, so both render
@@ -135,6 +203,11 @@ export class GraphRenderer implements StructureRenderer {
   private state: ViewUiState | null = null;
   private lastInput: RenderInput | null = null;
   private lastLayoutSize: Size = { width: 0, height: 0 };
+  // Gates the auto-fit computation to the graph's first successful (non-empty) layout — separate
+  // from `state.zoomTouched`, which tracks the user's own intent and can outlive this renderer
+  // instance (the same `ViewUiState` is reused across remounts via `getUiState`).
+  private hasAutoFitted = false;
+  private edgesByPath = new Map<string, SVGPathElement[]>();
 
   constructor(container: HTMLElement, ctx: NodeElementContext, options: GraphRendererOptions = {}) {
     this.container = container;
@@ -142,41 +215,30 @@ export class GraphRenderer implements StructureRenderer {
     this.measure = options.measure ?? defaultMeasure;
 
     this.graphEl = container.createDiv('bases-structure-graph');
-    this.toolbarEl = this.graphEl.createDiv('bases-structure-toolbar');
-    this.zoomOutBtn = this.toolbarEl.createEl('button', {
-      cls: 'bases-structure-toolbar-btn',
-      text: ZOOM_OUT_LABEL,
-      attr: { type: 'button', 'aria-label': 'Zoom out' },
-    });
-    this.zoomLabelEl = this.toolbarEl.createSpan({
-      cls: 'bases-structure-zoom-label',
-      text: '100%',
-    });
-    this.zoomInBtn = this.toolbarEl.createEl('button', {
-      cls: 'bases-structure-toolbar-btn',
-      text: '+',
-      attr: { type: 'button', 'aria-label': 'Zoom in' },
-    });
-    this.fitBtn = this.toolbarEl.createEl('button', {
-      cls: 'bases-structure-toolbar-btn',
-      text: 'Fit',
-      attr: { type: 'button', 'aria-label': 'Fit to view' },
-    });
+    const toolbar = buildToolbar(this.graphEl);
+    this.toolbarEl = toolbar.toolbarEl;
+    this.zoomOutBtn = toolbar.zoomOutBtn;
+    this.zoomLabelEl = toolbar.zoomLabelEl;
+    this.zoomInBtn = toolbar.zoomInBtn;
+    this.fitBtn = toolbar.fitBtn;
     this.emptyEl = this.graphEl.createDiv({
       cls: ['bases-structure-empty', 'is-hidden'],
       text: EMPTY_MESSAGE,
     });
-    this.canvasEl = this.graphEl.createDiv('bases-structure-canvas');
-    this.svgEl = createSvgEl('svg');
-    this.svgEl.classList.add('bases-structure-edges');
-    this.defsEl = createSvgEl('defs');
-    this.defsEl.appendChild(buildArrowMarker());
-    this.svgEl.appendChild(this.defsEl);
-    this.canvasEl.appendChild(this.svgEl);
-    this.nodesEl = this.canvasEl.createDiv('bases-structure-nodes');
+    const canvas = buildCanvas(this.graphEl);
+    this.canvasEl = canvas.canvasEl;
+    this.svgEl = canvas.svgEl;
+    this.defsEl = canvas.defsEl;
+    this.nodesEl = canvas.nodesEl;
 
     this.disposeNodeInteractions = attachNodeInteractions(this.ctx, this.nodesEl);
+    this.attachListeners();
+  }
+
+  private attachListeners(): void {
     this.nodesEl.addEventListener('click', this.handleNodesClick);
+    this.nodesEl.addEventListener('mouseover', this.handleNodesMouseOver);
+    this.nodesEl.addEventListener('mouseout', this.handleNodesMouseOut);
     this.zoomOutBtn.addEventListener('click', this.handleZoomOut);
     this.zoomInBtn.addEventListener('click', this.handleZoomIn);
     this.fitBtn.addEventListener('click', this.handleFit);
@@ -216,6 +278,7 @@ export class GraphRenderer implements StructureRenderer {
     this.applyCanvasSize(layoutResult);
     this.drawSvg(entries, layoutResult);
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
+    this.applyAutoFit(input.state);
     this.applyZoom(input.state.zoom);
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
@@ -228,6 +291,8 @@ export class GraphRenderer implements StructureRenderer {
   destroy(): void {
     this.disposeNodeInteractions();
     this.nodesEl.removeEventListener('click', this.handleNodesClick);
+    this.nodesEl.removeEventListener('mouseover', this.handleNodesMouseOver);
+    this.nodesEl.removeEventListener('mouseout', this.handleNodesMouseOut);
     this.zoomOutBtn.removeEventListener('click', this.handleZoomOut);
     this.zoomInBtn.removeEventListener('click', this.handleZoomIn);
     this.fitBtn.removeEventListener('click', this.handleFit);
@@ -269,7 +334,7 @@ export class GraphRenderer implements StructureRenderer {
         'aria-label': 'Toggle children',
       },
     });
-    setIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
+    setSizedIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
     el.prepend(toggle);
   }
 
@@ -317,27 +382,17 @@ export class GraphRenderer implements StructureRenderer {
     this.svgEl.setAttribute('height', String(layoutResult.height));
   }
 
+  /** Group frames are a layout-only concept now (`layoutTree` still computes them so spacing
+   * doesn't change) — nothing here draws `layoutResult.groups`. */
   private drawSvg(entries: readonly VisibleEntry[], layoutResult: LayoutResult): void {
     for (const child of Array.from(this.svgEl.children)) {
       if (child !== this.defsEl) {
         child.remove();
       }
     }
-    this.drawGroups(layoutResult.groups);
+    this.edgesByPath = new Map();
     this.drawTreeEdges(entries, layoutResult);
     this.drawExtraEdges(entries, layoutResult);
-  }
-
-  private drawGroups(groups: readonly LayoutGroup[]): void {
-    for (const group of groups) {
-      const rect = createSvgEl('rect');
-      rect.classList.add('bases-structure-group');
-      rect.setAttribute('x', String(group.box.x));
-      rect.setAttribute('y', String(group.box.y));
-      rect.setAttribute('width', String(group.box.width));
-      rect.setAttribute('height', String(group.box.height));
-      this.svgEl.appendChild(rect);
-    }
   }
 
   private drawTreeEdges(entries: readonly VisibleEntry[], layoutResult: LayoutResult): void {
@@ -353,11 +408,13 @@ export class GraphRenderer implements StructureRenderer {
       const path = createSvgEl('path');
       path.classList.add('bases-structure-edge');
       path.setAttribute('d', edgePath(fromBox, toBox));
-      path.setAttribute('marker-end', ARROW_MARKER_URL);
       if (entry.node.twoWay) {
-        path.setAttribute('marker-start', ARROW_MARKER_URL);
+        path.classList.add('is-two-way');
+        path.setAttribute('marker-start', TREE_ARROW_MARKER_URL);
+        path.setAttribute('marker-end', TREE_ARROW_MARKER_URL);
       }
       this.svgEl.appendChild(path);
+      this.registerEdge(path, entry.node.parent, entry.path);
     }
   }
 
@@ -378,8 +435,35 @@ export class GraphRenderer implements StructureRenderer {
     const path = createSvgEl('path');
     path.classList.add('bases-structure-edge', 'is-extra');
     path.setAttribute('d', edgePath(fromBox, toBox));
-    path.setAttribute('marker-end', ARROW_MARKER_URL);
+    path.setAttribute('marker-end', EXTRA_ARROW_MARKER_URL);
     this.svgEl.appendChild(path);
+    this.registerEdge(path, extra.parent, childPath);
+  }
+
+  /** Indexes `edgeEl` under both endpoints it connects, so a hover on either one can raise its
+   * opacity (see `handleNodesMouseOver`/`handleNodesMouseOut`). */
+  private registerEdge(edgeEl: SVGPathElement, pathA: string, pathB: string): void {
+    this.addEdgeRef(pathA, edgeEl);
+    this.addEdgeRef(pathB, edgeEl);
+  }
+
+  private addEdgeRef(path: string, edgeEl: SVGPathElement): void {
+    const existing = this.edgesByPath.get(path);
+    if (existing === undefined) {
+      this.edgesByPath.set(path, [edgeEl]);
+    } else {
+      existing.push(edgeEl);
+    }
+  }
+
+  private setEdgesActive(path: string, active: boolean): void {
+    const edges = this.edgesByPath.get(path);
+    if (edges === undefined) {
+      return;
+    }
+    for (const edge of edges) {
+      edge.classList.toggle('is-edge-active', active);
+    }
   }
 
   private showEmpty(): void {
@@ -405,12 +489,25 @@ export class GraphRenderer implements StructureRenderer {
     }
     const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
     this.state.zoom = clamped;
+    this.state.zoomTouched = true;
     this.applyZoom(clamped);
   }
 
   private applyZoom(zoom: number): void {
     this.canvasEl.style.transform = `scale(${zoom})`;
     this.zoomLabelEl.textContent = `${Math.round(zoom * 100)}%`;
+  }
+
+  /** Fits the whole graph into the viewport exactly once, the first time a layout with content
+   * succeeds while the user hasn't zoomed by hand — an embed opens showing the full tree instead
+   * of a corner of it. Mutates `state.zoom` directly (not through `setZoom`) so this never marks
+   * the zoom as user-touched. */
+  private applyAutoFit(state: ViewUiState): void {
+    if (state.zoomTouched || this.hasAutoFitted) {
+      return;
+    }
+    this.hasAutoFitted = true;
+    state.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.computeFitZoom()));
   }
 
   private computeFitZoom(): number {
@@ -431,7 +528,7 @@ export class GraphRenderer implements StructureRenderer {
     if (toggle === null) {
       return;
     }
-    const nodeEl = toggle.closest<HTMLElement>('.bases-structure-node');
+    const nodeEl = toggle.closest<HTMLElement>(NODE_SELECTOR);
     const path = nodeEl?.getAttribute('data-path');
     if (path === null || path === undefined) {
       return;
@@ -444,6 +541,30 @@ export class GraphRenderer implements StructureRenderer {
     }
     this.update(this.lastInput);
   };
+
+  /** Delegated hover pair that raises/lowers `.is-edge-active` on a node's own edges — paired
+   * `mouseover`/`mouseout` (not a single toggle) because leaving one child element of a node for
+   * another still fires both, so `closestNode` on `relatedTarget` is what actually filters out
+   * moves that stay inside the same node. */
+  private readonly handleNodesMouseOver = (event: MouseEvent): void => {
+    this.handleNodeHoverChange(event, true);
+  };
+
+  private readonly handleNodesMouseOut = (event: MouseEvent): void => {
+    this.handleNodeHoverChange(event, false);
+  };
+
+  private handleNodeHoverChange(event: MouseEvent, active: boolean): void {
+    const nodeEl = closestNode(event.target);
+    if (nodeEl === null || closestNode(event.relatedTarget) === nodeEl) {
+      return;
+    }
+    const path = nodeEl.getAttribute('data-path');
+    if (path === null) {
+      return;
+    }
+    this.setEdgesActive(path, active);
+  }
 
   private readonly handleZoomOut = (): void => {
     this.setZoom(this.currentZoom() - ZOOM_STEP);

@@ -359,7 +359,7 @@ describe('OutlineRenderer', () => {
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-alsoin') });
 
     const metaChip = container.querySelector('[data-path="meta.md"] .bases-structure-alsoin');
-    expect(metaChip?.textContent).toBe('↗ other');
+    expect(metaChip?.textContent).toBe('other');
     const hierChip = container.querySelector('[data-path="hierarchy.md"] .bases-structure-alsoin');
     expect(hierChip).toBeNull();
   });

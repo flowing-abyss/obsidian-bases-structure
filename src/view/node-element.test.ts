@@ -101,7 +101,7 @@ describe('createNodeElement', () => {
     expect(plainEl.classList.contains('is-orphan')).toBe(false);
   });
 
-  it('renders an alsoIn chip with basenames and a title listing them, when present', () => {
+  it('renders an alsoIn chip with an icon, basenames and a title listing them, when present', () => {
     const ctx = makeCtx({
       snapshot: snapshot([
         note('a.md'),
@@ -113,7 +113,8 @@ describe('createNodeElement', () => {
     const el = createNodeElement(ctx, makeNode({ alsoIn: ['b.md', 'c.md'] }));
 
     const chip = el.querySelector('.bases-structure-alsoin');
-    expect(chip?.textContent).toBe('↗ Beta, Gamma');
+    expect(chip?.querySelector('.bases-structure-alsoin-icon')).not.toBeNull();
+    expect(chip?.textContent).toBe('Beta, Gamma');
     expect(chip?.getAttribute('title')).toBe('Beta, Gamma');
   });
 
