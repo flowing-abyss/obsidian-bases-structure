@@ -103,6 +103,25 @@ describe('StructureView', () => {
     expect(secondInput?.state).toBe(firstInput?.state);
   });
 
+  it('destroys the graph renderer and builds the outline when the layout switches mid-session', () => {
+    const app = App.createConfigured__({ files: { 'a.md': '' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'a.md')]);
+    view.config.set('parent', 'note.parent');
+    view.onDataUpdated();
+    expect(parentEl.querySelector('.bases-structure-graph')).not.toBeNull();
+    expect(parentEl.querySelector('.bases-structure-outline')).toBeNull();
+    const graphDestroySpy = vi.spyOn(GraphRenderer.prototype, 'destroy');
+    const outlineUpdateSpy = vi.spyOn(OutlineRenderer.prototype, 'update');
+
+    view.config.set('layout', 'outline');
+    view.onDataUpdated();
+
+    expect(graphDestroySpy).toHaveBeenCalledTimes(1);
+    expect(outlineUpdateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-graph')).toBeNull();
+    expect(parentEl.querySelector('.bases-structure-outline')).not.toBeNull();
+  });
+
   it('shows a failure message in the body and logs when the renderer throws', () => {
     const app = App.createConfigured__({ files: { 'a.md': '' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'a.md')]);

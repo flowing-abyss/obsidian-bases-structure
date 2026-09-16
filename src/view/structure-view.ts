@@ -45,6 +45,10 @@ export interface RenderInput {
 
 export interface StructureRenderer {
   update(input: RenderInput): void;
+  /** The rendered element for `path` (whichever of the shared `.bases-structure-node` cards
+   * currently represents it), or `null` when it isn't currently in the DOM (collapsed away, or
+   * not part of the structure). Consumed by the keyboard task to anchor menus/drafts. */
+  getNodeElement(path: string): HTMLElement | null;
   destroy(): void;
 }
 

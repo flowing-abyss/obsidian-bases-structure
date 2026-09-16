@@ -99,6 +99,19 @@ export function createNodeElement(
   return el;
 }
 
+/** Every `.bases-structure-node` under `root` whose `data-path` is `path` — a linear scan instead
+ * of an attribute-selector query, since a note path can contain characters (quotes, brackets)
+ * that would need escaping in a CSS selector. Backs both renderers' `getNodeElement`, which the
+ * keyboard task anchors menus/drafts to. */
+export function findNodeElement(root: HTMLElement, path: string): HTMLElement | null {
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
+    if (el.getAttribute('data-path') === path) {
+      return el;
+    }
+  }
+  return null;
+}
+
 /** The "+" affordance: always in the DOM (shown on hover/focus via CSS), so it's the delegated
  * click listener below — not conditional rendering — that decides whether it's reachable. */
 function appendAddButton(el: HTMLElement): void {

@@ -14,6 +14,7 @@ import {
   attachNodeInteractions,
   cloneNodeElementContext,
   createNodeElement,
+  findNodeElement,
 } from './node-element.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
 import type { ViewUiState } from './view-state.js';
@@ -218,6 +219,10 @@ export class GraphRenderer implements StructureRenderer {
     this.applyZoom(input.state.zoom);
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
+  }
+
+  getNodeElement(path: string): HTMLElement | null {
+    return findNodeElement(this.nodesEl, path);
   }
 
   destroy(): void {

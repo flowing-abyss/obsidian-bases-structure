@@ -174,6 +174,16 @@ describe('GraphRenderer', () => {
     expect(rootEl.classList.contains('is-new')).toBe(false);
   });
 
+  it('getNodeElement returns the rendered node, and null for a path not currently on screen', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(makeInput());
+
+    expect(renderer.getNodeElement('a.md')).toBe(container.querySelector('[data-path="a.md"]'));
+    expect(renderer.getNodeElement('nope.md')).toBeNull();
+  });
+
   it('draws one tree edge per parent-child relationship and frames the depth-1 parent', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });

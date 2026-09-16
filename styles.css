@@ -365,3 +365,50 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   color: var(--text-muted);
   text-align: center;
 }
+
+/* Outline renderer: a compact indented tree — the same node cards, actions and drag as the graph,
+   laid out as full-width rows with indentation-only depth instead of the graph's positioned
+   boxes. */
+
+.bases-structure-outline {
+  display: flex;
+  flex-direction: column;
+}
+
+.bases-structure-outline-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Depth is indentation only, with a 1px guide line per level. */
+.bases-structure-outline-list .bases-structure-outline-list {
+  padding-left: var(--size-4-4);
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+/* The node card fills its row so hovering anywhere on the row (not just over the title text)
+   reveals the "+"/toggle affordances, and no card decoration (border/background) is layered on
+   top of it row after row in a dense tree. */
+.bases-structure-outline .bases-structure-node {
+  width: 100%;
+  max-width: none;
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.bases-structure-outline .bases-structure-node:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+/* `.bases-structure-title` is an `<a>` with its own explicit `font-weight`/`color` (Obsidian's
+   internal-link styling), which wins over anything set only on the ancestor `.bases-structure-node`
+   — these have to target the title itself to actually show. */
+.bases-structure-outline .bases-structure-node.is-root .bases-structure-title {
+  font-weight: var(--font-semibold);
+}
+
+.bases-structure-outline .bases-structure-node.is-orphan .bases-structure-title {
+  color: var(--text-muted);
+}
