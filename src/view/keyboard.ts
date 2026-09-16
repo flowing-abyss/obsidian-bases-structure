@@ -6,6 +6,7 @@
 // `actions-ui.ts`).
 
 import type { Structure, StructureNode } from '../core/structure.js';
+import { applyActiveNode, focusActiveNode } from './node-element.js';
 import type { ViewUiState } from './view-state.js';
 
 export interface KeyboardDeps {
@@ -97,8 +98,10 @@ function bindingKey(event: KeyboardEvent): string {
 
 /** Every `.bases-structure-node` under `root` whose `data-path` is `path` — the same linear scan
  * `node-element.ts`'s own `findNodeElement` and `actions-ui.ts`'s private copy use (a note path
- * can contain characters a CSS attribute selector would need escaping), kept local here too so
- * this module only depends on `KeyboardDeps`, not on the renderers' own helpers. */
+ * can contain characters a CSS attribute selector would need escaping). Kept as a local copy
+ * (rather than importing the shared one) since this is the only other thing in the module that
+ * still only needs `KeyboardDeps` — `setActive` below does reach into `node-element.ts` for the
+ * two functions that actually own drawing `.is-active`. */
 function findNodeElement(root: HTMLElement, path: string): HTMLElement | null {
   for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
     if (el.getAttribute('data-path') === path) {
@@ -142,13 +145,26 @@ function edgeOf(ctx: ActiveCtx, edge: 'first' | 'last'): string | null {
 }
 
 /** The one place that changes `state.active`: updates the roving container tabindex (0 when
- * nothing is active so it can be tabbed into, -1 once a node owns focus) and re-renders so the
- * renderers can re-derive `.is-active`/per-node tabindex/scroll from the new value — see
- * `node-element.ts`'s `applyActiveNode`/`focusActiveNode`. */
+ * nothing is active so it can be tabbed into, -1 once a node owns focus) and applies
+ * `.is-active`/per-node tabindex/focus/scroll straight to the *current* DOM via
+ * `node-element.ts`'s `applyActiveNode`/`focusActiveNode` — deliberately not a `deps.refresh()`.
+ * A full `refresh()` re-runs the whole `StructureView.render()` pipeline (parse schema, read
+ * snapshot, rebuild structure, re-render), which is both unnecessary for a pure "move focus among
+ * already-rendered nodes" change and actively wrong when the click that triggered it also landed
+ * on a collapse toggle or the "+" button: those already re-render themselves (a cheap
+ * `renderer.update()`, not a full `render()`) before this handler runs (their listener is on a
+ * nearer ancestor, so it fires first during bubbling) — a second, full `refresh()` on top would
+ * be redundant work and once made `GraphRenderer.update`/`OutlineRenderer.update` run twice for a
+ * single toggle click. Handlers that actually change *which nodes are rendered* (collapse/expand)
+ * still call `deps.refresh()` themselves, separately from `setActive`. */
 function setActive(deps: KeyboardDeps, path: string | null): void {
-  deps.getState().active = path;
+  const state = deps.getState();
+  state.active = path;
   deps.container.tabIndex = path === null ? 0 : -1;
-  deps.refresh();
+  const activeEl = applyActiveNode(deps.container, path);
+  if (activeEl !== null) {
+    focusActiveNode(activeEl);
+  }
 }
 
 function moveActive(deps: KeyboardDeps, target: string | null): void {
@@ -267,6 +283,11 @@ const KEY_HANDLERS: Record<string, KeyHandler> = {
   Escape: handleEscape,
 };
 
+/** `undefined` means `state.active` names a path the structure no longer has (the node was moved,
+ * retyped away, or deleted out from under an active keyboard session) — rather than leaving that
+ * stale path in place forever (which would also leave `container.tabindex="-1"`, so Tab could
+ * never re-enter the view at all), this clears `active` and restores the roving-tabindex default
+ * so a keyboard user can just Tab back in. */
 function resolveActiveCtx(deps: KeyboardDeps): ActiveCtx | null {
   const state = deps.getState();
   if (state.active === null) {
@@ -275,6 +296,8 @@ function resolveActiveCtx(deps: KeyboardDeps): ActiveCtx | null {
   const structure = deps.getStructure();
   const node = structure.nodes.get(state.active);
   if (node === undefined) {
+    state.active = null;
+    deps.container.tabIndex = 0;
     return null;
   }
   return {

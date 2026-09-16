@@ -604,6 +604,59 @@ describe('StructureView — keyboard wiring', () => {
       parentEl.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
     ).toBe('leaf.md');
   });
+
+  it('a real Space on the rendered body collapses the active branch through a full refresh', () => {
+    // Unlike pure navigation, collapse/expand still goes through `keyboard.ts`'s `deps.refresh`
+    // (there's no "already-rendered node" to just patch in place — a collapse changes *which*
+    // nodes are rendered at all), so this exercises `attachStructureKeyboard`'s real `refresh:
+    // () => { this.render(); }` closure end to end, not a mock.
+    const { view, parentEl } = catLeafView();
+    view.onDataUpdated();
+    const bodyEl = parentEl.querySelector('.bases-structure-body');
+    if (bodyEl === null) throw new Error('missing body');
+    const catEl = findNode(parentEl, 'cat.md');
+    catEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(parentEl.querySelector('[data-path="leaf.md"]')).not.toBeNull();
+
+    bodyEl.dispatchEvent(
+      new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }),
+    );
+
+    expect(parentEl.querySelector('[data-path="leaf.md"]')).toBeNull();
+    expect(
+      parentEl.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
+    ).toBe('cat.md');
+  });
+
+  // Regression: a toggle click bubbles from the renderer's own delegated click handler (which
+  // already re-renders locally to reflect the collapse change) all the way up to `attachKeyboard`'s
+  // click listener on `bodyEl` (which also matches the same node, via `closest`). Before this fix,
+  // that second listener unconditionally called `deps.refresh()` — the full `StructureView.render()`
+  // pipeline — on top of the renderer's own cheap `update()`, so a single toggle click always
+  // produced two `update()` calls.
+  it.each([
+    { layout: undefined, RendererClass: GraphRenderer, label: 'graph' },
+    { layout: 'outline', RendererClass: OutlineRenderer, label: 'outline' },
+  ])(
+    'a real toggle click on the $label renderer causes exactly one update and makes that node active',
+    ({ layout, RendererClass }) => {
+      const { view, parentEl } = catLeafView();
+      if (layout !== undefined) {
+        view.config.set('layout', layout);
+      }
+      view.onDataUpdated();
+      const updateSpy = vi.spyOn(RendererClass.prototype, 'update');
+      const toggle = findNode(parentEl, 'cat.md').querySelector<HTMLElement>(
+        '.bases-structure-toggle',
+      );
+      if (toggle === null) throw new Error('Test setup error: missing toggle on cat.md');
+
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(findNode(parentEl, 'cat.md').classList.contains('is-active')).toBe(true);
+    },
+  );
 });
 
 describe('formatStructureIssue', () => {

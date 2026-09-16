@@ -109,14 +109,22 @@ describe('attachKeyboard — arrow navigation', () => {
     { key: 'ArrowDown', start: 'a.md', expected: 'b.md' },
     { key: 'ArrowUp', start: 'b.md', expected: 'a.md' },
   ])(
-    '$key moves the active sibling ($start -> $expected) and refreshes',
+    '$key moves the active sibling ($start -> $expected) without a full refresh',
     ({ key, start, expected }) => {
       const h = makeHarness(makeStructure(), start);
 
       h.container.dispatchEvent(keyEvent(key));
 
       expect(h.state.active).toBe(expected);
-      expect(h.deps.refresh).toHaveBeenCalledTimes(1);
+      // A pure move among already-rendered siblings patches `.is-active`/tabindex on the current
+      // DOM directly (see `setActive`) — no full `StructureView.render()` pipeline is needed, and
+      // running one here would double up with a renderer's own re-render for a click that also
+      // landed on e.g. a collapse toggle (see the toggle-click regression coverage in
+      // `structure-view.test.ts`).
+      expect(h.deps.refresh).not.toHaveBeenCalled();
+      expect(
+        h.container.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
+      ).toBe(expected);
     },
   );
 
@@ -412,13 +420,15 @@ describe('attachKeyboard — m / t / Mod+Z', () => {
 });
 
 describe('attachKeyboard — Escape', () => {
-  it('clears the active node', () => {
+  it('clears the active node without a full refresh, and restores tabindex 0', () => {
     const h = makeHarness(makeStructure(), 'a.md');
 
     h.container.dispatchEvent(keyEvent('Escape'));
 
     expect(h.state.active).toBeNull();
-    expect(h.deps.refresh).toHaveBeenCalledTimes(1);
+    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.container.tabIndex).toBe(0);
+    expect(h.container.querySelector('.bases-structure-node.is-active')).toBeNull();
   });
 });
 
@@ -433,12 +443,19 @@ describe('attachKeyboard — no active node / unhandled keys', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it('does nothing when the active path no longer exists in the structure', () => {
+  it('clears a stale active path and restores tabindex 0, so Tab can re-enter the view', () => {
+    // The node the last-known `state.active` pointed to is gone from the structure (moved,
+    // retyped away, or deleted) — rather than leaving it active forever (which would also leave
+    // the container's tabindex at -1, trapping a keyboard user with nothing tabbable in the
+    // view), this must fall back to the "nothing active" state.
     const h = makeHarness(makeStructure(), 'gone.md');
+    expect(h.container.tabIndex).toBe(-1);
 
     h.container.dispatchEvent(keyEvent('ArrowDown'));
 
     expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.state.active).toBeNull();
+    expect(h.container.tabIndex).toBe(0);
   });
 
   it('does not prevent default for an unrecognized key', () => {
