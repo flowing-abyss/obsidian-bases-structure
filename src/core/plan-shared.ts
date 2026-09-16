@@ -34,7 +34,7 @@ export function arraysEqual(a: readonly string[], b: readonly string[]): boolean
 }
 
 /** Set equality (order-independent). */
-export function sameSet(a: readonly string[], b: readonly string[]): boolean {
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) {
     return false;
   }
@@ -83,7 +83,7 @@ export interface EdgeWriteInputs {
  * edge property hasn't changed, otherwise prepending the new parent. `null` when nothing actually
  * changes. Shared by move (`oldParent`/`newParent` differ) and retype's own-N edge handling
  * (`oldParent === newParent`, since retype never reparents N). */
-export function computeEdgeWrite(inputs: EdgeWriteInputs, cur: readonly string[]): KeyWrite | null {
+function computeEdgeWrite(inputs: EdgeWriteInputs, cur: readonly string[]): KeyWrite | null {
   const sameKey = inputs.oldEdge?.kind === 'property' && inputs.oldEdge.property === inputs.key;
   const newTargets = edgeTargets(cur, inputs.oldParent, inputs.newParent, {
     keep: inputs.keep,

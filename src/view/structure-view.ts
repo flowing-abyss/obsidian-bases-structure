@@ -14,6 +14,8 @@ import { buildStructure } from '../core/structure.js';
 import type StructureViewPlugin from '../main.js';
 import { findHostFile } from '../obsidian/root-finder.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
+import { GraphRenderer } from './graph-renderer.js';
+import type { NodeElementContext } from './node-element.js';
 import { OutlineRenderer } from './outline-renderer.js';
 import type { ViewUiState } from './view-state.js';
 import { getUiState } from './view-state.js';
@@ -48,13 +50,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A schema issue with no key (e.g. the top-level "set parent or types" issue) renders as just
+ * the message — a leading ": " with nothing before it would read as a formatting bug, not as
+ * "this issue has no specific key". */
+function formatSchemaIssue(issue: SchemaIssue): string {
+  return issue.key === '' ? issue.message : `${issue.key}: ${issue.message}`;
+}
+
 function collectIssueLines(
   schemaIssues: readonly SchemaIssue[],
   structureIssues: readonly StructureIssue[],
   snapshot: Snapshot,
 ): string[] {
   return [
-    ...schemaIssues.map((issue) => `${issue.key}: ${issue.message}`),
+    ...schemaIssues.map((issue) => formatSchemaIssue(issue)),
     ...structureIssues.map((issue) => formatStructureIssue(issue, snapshot)),
   ];
 }
@@ -104,14 +113,26 @@ export class StructureView extends BasesView {
     const structure = buildStructure(schema, snapshot);
     this.renderIssues(issues, structure.issues, snapshot);
     const state = getUiState(`${host?.path ?? ''}::${this.config.name}`);
-    const renderer = this.resolveRenderer(schema.layout);
+    const ctx: NodeElementContext = {
+      app: this.app,
+      sourcePath: host?.path ?? '',
+      hoverParent: this,
+      snapshot,
+    };
+    const renderer = this.resolveRenderer(schema.layout, ctx);
     renderer.update({ schema, snapshot, structure, state });
   }
 
-  private resolveRenderer(layout: Schema['layout']): StructureRenderer {
+  /** Recreates the renderer whenever the resolved layout changes (including the very first
+   * render). `ctx` only has to be correct at the moment of construction — each renderer keeps its
+   * own working copy and refreshes it from every `RenderInput` it's given afterwards. */
+  private resolveRenderer(layout: Schema['layout'], ctx: NodeElementContext): StructureRenderer {
     if (this.renderer === null || this.rendererLayout !== layout) {
       this.renderer?.destroy();
-      this.renderer = new OutlineRenderer(this.app, this.bodyEl);
+      this.renderer =
+        layout === 'outline'
+          ? new OutlineRenderer(this.bodyEl, ctx)
+          : new GraphRenderer(this.bodyEl, ctx);
       this.rendererLayout = layout;
     }
     return this.renderer;

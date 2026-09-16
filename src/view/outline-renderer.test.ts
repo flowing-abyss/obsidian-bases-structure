@@ -1,15 +1,32 @@
-import { App } from 'obsidian-test-mocks/obsidian';
-import { describe, expect, it, vi } from 'vitest';
+import { App, Component } from 'obsidian-test-mocks/obsidian';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import { parseSchema } from '../core/schema.js';
 import type { Structure } from '../core/structure.js';
 import { buildStructure } from '../core/structure.js';
+import type { NodeElementContext } from './node-element.js';
 import { OutlineRenderer } from './outline-renderer.js';
-import { getUiState } from './view-state.js';
+import { clearUiState, getUiState } from './view-state.js';
 
 function makeRead(config: Record<string, unknown>): (key: string) => unknown {
   return (key: string): unknown => config[key];
 }
+
+function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContext {
+  const app = App.createConfigured__();
+  return {
+    app: app.asOriginalType__(),
+    sourcePath: '',
+    hoverParent: Component.create__().asOriginalType__(),
+    snapshot: snapshot([]),
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  clearUiState();
+  vi.restoreAllMocks();
+});
 
 describe('OutlineRenderer', () => {
   it('renders tops depth-first, nesting children under their parent in children order', () => {
@@ -24,40 +41,45 @@ describe('OutlineRenderer', () => {
       { results: ['grandchild.md', 'child2.md', 'child1.md', 'root.md'] },
     );
     const structure = buildStructure(schema, snap);
-    const app = App.createConfigured__();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-nesting') });
 
-    const nodes = container.querySelectorAll('.bases-structure-node');
+    const nodes = container.querySelectorAll('.bases-structure-title');
     expect(Array.from(nodes).map((el) => el.textContent)).toStrictEqual([
       'root',
       'child2',
       'child1',
       'grandchild',
     ]);
-    const grandchildLink = container.querySelector('[data-path="grandchild.md"]');
+    const grandchildEl = container.querySelector('[data-path="grandchild.md"]');
     const child1Li = container.querySelector('[data-path="child1.md"]')?.closest('li');
-    expect(child1Li?.contains(grandchildLink ?? null)).toBe(true);
+    expect(child1Li?.contains(grandchildEl ?? null)).toBe(true);
   });
 
-  it('renders orphans under a final "Without a parent" section when a root exists', () => {
+  it('renders orphans, inside a list, under a final "Without a parent" section when a root exists', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot(
       [note('host.md'), note('a.md', { propertyLinks: { up: ['host.md'] } }), note('orphan.md')],
       { results: ['a.md', 'orphan.md'], host: 'host.md' },
     );
     const structure = buildStructure(schema, snap);
-    const app = App.createConfigured__();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ snapshot: snap, sourcePath: 'host.md' }),
+    );
 
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-orphans') });
 
     const orphansLi = container.querySelector('.bases-structure-orphans');
     expect(orphansLi?.textContent).toContain('Without a parent');
-    expect(orphansLi?.querySelector('.bases-structure-node')?.textContent).toBe('orphan');
+    expect(orphansLi?.querySelector('.bases-structure-title')?.textContent).toBe('orphan');
+    // Carried-over fix: the orphan `<li>` must live inside a `<ul>`, not directly under the
+    // container.
+    expect(orphansLi?.parentElement?.tagName).toBe('UL');
+    expect(orphansLi?.parentElement?.parentElement).toBe(container);
   });
 
   it('does not infinite-loop and renders each path once when children form a cycle', () => {
@@ -97,13 +119,49 @@ describe('OutlineRenderer', () => {
       ]),
       issues: [],
     };
-    const app = App.createConfigured__();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-cycle') });
 
     expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(2);
+  });
+
+  it('skips a child path with no corresponding structure node (defensive)', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md')], { results: ['a.md'] });
+    const structure: Structure = {
+      root: null,
+      tops: ['a.md'],
+      orphans: [],
+      nodes: new Map([
+        [
+          'a.md',
+          {
+            path: 'a.md',
+            type: '',
+            parent: null,
+            edge: null,
+            children: ['missing.md'],
+            extras: [],
+            alsoIn: [],
+            twoWay: false,
+          },
+        ],
+      ]),
+      issues: [],
+    };
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-missing-node'),
+    });
+
+    expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(1);
   });
 
   it('opens the link on click with the host path as source and the mod-event state', () => {
@@ -116,11 +174,14 @@ describe('OutlineRenderer', () => {
     const app = App.createConfigured__();
     const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap, sourcePath: 'host.md' }),
+    );
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-click') });
 
-    const link = container.querySelector('[data-path="a.md"]');
-    link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const title = container.querySelector('[data-path="a.md"] .bases-structure-title');
+    title?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
     expect(openLinkText).toHaveBeenCalledWith('a.md', 'host.md', expect.anything());
   });
@@ -135,11 +196,14 @@ describe('OutlineRenderer', () => {
     const app = App.createConfigured__();
     const trigger = vi.spyOn(app.workspace, 'trigger');
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap, sourcePath: 'host.md' }),
+    );
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-hover') });
 
-    const link = container.querySelector('[data-path="a.md"]');
-    link?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    const title = container.querySelector('[data-path="a.md"] .bases-structure-title');
+    title?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
 
     expect(trigger).toHaveBeenCalledWith(
       'hover-link',
@@ -160,7 +224,10 @@ describe('OutlineRenderer', () => {
     vi.spyOn(app.workspace, 'openLinkText').mockRejectedValue(error);
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+    );
     renderer.update({
       schema,
       snapshot: snap,
@@ -168,8 +235,8 @@ describe('OutlineRenderer', () => {
       state: getUiState('outline-click-error'),
     });
 
-    const link = container.querySelector('[data-path="a.md"]');
-    link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const title = container.querySelector('[data-path="a.md"] .bases-structure-title');
+    title?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     await vi.waitFor(() => {
       expect(consoleErrorSpy).toHaveBeenCalled();
     });
@@ -184,7 +251,10 @@ describe('OutlineRenderer', () => {
     const app = App.createConfigured__();
     const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+    );
     renderer.update({
       schema,
       snapshot: snap,
@@ -199,14 +269,17 @@ describe('OutlineRenderer', () => {
     expect(openLinkText).not.toHaveBeenCalled();
   });
 
-  it('ignores a click that does not land on a node', () => {
+  it('ignores a click that does not land on a title', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot([note('a.md')], { results: ['a.md'] });
     const structure = buildStructure(schema, snap);
     const app = App.createConfigured__();
     const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+    );
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-click-miss') });
 
     container.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -214,59 +287,20 @@ describe('OutlineRenderer', () => {
     expect(openLinkText).not.toHaveBeenCalled();
   });
 
-  it('ignores a mouseover that does not land on a node', () => {
+  it('ignores a mouseover that does not land on a title', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot([note('a.md')], { results: ['a.md'] });
     const structure = buildStructure(schema, snap);
     const app = App.createConfigured__();
     const trigger = vi.spyOn(app.workspace, 'trigger');
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+    );
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-hover-miss') });
 
     container.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-
-    expect(trigger).not.toHaveBeenCalled();
-  });
-
-  it('ignores a click on a node element with no data-path attribute (defensive)', () => {
-    const { schema } = parseSchema(makeRead({ parent: 'up' }));
-    const snap = snapshot([note('a.md')], { results: ['a.md'] });
-    const structure = buildStructure(schema, snap);
-    const app = App.createConfigured__();
-    const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
-    const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
-    renderer.update({
-      schema,
-      snapshot: snap,
-      structure,
-      state: getUiState('outline-click-nopath'),
-    });
-    const rogue = container.createEl('a', { cls: 'bases-structure-node' });
-
-    rogue.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(openLinkText).not.toHaveBeenCalled();
-  });
-
-  it('ignores a mouseover on a node element with no data-path attribute (defensive)', () => {
-    const { schema } = parseSchema(makeRead({ parent: 'up' }));
-    const snap = snapshot([note('a.md')], { results: ['a.md'] });
-    const structure = buildStructure(schema, snap);
-    const app = App.createConfigured__();
-    const trigger = vi.spyOn(app.workspace, 'trigger');
-    const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
-    renderer.update({
-      schema,
-      snapshot: snap,
-      structure,
-      state: getUiState('outline-hover-nopath'),
-    });
-    const rogue = container.createEl('a', { cls: 'bases-structure-node' });
-
-    rogue.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
 
     expect(trigger).not.toHaveBeenCalled();
   });
@@ -278,7 +312,10 @@ describe('OutlineRenderer', () => {
     const app = App.createConfigured__();
     const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
     const container = createDiv();
-    const renderer = new OutlineRenderer(app.asOriginalType__(), container);
+    const renderer = new OutlineRenderer(
+      container,
+      makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+    );
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-destroy') });
 
     renderer.destroy();

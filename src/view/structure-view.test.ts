@@ -54,7 +54,7 @@ describe('StructureView', () => {
     expect(parentEl.querySelector('.bases-structure-body')).not.toBeNull();
   });
 
-  it('shows the schema issue in the banner for a bad config (no parent, no types)', () => {
+  it('shows the schema issue in the banner for a bad config (no parent, no types), with no leading key prefix', () => {
     const app = App.createConfigured__({});
     const { view, parentEl } = createView(app, []);
 
@@ -62,7 +62,9 @@ describe('StructureView', () => {
 
     const issuesEl = parentEl.querySelector('.bases-structure-issues');
     expect(issuesEl?.classList.contains('is-hidden')).toBe(false);
-    expect(issuesEl?.textContent).toContain('Set "parent" or "types"');
+    // The issue's `key` is '' (it isn't about any single config field), so the line must be just
+    // the message — no leading ": " from an empty key.
+    expect(issuesEl?.textContent).toBe('Set "parent" or "types"');
   });
 
   it('hides the issues banner and renders a node per result in order for a valid untyped config', () => {
@@ -82,6 +84,7 @@ describe('StructureView', () => {
     const app = App.createConfigured__({ files: { 'a.md': '' } });
     const { view } = createView(app, [mustFile(app, 'a.md')]);
     view.config.set('parent', 'note.parent');
+    view.config.set('layout', 'outline');
     const updateSpy = vi.spyOn(OutlineRenderer.prototype, 'update');
     const destroySpy = vi.spyOn(OutlineRenderer.prototype, 'destroy');
 
@@ -101,6 +104,7 @@ describe('StructureView', () => {
     const app = App.createConfigured__({ files: { 'a.md': '' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'a.md')]);
     view.config.set('parent', 'note.parent');
+    view.config.set('layout', 'outline');
     vi.spyOn(OutlineRenderer.prototype, 'update').mockImplementation(() => {
       throw new Error('boom');
     });
@@ -144,6 +148,7 @@ describe('StructureView', () => {
     const app = App.createConfigured__({ files: { 'a.md': '' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'a.md')]);
     view.config.set('parent', 'note.parent');
+    view.config.set('layout', 'outline');
     view.onDataUpdated();
     const destroySpy = vi.spyOn(OutlineRenderer.prototype, 'destroy');
 
