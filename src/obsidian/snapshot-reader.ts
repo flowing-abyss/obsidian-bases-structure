@@ -121,16 +121,24 @@ function addExternalTargetsOf(app: App, notes: Map<string, NoteData>, note: Note
 
 /** The visible notes for a structure view: every `results` note, the `host` (when given), and —
  * one level only — every property-link target of those notes that resolves to an existing
- * markdown file. `results` in the snapshot is deduped to unique paths in the given order. */
+ * markdown file. `results` in the snapshot is deduped to unique paths in the given order.
+ *
+ * `results` comes straight from a Bases query, which isn't guaranteed to hand back only markdown
+ * notes — a folder-scoped filter (`file.inFolder(...)`) matches every file under it, including a
+ * `.base`/`.canvas` file that happens to live there too. `addExternalTarget` already guards its own
+ * (property-link) intake with `file.extension === 'md'`; `results` needs the same guard so a
+ * non-markdown file can't become a "note" here — `host` doesn't, since `findHostFile` already only
+ * ever returns a markdown file or `null`. */
 export function readSnapshot(app: App, results: readonly TFile[], host: TFile | null): Snapshot {
   const notes = new Map<string, NoteData>();
-  for (const file of results) {
+  const noteResults = results.filter((file) => file.extension === 'md');
+  for (const file of noteResults) {
     addNote(app, notes, file);
   }
   if (host !== null) {
     addNote(app, notes, host);
   }
-  const primary = host !== null ? [...results, host] : results;
+  const primary = host !== null ? [...noteResults, host] : noteResults;
   for (const file of primary) {
     const note = notes.get(file.path);
     if (note !== undefined) {
@@ -139,7 +147,7 @@ export function readSnapshot(app: App, results: readonly TFile[], host: TFile | 
   }
   return {
     notes,
-    results: uniqueInOrder(results.map((file) => file.path)),
+    results: uniqueInOrder(noteResults.map((file) => file.path)),
     host: host?.path ?? null,
   };
 }

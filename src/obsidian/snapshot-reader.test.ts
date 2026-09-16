@@ -191,6 +191,27 @@ describe('readSnapshot', () => {
     expect([...snapshot.notes.keys()]).toStrictEqual(expect.arrayContaining(['a.md', 'b.md']));
   });
 
+  // Regression: a Bases folder filter (`file.inFolder(...)`) matches every file under that
+  // folder, not just markdown notes — a `.base`/`.canvas` file living in the same folder the view
+  // filters on comes back as a query result too. A catch-all type (`{}`, no conditions) would
+  // otherwise happily adopt it as a "note".
+  it('excludes non-markdown results (e.g. a .base or .canvas file) from both results and notes', () => {
+    const app = App.createConfigured__({
+      files: { 'a.md': '', 'scheme.base': 'views: []\n', 'board.canvas': '{}' },
+    });
+    const results = [
+      mustFile(app, 'a.md'),
+      mustFile(app, 'scheme.base'),
+      mustFile(app, 'board.canvas'),
+    ];
+
+    const snapshot = readSnapshot(app.asOriginalType__(), results, null);
+
+    expect(snapshot.results).toStrictEqual(['a.md']);
+    expect(snapshot.notes.has('scheme.base')).toBe(false);
+    expect(snapshot.notes.has('board.canvas')).toBe(false);
+  });
+
   it('includes the host note and reports its path, when given', () => {
     const app = App.createConfigured__({ files: { 'a.md': '', 'host.md': '' } });
     const results = [mustFile(app, 'a.md')];
