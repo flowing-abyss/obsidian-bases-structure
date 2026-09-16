@@ -430,6 +430,36 @@ describe('attachKeyboard — Escape', () => {
     expect(h.container.tabIndex).toBe(0);
     expect(h.container.querySelector('.bases-structure-node.is-active')).toBeNull();
   });
+
+  it('moves real focus off the old node onto the container, so a later Tab can re-enter', () => {
+    // Regression: `applyActiveNode(container, null)` marks every node inactive but returns no
+    // element for `focusActiveNode` to focus — left alone, real DOM focus stays on the *old* node,
+    // which now has `tabindex="-1"`. The browser's next Tab starts from wherever real focus
+    // currently is, not from the roving-tabindex bookkeeping, so a stuck-on-a-`-1`-element focus
+    // would skip right past the container's restored `tabindex="0"` re-entry point.
+    const h = makeHarness(makeStructure(), null);
+    const nodeEl = h.container.querySelector<HTMLElement>('[data-path="a.md"]');
+    if (nodeEl === null) throw new Error('Test setup error: missing node element');
+    nodeEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(document.activeElement).toBe(nodeEl);
+
+    h.container.dispatchEvent(keyEvent('Escape'));
+
+    expect(document.activeElement).toBe(h.container);
+    expect(nodeEl.tabIndex).toBe(-1);
+  });
+
+  it('does not move focus when Escape fires while focus was already outside the container', () => {
+    const h = makeHarness(makeStructure(), 'a.md');
+    const outside = createEl('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    h.container.dispatchEvent(keyEvent('Escape'));
+
+    expect(document.activeElement).toBe(outside);
+  });
 });
 
 describe('attachKeyboard — no active node / unhandled keys', () => {

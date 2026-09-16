@@ -228,7 +228,7 @@ describe('GraphRenderer', () => {
     expect(rootEl.tabIndex).toBe(-1);
   });
 
-  it('moves real focus to the active node only when it changes between renders', () => {
+  it('moves real focus to the active node when the active path changes between renders', () => {
     const container = createDiv();
     document.body.appendChild(container);
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
@@ -238,18 +238,51 @@ describe('GraphRenderer', () => {
     const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
     expect(document.activeElement).toBe(aEl);
 
-    // Every `update()` rebuilds the node elements from scratch, even when nothing about `active`
-    // changed — re-focusing the fresh element every time would yank focus away from whatever the
-    // user is doing elsewhere (a draft input, the toolbar, ...) on every unrelated re-render.
-    renderer.update(makeInput({ state }));
-    const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
-    expect(rebuiltAEl).not.toBe(aEl);
-    expect(document.activeElement).not.toBe(rebuiltAEl);
-
     state.active = 'root.md';
     renderer.update(makeInput({ state }));
     const rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
     expect(document.activeElement).toBe(rootEl);
+  });
+
+  it('re-focuses the rebuilt active node on a same-active-path re-render when focus was already inside', () => {
+    // Every `update()` rebuilds the node elements from scratch, even when nothing about `active`
+    // changed (e.g. a collapse/expand `refresh()`) — the *old* element that had real focus is
+    // gone, so without re-focusing the new one, `document.activeElement` would silently fall back
+    // to `document.body`, and the next real keydown would never reach the container's delegated
+    // listener again (the whole reason `keyboard.ts` can use one listener instead of one per node).
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'a.md' });
+
+    renderer.update(makeInput({ state }));
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(document.activeElement).toBe(aEl);
+
+    renderer.update(makeInput({ state }));
+
+    const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(rebuiltAEl).not.toBe(aEl);
+    expect(document.activeElement).toBe(rebuiltAEl);
+  });
+
+  it('does not steal focus on a same-active-path re-render when focus was elsewhere', () => {
+    // The flip side of the above: an *unrelated* re-render (e.g. a create commit while the user
+    // is typing in a draft input, or has focus on some other page element entirely) must not yank
+    // focus back into the graph just because `state.active` happens to still name the same path.
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'a.md' });
+    renderer.update(makeInput({ state }));
+    const outside = createEl('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    renderer.update(makeInput({ state }));
+
+    expect(document.activeElement).toBe(outside);
   });
 
   it('draws one tree edge per parent-child relationship, with no markers and no group frames', () => {

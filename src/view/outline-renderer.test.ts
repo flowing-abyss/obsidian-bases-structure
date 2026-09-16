@@ -600,7 +600,7 @@ describe('OutlineRenderer', () => {
     expect(rootEl?.tabIndex).toBe(-1);
   });
 
-  it('moves real focus to the active node only when it changes between renders', () => {
+  it('moves real focus to the active node when the active path changes between renders', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot(
       [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
@@ -617,15 +617,60 @@ describe('OutlineRenderer', () => {
     const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(document.activeElement).toBe(childEl);
 
-    renderer.update({ schema, snapshot: snap, structure, state });
-    const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
-    expect(rebuiltChildEl).not.toBe(childEl);
-    expect(document.activeElement).not.toBe(rebuiltChildEl);
-
     state.active = 'root.md';
     renderer.update({ schema, snapshot: snap, structure, state });
     const rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
     expect(document.activeElement).toBe(rootEl);
+  });
+
+  it('re-focuses the rebuilt active node on a same-active-path re-render when focus was already inside', () => {
+    // See the graph renderer's identical test for why: every `update()` rebuilds the node
+    // elements from scratch (destroying whatever had real focus), even for a collapse/expand
+    // refresh where `state.active` itself doesn't change.
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-active-refocus');
+    state.active = 'child.md';
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    expect(document.activeElement).toBe(childEl);
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+
+    const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    expect(rebuiltChildEl).not.toBe(childEl);
+    expect(document.activeElement).toBe(rebuiltChildEl);
+  });
+
+  it('does not steal focus on a same-active-path re-render when focus was elsewhere', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-active-no-steal');
+    state.active = 'child.md';
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const outside = createEl('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+
+    expect(document.activeElement).toBe(outside);
   });
 
   it('restores scrollTop across updates', () => {

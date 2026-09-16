@@ -445,6 +445,26 @@ describe('StructureView — keyboard wiring', () => {
     return { ...view, app };
   }
 
+  // Two top-level "Cat" siblings (only one with a child) — needed for the collapse/refocus tests
+  // below, which check that a following ArrowDown still moves the active node after a collapse:
+  // `catLeafView`'s single top has nowhere to move to.
+  function twoCatsView(): TestView & { app: App } {
+    const app = App.createConfigured__({
+      files: {
+        'cat1.md': '---\ntags: [cat]\n---\n',
+        'cat2.md': '---\ntags: [cat]\n---\n',
+        'leaf.md': '---\ntags: [leaf]\nup: "[[cat1]]"\n---\n',
+      },
+    });
+    const view = createView(app, [
+      mustFile(app, 'cat1.md'),
+      mustFile(app, 'cat2.md'),
+      mustFile(app, 'leaf.md'),
+    ]);
+    view.view.config.set('types', catLeafConfig);
+    return { ...view, app };
+  }
+
   it('attaches keyboard to the renderer container', () => {
     const disposeSpy = vi.fn();
     const attachKeyboardSpy = vi
@@ -627,6 +647,69 @@ describe('StructureView — keyboard wiring', () => {
       parentEl.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
     ).toBe('cat.md');
   });
+
+  // Regression: a collapse/expand always goes through a full `refresh()`, which rebuilds every
+  // node element — including the active node's own, even though `state.active` itself doesn't
+  // change. Before this fix, real DOM focus silently fell back to `document.body` afterward (the
+  // renderer only re-focused when the *active path* changed), so the very next keydown — dispatched
+  // on `document.activeElement`, as a real keypress would be, not on `bodyEl` directly — no longer
+  // reached the container's delegated listener at all. Drives every step through
+  // `document.activeElement` rather than `bodyEl` specifically, to exercise the same path a real
+  // keyboard interaction does (the CLI manual check that missed this dispatched on the body, which
+  // is why it didn't surface).
+  //
+  // Two consecutive toggles, not one: a click-driven `setActive` no longer touches the renderer at
+  // all (see the toggle-click fix above), so the renderer's own `lastActivePath` bookkeeping is
+  // still `null` going into the *first* refresh — that one refocuses "by accident" (`'cat1.md' !==
+  // null`) even without this round's fix. Only the *second* toggle, once `lastActivePath` already
+  // equals the (unchanged) active path, actually exercises the bug.
+  it.each([
+    { key: ' ', layout: undefined, label: 'graph, Space' },
+    { key: ' ', layout: 'outline', label: 'outline, Space' },
+    { key: 'ArrowLeft', layout: undefined, label: 'graph, ArrowLeft' },
+    { key: 'ArrowLeft', layout: 'outline', label: 'outline, ArrowLeft' },
+  ])(
+    'two consecutive real collapses ($label) keep real focus on the rebuilt active node, and a following ArrowDown still moves it',
+    ({ key, layout }) => {
+      const { view, parentEl } = twoCatsView();
+      // `.focus()` is a no-op on an element that isn't connected to `document` — needed here
+      // (unlike most of this file's other tests) because this one actually checks
+      // `document.activeElement`, not just classes/attributes.
+      document.body.appendChild(parentEl);
+      if (layout !== undefined) {
+        view.config.set('layout', layout);
+      }
+      view.onDataUpdated();
+      findNode(parentEl, 'cat1.md').dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+      expect(document.activeElement).toBe(findNode(parentEl, 'cat1.md'));
+      expect(parentEl.querySelector('[data-path="leaf.md"]')).not.toBeNull();
+
+      // First toggle: collapses cat1 (still refocuses even pre-fix, see the comment above).
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+      );
+      expect(parentEl.querySelector('[data-path="leaf.md"]')).toBeNull();
+
+      // Second toggle: expands cat1 again — `lastActivePath` already matches, so this is the one
+      // that actually needs the fix to keep real focus following the rebuilt node.
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
+      );
+      expect(parentEl.querySelector('[data-path="leaf.md"]')).not.toBeNull();
+      const rebuiltCat1El = findNode(parentEl, 'cat1.md');
+      expect(document.activeElement).toBe(rebuiltCat1El);
+
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }),
+      );
+
+      expect(
+        parentEl.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
+      ).toBe('cat2.md');
+    },
+  );
 
   // Regression: a toggle click bubbles from the renderer's own delegated click handler (which
   // already re-renders locally to reflect the collapse change) all the way up to `attachKeyboard`'s

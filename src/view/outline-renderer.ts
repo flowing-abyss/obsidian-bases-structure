@@ -132,6 +132,9 @@ export class OutlineRenderer implements StructureRenderer {
   }
 
   update(input: RenderInput): void {
+    // See the graph renderer's identical capture in its own `update()` for why: this has to be
+    // read before the rebuild below destroys whatever real DOM focus is currently inside.
+    const hadFocus = this.outlineEl.contains(document.activeElement);
     this.lastInput = input;
     this.nodeCtx.snapshot = input.snapshot;
     this.nodeCtx.sourcePath = input.snapshot.host ?? '';
@@ -153,15 +156,17 @@ export class OutlineRenderer implements StructureRenderer {
       this.emptyEl.addClass('is-hidden');
     }
     this.outlineEl.scrollTop = input.state.scrollTop;
-    this.applyActiveState(input.state.active);
+    this.applyActiveState(input.state.active, hadFocus);
   }
 
   /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) — see
    * the graph renderer's identical method for why (node elements are rebuilt wholesale above) and
-   * why focus/scroll only follow an actual change. */
-  private applyActiveState(active: string | null): void {
+   * why focus/scroll follow either an actual change *or* `hadFocus` (captured in `update()` before
+   * the rebuild) — the latter is what keeps a collapse/expand refresh (same active path, but every
+   * node element replaced) from silently dropping real focus to `document.body`. */
+  private applyActiveState(active: string | null, hadFocus: boolean): void {
     const activeEl = applyActiveNode(this.outlineEl, active);
-    if (activeEl !== null && active !== this.lastActivePath) {
+    if (activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
       focusActiveNode(activeEl);
     }
     this.lastActivePath = active;

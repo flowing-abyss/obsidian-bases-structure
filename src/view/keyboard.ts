@@ -9,6 +9,15 @@ import type { Structure, StructureNode } from '../core/structure.js';
 import { applyActiveNode, focusActiveNode } from './node-element.js';
 import type { ViewUiState } from './view-state.js';
 
+/** Containers `setActive` is *itself* mid-way through focusing (see its Escape/`path === null`
+ * branch). `.focus()` dispatches `focus` synchronously, and the container has its own `focus`
+ * listener (`handleContainerFocus`, "entering by keyboard activates the root") — without this
+ * guard, focusing the container to give Escape somewhere sane to land would immediately re-fire
+ * that listener and re-activate a node, undoing the very thing Escape just did. A `WeakSet` keyed
+ * by container (not a single module-level flag) so concurrent `attachKeyboard` instances — more
+ * than one structure view open at once — can't interfere with each other. */
+const focusingContainerProgrammatically = new WeakSet<HTMLElement>();
+
 export interface KeyboardDeps {
   readonly container: HTMLElement;
   readonly getStructure: () => Structure;
@@ -156,7 +165,16 @@ function edgeOf(ctx: ActiveCtx, edge: 'first' | 'last'): string | null {
  * nearer ancestor, so it fires first during bubbling) — a second, full `refresh()` on top would
  * be redundant work and once made `GraphRenderer.update`/`OutlineRenderer.update` run twice for a
  * single toggle click. Handlers that actually change *which nodes are rendered* (collapse/expand)
- * still call `deps.refresh()` themselves, separately from `setActive`. */
+ * still call `deps.refresh()` themselves, separately from `setActive`.
+ *
+ * `path === null` (Escape) is the one case `applyActiveNode` never returns an element for — left
+ * alone, real DOM focus would stay on the *previous* active node, which now has `tabindex="-1"`:
+ * `document.activeElement` would be stuck there, so a later Tab wouldn't reliably land back on the
+ * container (roving tabindex only governs which element a Tab *lands on*, not where the next Tab
+ * *starts from* — the browser still starts from wherever real focus currently is). Moving focus to
+ * the container itself (now `tabindex="0"`) when focus was inside it is what "Escape — clear the
+ * active node (blur)" (see the decisions) means in practice: nothing is visually active, but the
+ * view stays a single, re-enterable Tab stop instead of a dead end. */
 function setActive(deps: KeyboardDeps, path: string | null): void {
   const state = deps.getState();
   state.active = path;
@@ -164,6 +182,12 @@ function setActive(deps: KeyboardDeps, path: string | null): void {
   const activeEl = applyActiveNode(deps.container, path);
   if (activeEl !== null) {
     focusActiveNode(activeEl);
+    return;
+  }
+  if (deps.container.contains(document.activeElement)) {
+    focusingContainerProgrammatically.add(deps.container);
+    deps.container.focus({ preventScroll: true });
+    focusingContainerProgrammatically.delete(deps.container);
   }
 }
 
@@ -313,9 +337,12 @@ function resolveActiveCtx(deps: KeyboardDeps): ActiveCtx | null {
  * nothing is active) activates the root, or the first top when there's no root, or the first
  * orphan when there isn't even that — mirrors the graph/outline renderers' own "forest tops"
  * fallback order. A no-op once something is already active (this only fires for the container
- * itself, never a descendant — `focus` doesn't bubble). */
+ * itself, never a descendant — `focus` doesn't bubble), and also a no-op while `setActive` is
+ * itself the one that just focused the container (see `focusingContainerProgrammatically`) — a
+ * genuine "user tabbed in" focus and "we redirected focus here after Escape" are otherwise
+ * indistinguishable, since both just look like "the container received focus". */
 function handleContainerFocus(deps: KeyboardDeps): void {
-  if (deps.getState().active !== null) {
+  if (focusingContainerProgrammatically.has(deps.container) || deps.getState().active !== null) {
     return;
   }
   const structure = deps.getStructure();

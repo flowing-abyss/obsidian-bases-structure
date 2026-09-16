@@ -253,6 +253,12 @@ export class GraphRenderer implements StructureRenderer {
   }
 
   update(input: RenderInput): void {
+    // Captured before anything below rebuilds `nodesEl`'s children (destroying whatever real DOM
+    // focus was on): a full rebuild always replaces the active node's own element, even when its
+    // `data-path` is unchanged (e.g. a collapse/expand `refresh()`) — without this, focus would
+    // silently fall back to `document.body`, and the next real keydown would never reach the
+    // container's delegated listener again (see `applyActiveState`).
+    const hadFocus = this.nodesEl.contains(document.activeElement);
     this.lastInput = input;
     this.state = input.state;
     this.ctx.snapshot = input.snapshot;
@@ -288,17 +294,21 @@ export class GraphRenderer implements StructureRenderer {
     this.applyZoom(input.state.zoom);
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
-    this.applyActiveState(input.state.active);
+    this.applyActiveState(input.state.active, hadFocus);
   }
 
   /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) — the
    * node elements themselves are rebuilt wholesale above, so nothing here can just persist a
-   * class from before. Only moves real focus/scroll when `active` actually changed since the
-   * last render (tracked via `lastActivePath`), so an unrelated re-render (e.g. a collapse toggle
-   * elsewhere) never steals focus back from wherever the user currently is. */
-  private applyActiveState(active: string | null): void {
+   * class from before. Moves real focus/scroll when `active` actually changed since the last
+   * render (tracked via `lastActivePath`) *or* when focus was already inside the graph before
+   * this render (`hadFocus`, captured in `update()` before the rebuild) — the latter is what keeps
+   * a collapse/expand refresh (same active path, but every node element replaced) from silently
+   * dropping real focus to `document.body`. Without `hadFocus`, an unrelated re-render (e.g. a
+   * create commit while the user's focus is on some other element entirely, like a draft input)
+   * still won't steal focus back, since `hadFocus` is only true when focus genuinely was here. */
+  private applyActiveState(active: string | null, hadFocus: boolean): void {
     const activeEl = applyActiveNode(this.nodesEl, active);
-    if (activeEl !== null && active !== this.lastActivePath) {
+    if (activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
       focusActiveNode(activeEl);
     }
     this.lastActivePath = active;
