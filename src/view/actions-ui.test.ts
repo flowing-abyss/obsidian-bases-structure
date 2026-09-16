@@ -5,7 +5,7 @@
 // same as `plan-applier.test.ts`.
 
 import type * as ObsidianModule from 'obsidian';
-import { App, Menu, type TFile } from 'obsidian-test-mocks/obsidian';
+import { App, Menu, Modal, type TFile } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseSchema, type Schema } from '../core/schema.js';
 import { buildStructure } from '../core/structure.js';
@@ -105,6 +105,9 @@ interface HarnessOptions {
    * describes). */
   readonly rebuildTree?: boolean;
   readonly hostPath?: string;
+  /** Defaults to `SCHEMA_CONFIG` — move/retype tests need shapes (a cascading `inherit` key, a
+   * sibling type an item can retype into) that fixture doesn't have. */
+  readonly schemaConfig?: Record<string, unknown>;
 }
 
 /** Wires a real `StructureActions` against a real mock vault: `getInput` re-reads the vault
@@ -114,7 +117,7 @@ interface HarnessOptions {
  * for what a real renderer's `update()` would do. */
 function makeHarness(files: Record<string, string>, options: HarnessOptions = {}): Harness {
   const app = App.createConfigured__({ files });
-  const schema = schemaFrom(SCHEMA_CONFIG);
+  const schema = schemaFrom(options.schemaConfig ?? SCHEMA_CONFIG);
   const { root, nodes } = makeTree(Object.keys(files));
   const state = makeState();
   const rebuildTree = options.rebuildTree ?? true;
@@ -159,6 +162,45 @@ function baseFiles(): Record<string, string> {
     'leaf.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n',
     'other.md': '---\ntags: [other]\nup: "[[cat]]"\n---\n',
     'sub.md': '---\ntags: [sub]\nup: "[[leaf]]"\n---\n',
+  };
+}
+
+/** Category/Meta/Hierarchy, `category` inherited through `meta` — a small version of the real
+ * vault schema's cascade (see the design spec's "Действия: одно ядро" and the manual check),
+ * small enough to assert exact frontmatter on both the moved note and one cascaded descendant. */
+const MOVE_SCHEMA_CONFIG = {
+  inherit: ['category'],
+  types: {
+    Category: { tag: 'category', children: { Meta: 'category', Hierarchy: 'category' } },
+    Meta: { tag: 'meta', children: { Hierarchy: 'meta' } },
+    Hierarchy: { tag: 'hierarchy' },
+  },
+};
+
+function moveFiles(): Record<string, string> {
+  return {
+    'cat1.md': '---\ntags: [category]\n---\n',
+    'cat2.md': '---\ntags: [category]\n---\n',
+    'meta.md': '---\ntags: [meta]\ncategory: "[[cat1]]"\n---\n',
+    'child.md': '---\ntags: [hierarchy]\nmeta: "[[meta]]"\ncategory: "[[cat1]]"\n---\n',
+  };
+}
+
+/** Cat with two sibling child types (A, B) that don't accept each other's children — enough to
+ * exercise both a real retype (`item.md`: A → B) and an empty-`retypeOptions` node (`cat.md`
+ * itself, whose only child would fail under either sibling type). */
+const RETYPE_SCHEMA_CONFIG = {
+  types: {
+    Cat: { tag: 'cat', children: { A: 'up', B: 'up' } },
+    A: { tag: 'a' },
+    B: { tag: 'b' },
+  },
+};
+
+function retypeFiles(): Record<string, string> {
+  return {
+    'cat.md': '---\ntags: [cat]\n---\n',
+    'item.md': '---\ntags: [a]\nup: "[[cat]]"\n---\n',
   };
 }
 
@@ -822,5 +864,444 @@ describe('consumeFocus', () => {
 
     expect(h.actions.consumeFocus()).toBe('New Sub.md');
     expect(h.actions.consumeFocus()).toBeNull();
+  });
+});
+
+describe('carried-over fix from the task 11 review — commit tail scoping', () => {
+  it('does not wipe a newly opened draft when an earlier, cancelled commit settles afterwards', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    const otherEl = h.nodes.get('other.md');
+    if (leafEl === undefined || otherEl === undefined) throw new Error('missing elements');
+    h.actions.startCreate('leaf.md', leafEl);
+    const firstInput = draftInput(h.root);
+    firstInput.value = 'Settling Sub';
+
+    // Commit starts (async), then the user cancels it (Escape) and opens a different draft
+    // before the first commit's promise settles — the finishing commit must not touch the new
+    // draft, which belongs to a different node (`other.md`, whose only allowed child is `Sub2`,
+    // so it opens directly without a type menu).
+    pressKey(firstInput, 'Enter');
+    pressKey(firstInput, 'Escape');
+    h.actions.startCreate('other.md', otherEl);
+    const secondInput = draftInput(h.root);
+    expect(secondInput).not.toBe(firstInput);
+
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('Settling Sub.md')).not.toBeNull();
+    });
+
+    expect(otherEl.querySelector('.bases-structure-draft-input')).toBe(secondInput);
+    expect(h.root.querySelectorAll('.bases-structure-draft-input')).toHaveLength(1);
+  });
+});
+
+describe('startMove', () => {
+  it('commits the move, cascades category to the hierarchy child, refreshes and shows an undo notice', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    h.actions.startMove('meta.md', 'cat2.md');
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    const metaFile = mustFile(h.app, 'meta.md');
+    const childFile = mustFile(h.app, 'child.md');
+    expect(h.app.metadataCache.getFileCache(metaFile)?.frontmatter?.['category']).toBe('[[cat2]]');
+    expect(h.app.metadataCache.getFileCache(childFile)?.frontmatter?.['category']).toBe('[[cat2]]');
+    expect(h.undo.canUndo).toBe(true);
+    const notice = lastNotice();
+    const fragment = notice?.message as DocumentFragment;
+    expect(fragment.querySelector('span')?.textContent).toBe('Moved "meta" to "cat2"');
+  });
+
+  it('shows the planner rejection reason and writes nothing for an invalid move', () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    h.actions.startMove('meta.md', 'meta.md');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: Cannot move "meta" into itself or its own branch',
+    );
+    expect(h.undo.canUndo).toBe(false);
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+});
+
+interface MoveModal {
+  getItems(): string[];
+  getItemText(item: string): string;
+  onChooseItem(item: string, evt: MouseEvent): void;
+  renderSuggestion(match: { item: string }, el: HTMLElement): void;
+}
+
+function mockModalOpen() {
+  return vi.spyOn(Modal.prototype, 'open').mockImplementation(function (this: Modal): void {
+    return undefined;
+  });
+}
+
+describe('startMovePicker', () => {
+  it('shows a Notice and opens no modal when there is nowhere to move the node', () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    const openSpy = mockModalOpen();
+
+    h.actions.startMovePicker('cat1.md');
+
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: nowhere to move "cat1"');
+  });
+
+  it('lists moveTargets display names and moves the node when one is chosen', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    const openSpy = mockModalOpen();
+
+    h.actions.startMovePicker('meta.md');
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const modal = openSpy.mock.contexts[0] as MoveModal;
+    expect(modal.getItems()).toStrictEqual(['cat2.md']);
+    expect(modal.getItemText('cat2.md')).toBe('cat2');
+
+    modal.onChooseItem('cat2.md', new MouseEvent('click'));
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    const metaFile = mustFile(h.app, 'meta.md');
+    expect(h.app.metadataCache.getFileCache(metaFile)?.frontmatter?.['category']).toBe('[[cat2]]');
+  });
+
+  it('renders the display name plus, for a note in a subfolder, a muted folder suffix', () => {
+    const files = { ...moveFiles(), 'archive/cat3.md': '---\ntags: [category]\n---\n' };
+    const h = makeHarness(files, { schemaConfig: MOVE_SCHEMA_CONFIG });
+    const openSpy = mockModalOpen();
+
+    h.actions.startMovePicker('meta.md');
+
+    const modal = openSpy.mock.contexts[0] as MoveModal;
+    expect(modal.getItems().sort((a, b) => a.localeCompare(b))).toStrictEqual([
+      'archive/cat3.md',
+      'cat2.md',
+    ]);
+
+    const rootEl = createDiv();
+    modal.renderSuggestion({ item: 'cat2.md' }, rootEl);
+    expect(rootEl.textContent).toBe('cat2');
+    expect(rootEl.querySelector('.bases-structure-suggest-folder')).toBeNull();
+
+    const folderedEl = createDiv();
+    modal.renderSuggestion({ item: 'archive/cat3.md' }, folderedEl);
+    expect(folderedEl.querySelector('.bases-structure-suggest-folder')?.textContent).toBe(
+      'archive',
+    );
+  });
+});
+
+describe('startRetype', () => {
+  it('shows a Notice when the node has no compatible retype options', () => {
+    const h = makeHarness(retypeFiles(), { schemaConfig: RETYPE_SCHEMA_CONFIG });
+    const catEl = h.nodes.get('cat.md');
+    if (catEl === undefined) throw new Error('missing cat element');
+
+    h.actions.startRetype('cat.md', catEl);
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "cat" cannot change type here');
+  });
+
+  it('shows a menu matching retypeOptions, and choosing one commits and shows the notice', async () => {
+    const h = makeHarness(retypeFiles(), { schemaConfig: RETYPE_SCHEMA_CONFIG });
+    const itemEl = h.nodes.get('item.md');
+    if (itemEl === undefined) throw new Error('missing item element');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.startRetype('item.md', itemEl);
+
+    expect(showAtPositionSpy).toHaveBeenCalledTimes(1);
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual(['B']);
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    const itemFile = mustFile(h.app, 'item.md');
+    expect(h.app.metadataCache.getFileCache(itemFile)?.frontmatter?.['tags']).toStrictEqual(['b']);
+    const notice = lastNotice();
+    const fragment = notice?.message as DocumentFragment;
+    expect(fragment.querySelector('span')?.textContent).toBe('Changed "item" to "B"');
+  });
+
+  it('shows the menu at the mouse event when one is provided', () => {
+    const h = makeHarness(retypeFiles(), { schemaConfig: RETYPE_SCHEMA_CONFIG });
+    const itemEl = h.nodes.get('item.md');
+    if (itemEl === undefined) throw new Error('missing item element');
+    const showAtMouseEventSpy = vi
+      .spyOn(Menu.prototype, 'showAtMouseEvent')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+    const event = new MouseEvent('click');
+
+    h.actions.startRetype('item.md', itemEl, event);
+
+    expect(showAtMouseEventSpy).toHaveBeenCalledExactlyOnceWith(event);
+  });
+
+  it('shows the planner rejection reason when a listed option is rejected at commit time', () => {
+    // `retypeOptions` doesn't check folder occupancy (only `planRetype` does), so a type whose
+    // recipe folder collides with an existing note is still listed here, then rejected once
+    // actually planned — exercising `commitRetype`'s own rejection branch.
+    const schemaConfig = {
+      types: {
+        Cat: { tag: 'cat', children: { A: 'up', B: 'up' } },
+        A: { tag: 'a' },
+        B: { tag: 'b', folder: 'moved' },
+      },
+    };
+    const files = {
+      'cat.md': '---\ntags: [cat]\n---\n',
+      'item.md': '---\ntags: [a]\nup: "[[cat]]"\n---\n',
+      'moved/item.md': '---\ntags: [b]\n---\n',
+    };
+    const h = makeHarness(files, { schemaConfig });
+    const itemEl = h.nodes.get('item.md');
+    if (itemEl === undefined) throw new Error('missing item element');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.startRetype('item.md', itemEl);
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
+
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: A note already exists at "moved/item.md"',
+    );
+    expect(h.undo.canUndo).toBe(false);
+  });
+});
+
+describe('commitAndNotify — unexpected failure', () => {
+  it('logs and shows a Notice when commitPlan itself rejects', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    vi.spyOn(h.undo, 'push').mockImplementation(() => {
+      throw new Error('push boom');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    h.actions.startMove('meta.md', 'cat2.md');
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+    });
+    expect(
+      NoticeMock.instances.some(
+        (notice) =>
+          typeof notice.message === 'string' &&
+          notice.message === 'Structure: could not apply the change. push boom',
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('openNodeMenu', () => {
+  function targetEvent(target: HTMLElement): MouseEvent {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'target', { value: target, configurable: true });
+    return event;
+  }
+
+  function mockShowAtMouseEvent() {
+    return vi.spyOn(Menu.prototype, 'showAtMouseEvent').mockImplementation(function (this: Menu) {
+      return this;
+    });
+  }
+
+  it('lists Open, Open in new tab, Add child, Move to…, Change type — no Undo when nothing can be undone', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual([
+      'Open',
+      'Open in new tab',
+      'Add child',
+      'Move to…',
+      'Change type',
+    ]);
+  });
+
+  it('adds "Undo last change" as the last item when undo.canUndo is true', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    vi.spyOn(h.undo, 'canUndo', 'get').mockReturnValue(true);
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual([
+      'Open',
+      'Open in new tab',
+      'Add child',
+      'Move to…',
+      'Change type',
+      'Undo last change',
+    ]);
+  });
+
+  it('"Open" opens the node in the current pane (no forced new leaf)', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
+
+    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', false);
+  });
+
+  it('"Open in new tab" uses the mod-aware openLinkText', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
+    const modClick = new MouseEvent('click', { ctrlKey: true, metaKey: true });
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[1]?.onClick__?.(modClick);
+
+    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'tab');
+  });
+
+  it('"Add child" opens a draft anchored to the right-clicked node', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[2]?.onClick__?.(new MouseEvent('click'));
+
+    expect(leafEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
+  });
+
+  it('"Move to…" reaches startMovePicker', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    // `leaf.md` has no compatible move target under `SCHEMA_CONFIG` (its only Leaf-accepting
+    // parent is its own current one), so the picker's own "nowhere to move" Notice is proof
+    // enough that the click reached `startMovePicker`.
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[3]?.onClick__?.(new MouseEvent('click'));
+
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: nowhere to move "leaf"');
+  });
+
+  it('"Change type" reaches startRetype', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    // `leaf.md` has no compatible retype option under `SCHEMA_CONFIG` either, so this only
+    // proves the click reached `startRetype`, via its own "cannot change type" Notice.
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[4]?.onClick__?.(new MouseEvent('click'));
+
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "leaf" cannot change type here');
+  });
+
+  it('"Undo last change" calls undo.undo()', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    vi.spyOn(h.undo, 'canUndo', 'get').mockReturnValue(true);
+    const undoSpy = vi.spyOn(h.undo, 'undo').mockResolvedValue({ label: null, skipped: [] });
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[5]?.onClick__?.(new MouseEvent('click'));
+
+    await vi.waitFor(() => {
+      expect(undoSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe('undoLast', () => {
+  it('shows "nothing to undo" and still refreshes when the stack is empty', async () => {
+    const h = makeHarness(baseFiles());
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: nothing to undo');
+  });
+
+  it('undoes the last transaction, refreshes, and shows the "undone" notice with the skip suffix', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('New Sub.md')).not.toBeNull();
+    });
+    h.refresh.mockClear();
+    NoticeMock.instances.length = 0;
+    vi.spyOn(h.undo, 'undo').mockResolvedValue({ label: 'Create "New Sub"', skipped: ['a.md'] });
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: undone "Create "New Sub"" (skipped 1 note(s))',
+    );
+  });
+
+  it('logs and shows a failure notice when undo.undo() rejects', async () => {
+    const h = makeHarness(baseFiles());
+    vi.spyOn(h.undo, 'undo').mockRejectedValueOnce(new Error('undo boom'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+    });
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: undo failed');
   });
 });

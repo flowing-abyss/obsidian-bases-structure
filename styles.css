@@ -64,6 +64,49 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   border-style: dashed;
 }
 
+/* Drag-to-move (see `src/view/drag.ts`): the dragged source, its valid drop targets, the target
+   currently under the pointer, and everything else — applied together while a drag is in
+   progress, always fully cleaned up on drop/Escape/pointercancel. */
+.bases-structure-node.is-dragging {
+  opacity: 0.5;
+}
+
+.bases-structure-node.is-drop-target {
+  border-color: var(--color-accent);
+  border-style: dashed;
+}
+
+.bases-structure-node.is-drop-hover {
+  background-color: var(--background-modifier-hover);
+  border-color: var(--color-accent);
+  border-style: solid;
+}
+
+.bases-structure-node.is-drag-blocked {
+  opacity: 0.4;
+}
+
+/* The floating chip that follows the pointer while dragging — positioned in `drag.ts` via inline
+   `left`/`top`, not here. */
+.bases-structure-drag-ghost {
+  position: fixed;
+  z-index: 100;
+  padding: var(--size-2-1) var(--size-2-2);
+  color: var(--text-normal);
+  pointer-events: none;
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+  transform: translate(-50%, -50%);
+}
+
+/* The "Move to…" suggest modal's folder subtext (see `StructureActions`'s `MoveSuggestModal`). */
+.bases-structure-suggest-folder {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
 /* Applied for one render right after a successful create (see `RenderInput.focusPath`); the
    outline fades to transparent over its own duration rather than being removed by a timer. */
 .bases-structure-node.is-new {

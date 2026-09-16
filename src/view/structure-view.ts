@@ -5,6 +5,7 @@
 
 import type { QueryController } from 'obsidian';
 import { BasesView } from 'obsidian';
+import { moveTargets } from '../core/plan-move.js';
 import type { Schema, SchemaIssue } from '../core/schema.js';
 import { parseSchema } from '../core/schema.js';
 import type { Snapshot } from '../core/snapshot.js';
@@ -15,11 +16,22 @@ import type StructureViewPlugin from '../main.js';
 import { findHostFile } from '../obsidian/root-finder.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
 import { StructureActions } from './actions-ui.js';
+import { attachDrag } from './drag.js';
 import { GraphRenderer } from './graph-renderer.js';
 import type { NodeElementContext } from './node-element.js';
 import { OutlineRenderer } from './outline-renderer.js';
 import type { ViewUiState } from './view-state.js';
 import { getUiState } from './view-state.js';
+
+const NODE_SELECTOR = '.bases-structure-node';
+
+/** `true` for exactly a bare Mod+Z (no Shift/Alt, either Cmd or Ctrl) — deliberately excludes the
+ * common "Mod+Shift+Z redo" chord even though this plugin has no redo, so a future one doesn't
+ * silently collide with this shortcut. */
+function isUndoShortcut(event: KeyboardEvent): boolean {
+  const modPressed = event.metaKey || event.ctrlKey;
+  return modPressed && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z';
+}
 
 export interface RenderInput {
   readonly schema: Schema;
@@ -83,6 +95,7 @@ export class StructureView extends BasesView {
   private rendererLayout: Schema['layout'] | null = null;
   private actions: StructureActions | null = null;
   private lastInput: RenderInput | null = null;
+  private dragDispose: (() => void) | null = null;
 
   constructor(controller: QueryController, parentEl: HTMLElement, plugin: StructureViewPlugin) {
     super(controller);
@@ -90,7 +103,14 @@ export class StructureView extends BasesView {
     this.containerEl = parentEl.createDiv('bases-structure');
     this.issuesEl = this.containerEl.createDiv('bases-structure-issues');
     this.bodyEl = this.containerEl.createDiv('bases-structure-body');
+    this.registerDomEvent(this.containerEl, 'contextmenu', (event) => {
+      this.handleContextMenu(event);
+    });
+    this.registerDomEvent(this.containerEl, 'keydown', (event) => {
+      this.handleKeyDown(event);
+    });
     this.register(() => {
+      this.dragDispose?.();
       this.actions?.destroy();
       this.renderer?.destroy();
       this.containerEl.empty();
@@ -158,14 +178,56 @@ export class StructureView extends BasesView {
    * own working copy and refreshes it from every `RenderInput` it's given afterwards. */
   private resolveRenderer(layout: Schema['layout'], ctx: NodeElementContext): StructureRenderer {
     if (this.renderer === null || this.rendererLayout !== layout) {
+      this.dragDispose?.();
       this.renderer?.destroy();
       this.renderer =
         layout === 'outline'
           ? new OutlineRenderer(this.bodyEl, ctx)
           : new GraphRenderer(this.bodyEl, ctx);
       this.rendererLayout = layout;
+      this.dragDispose = this.attachNodeDrag();
     }
     return this.renderer;
+  }
+
+  /** `targetsFor`/`onDrop` always resolve against `this.lastInput`/`this.actions` at drag time
+   * (not whatever was current when `attachDrag` was called) — the same "read the latest render"
+   * approach `resolveActions`'s `getInput` uses, since a single `attachDrag` call is reused across
+   * every render until the renderer itself is next recreated (see `resolveRenderer`). */
+  private attachNodeDrag(): () => void {
+    return attachDrag({
+      container: this.bodyEl,
+      targetsFor: (path) => {
+        if (this.lastInput === null) {
+          return new Set();
+        }
+        return moveTargets(this.lastInput.schema, this.lastInput.structure, path);
+      },
+      onDrop: (node, parent) => {
+        this.actions?.startMove(node, parent);
+      },
+    });
+  }
+
+  private handleContextMenu(event: MouseEvent): void {
+    if (!(event.target instanceof HTMLElement)) {
+      return;
+    }
+    const nodeEl = event.target.closest<HTMLElement>(NODE_SELECTOR);
+    const path = nodeEl?.getAttribute('data-path') ?? null;
+    if (path === null || this.actions === null) {
+      return;
+    }
+    event.preventDefault();
+    this.actions.openNodeMenu(path, event);
+  }
+
+  private handleKeyDown(event: KeyboardEvent): void {
+    if (event.target instanceof HTMLInputElement || !isUndoShortcut(event)) {
+      return;
+    }
+    event.preventDefault();
+    this.actions?.undoLast();
   }
 
   private renderIssues(

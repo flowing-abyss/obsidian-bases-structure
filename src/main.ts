@@ -1,6 +1,7 @@
 import type { BasesAllOptions, BasesViewConfig } from 'obsidian';
 import { Notice, Plugin } from 'obsidian';
 import { UndoManager } from './obsidian/undo-manager.js';
+import { formatUndoResult } from './view/actions-ui.js';
 import { STRUCTURE_VIEW_ID, StructureView } from './view/structure-view.js';
 import { clearUiState } from './view/view-state.js';
 
@@ -71,13 +72,8 @@ export default class StructureViewPlugin extends Plugin {
   }
 
   private async runUndo(): Promise<void> {
-    const { label, skipped } = await this.undo.undo();
-    if (label === null) {
-      this.notify('Structure: nothing to undo');
-      return;
-    }
-    const suffix = skipped.length > 0 ? ` (skipped ${skipped.length} note(s))` : '';
-    this.notify(`Structure: undone "${label}"${suffix}`);
+    const result = await this.undo.undo();
+    this.notify(`Structure: ${formatUndoResult(result)}`);
   }
 
   /** Thin wrapper around `new Notice(...)` so tests can observe the message shown without
