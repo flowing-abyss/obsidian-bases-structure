@@ -3,6 +3,8 @@ import { App, QueryController } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import StructureViewPlugin from '../main.js';
+import { StructureActions } from './actions-ui.js';
+import { GraphRenderer } from './graph-renderer.js';
 import { OutlineRenderer } from './outline-renderer.js';
 import { formatStructureIssue, StructureView } from './structure-view.js';
 import { clearUiState } from './view-state.js';
@@ -157,6 +159,52 @@ describe('StructureView', () => {
 
     expect(destroySpy).toHaveBeenCalledTimes(1);
     expect(parentEl.querySelector('.bases-structure')).toBeNull();
+  });
+});
+
+describe('StructureView — create wiring', () => {
+  const typesConfig = { Cat: { tag: 'cat', children: { Leaf: 'up' } }, Leaf: { tag: 'leaf' } };
+
+  it('opens a draft on "+", commits it into a real note, and re-renders (onAdd/refresh wiring)', async () => {
+    // Bases itself re-runs the underlying query and calls `onDataUpdated()` again once the vault
+    // settles (outside this test's control — see `refresh`'s own doc comment); what's under test
+    // here is only that clicking "+" reaches `StructureActions` and that a successful commit
+    // triggers a `render()` through `refresh`, not the full round trip through a live Bases query.
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys the create actions (and any open draft) on unload', () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    const destroySpy = vi.spyOn(StructureActions.prototype, 'destroy');
+
+    view.load();
+    view.unload();
+
+    expect(destroySpy).toHaveBeenCalledTimes(1);
   });
 });
 

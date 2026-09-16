@@ -5,7 +5,7 @@
 // container, not per node) so callers never have to track per-node listeners.
 
 import type { App, Component } from 'obsidian';
-import { Keymap } from 'obsidian';
+import { Keymap, setIcon } from 'obsidian';
 import type { Snapshot } from '../core/snapshot.js';
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
@@ -15,6 +15,9 @@ export interface NodeElementContext {
   readonly sourcePath: string; // host path, or '' when there is none
   readonly hoverParent: Component; // the view, for hover-link
   readonly snapshot: Snapshot;
+  /** Invoked with a node's own path and its `.bases-structure-node` element when the "+" button
+   * on that node is clicked — wired to `StructureActions.startCreate` by `structure-view.ts`. */
+  readonly onAdd: (path: string, anchorEl: HTMLElement) => void;
 }
 
 /** Flags that depend on where a node sits in the forest rather than on the node itself (a
@@ -33,6 +36,7 @@ export interface MutableNodeElementContext {
   sourcePath: string;
   hoverParent: Component;
   snapshot: Snapshot;
+  onAdd: (path: string, anchorEl: HTMLElement) => void;
 }
 
 export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeElementContext {
@@ -41,11 +45,14 @@ export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeEle
     sourcePath: ctx.sourcePath,
     hoverParent: ctx.hoverParent,
     snapshot: ctx.snapshot,
+    onAdd: ctx.onAdd,
   };
 }
 
 const HOVER_SOURCE = 'bases-structure';
 const TITLE_SELECTOR = '.bases-structure-title';
+const ADD_SELECTOR = '[data-action="add"]';
+const NODE_SELECTOR = '.bases-structure-node';
 const ALSO_IN_PREFIX = '↗ ';
 
 function logHandlerError(error: unknown): void {
@@ -90,8 +97,19 @@ export function createNodeElement(
     // warnings in tests. `tabindex` keeps the link keyboard-focusable without one.
     attr: { 'data-href': node.path, tabindex: '0' },
   });
+  appendAddButton(el);
   appendAlsoIn(el, ctx, node);
   return el;
+}
+
+/** The "+" affordance: always in the DOM (shown on hover/focus via CSS), so it's the delegated
+ * click listener below — not conditional rendering — that decides whether it's reachable. */
+function appendAddButton(el: HTMLElement): void {
+  const button = el.createEl('button', {
+    cls: 'bases-structure-add',
+    attr: { type: 'button', 'aria-label': 'Add child', 'data-action': 'add' },
+  });
+  setIcon(button, 'plus');
 }
 
 function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } | null {
@@ -109,6 +127,27 @@ function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } 
   return { title, path };
 }
 
+/** The node whose "+" button was clicked, and its own path — `null` when the click didn't land on
+ * an add button at all. */
+function readAddHit(event: MouseEvent): { nodeEl: HTMLElement; path: string } | null {
+  if (!(event.target instanceof HTMLElement)) {
+    return null;
+  }
+  const button = event.target.closest<HTMLElement>(ADD_SELECTOR);
+  if (button === null) {
+    return null;
+  }
+  const nodeEl = button.closest<HTMLElement>(NODE_SELECTOR);
+  if (nodeEl === null) {
+    return null;
+  }
+  const path = nodeEl.getAttribute('data-path');
+  if (path === null) {
+    return null;
+  }
+  return { nodeEl, path };
+}
+
 /** One delegated `click` and one delegated `mouseover` listener on `container`, matching the
  * design spec's "Представления" node behaviour: click opens the link (Mod+click into a new
  * pane), mouseover previews it. Returns a disposer that removes both listeners. */
@@ -117,6 +156,12 @@ export function attachNodeInteractions(
   container: HTMLElement,
 ): () => void {
   const handleClick = (event: MouseEvent): void => {
+    const addHit = readAddHit(event);
+    if (addHit !== null) {
+      event.stopPropagation();
+      ctx.onAdd(addHit.path, addHit.nodeEl);
+      return;
+    }
     const hit = readTitlePath(event);
     if (hit === null) {
       return;

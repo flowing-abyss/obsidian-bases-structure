@@ -198,7 +198,7 @@ export class GraphRenderer implements StructureRenderer {
     }
     this.showContent();
 
-    const elementsByPath = this.buildNodeElements(entries, input.state.collapsed);
+    const elementsByPath = this.buildNodeElements(entries, input.state.collapsed, input.focusPath);
     const sizesByPath = this.measureAll(entries, elementsByPath);
     const layoutResult = layoutTree(
       {
@@ -234,6 +234,7 @@ export class GraphRenderer implements StructureRenderer {
   private buildNodeElements(
     entries: readonly VisibleEntry[],
     collapsed: ReadonlySet<string>,
+    focusPath: string | undefined,
   ): Map<string, HTMLElement> {
     this.nodesEl.empty();
     const elements = new Map<string, HTMLElement>();
@@ -244,6 +245,9 @@ export class GraphRenderer implements StructureRenderer {
       });
       if (entry.node.children.length > 0) {
         this.addToggle(el, collapsed.has(entry.path));
+      }
+      if (entry.path === focusPath) {
+        el.classList.add('is-new');
       }
       this.nodesEl.appendChild(el);
       elements.set(entry.path, el);

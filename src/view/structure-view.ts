@@ -14,6 +14,7 @@ import { buildStructure } from '../core/structure.js';
 import type StructureViewPlugin from '../main.js';
 import { findHostFile } from '../obsidian/root-finder.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
+import { StructureActions } from './actions-ui.js';
 import { GraphRenderer } from './graph-renderer.js';
 import type { NodeElementContext } from './node-element.js';
 import { OutlineRenderer } from './outline-renderer.js';
@@ -25,6 +26,9 @@ export interface RenderInput {
   readonly snapshot: Snapshot;
   readonly structure: Structure;
   readonly state: ViewUiState;
+  /** The path to flag `is-new` in this render only — set for the one render right after a
+   * successful create, then cleared (see `StructureActions.consumeFocus`). */
+  readonly focusPath?: string;
 }
 
 export interface StructureRenderer {
@@ -71,21 +75,23 @@ function collectIssueLines(
 export class StructureView extends BasesView {
   override readonly type = STRUCTURE_VIEW_ID;
 
+  private readonly plugin: StructureViewPlugin;
   private readonly containerEl: HTMLElement;
   private readonly issuesEl: HTMLElement;
   private readonly bodyEl: HTMLElement;
   private renderer: StructureRenderer | null = null;
   private rendererLayout: Schema['layout'] | null = null;
+  private actions: StructureActions | null = null;
+  private lastInput: RenderInput | null = null;
 
-  // `_plugin` isn't read yet — plugin-level interactions (e.g. an undo action from a node's
-  // context menu) land in a later task, but the factory in `main.ts` always passes it, so the
-  // constructor accepts it now to keep that call site stable.
-  constructor(controller: QueryController, parentEl: HTMLElement, _plugin: StructureViewPlugin) {
+  constructor(controller: QueryController, parentEl: HTMLElement, plugin: StructureViewPlugin) {
     super(controller);
+    this.plugin = plugin;
     this.containerEl = parentEl.createDiv('bases-structure');
     this.issuesEl = this.containerEl.createDiv('bases-structure-issues');
     this.bodyEl = this.containerEl.createDiv('bases-structure-body');
     this.register(() => {
+      this.actions?.destroy();
       this.renderer?.destroy();
       this.containerEl.empty();
       this.containerEl.remove();
@@ -113,14 +119,38 @@ export class StructureView extends BasesView {
     const structure = buildStructure(schema, snapshot);
     this.renderIssues(issues, structure.issues, snapshot);
     const state = getUiState(`${host?.path ?? ''}::${this.config.name}`);
+    const input: RenderInput = { schema, snapshot, structure, state };
+    this.lastInput = input;
+    const actions = this.resolveActions(host?.path ?? '', () => this.lastInput ?? input);
     const ctx: NodeElementContext = {
       app: this.app,
       sourcePath: host?.path ?? '',
       hoverParent: this,
       snapshot,
+      onAdd: (path, anchorEl) => {
+        actions.startCreate(path, anchorEl);
+      },
     };
     const renderer = this.resolveRenderer(schema.layout, ctx);
-    renderer.update({ schema, snapshot, structure, state });
+    const focusPath = actions.consumeFocus();
+    renderer.update(focusPath === null ? input : { ...input, focusPath });
+  }
+
+  /** Created once, on the first render, and reused for the view's whole lifetime — unlike the
+   * renderer, a layout switch doesn't need a fresh instance. `getInput` always resolves to the
+   * latest render's data (see `render()`); only `hostPath` is fixed at creation, since a Bases
+   * embed's host note doesn't move without the view itself being torn down and recreated. */
+  private resolveActions(hostPath: string, getInput: () => RenderInput): StructureActions {
+    this.actions ??= new StructureActions({
+      app: this.app,
+      undo: this.plugin.undo,
+      getInput,
+      hostPath,
+      refresh: () => {
+        this.render();
+      },
+    });
+    return this.actions;
   }
 
   /** Recreates the renderer whenever the resolved layout changes (including the very first

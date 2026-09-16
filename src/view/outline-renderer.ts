@@ -30,9 +30,13 @@ function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx): void {
     return;
   }
   const li = ul.createEl('li');
-  li.appendChild(
-    createNodeElement(ctx.nodeCtx, node, { isRoot: path === ctx.input.structure.root }),
-  );
+  const nodeEl = createNodeElement(ctx.nodeCtx, node, {
+    isRoot: path === ctx.input.structure.root,
+  });
+  if (path === ctx.input.focusPath) {
+    nodeEl.classList.add('is-new');
+  }
+  li.appendChild(nodeEl);
   if (node.children.length > 0) {
     renderList(li, node.children, ctx);
   }

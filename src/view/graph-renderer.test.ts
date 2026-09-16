@@ -16,6 +16,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     sourcePath: '',
     hoverParent: Component.create__().asOriginalType__(),
     snapshot: snapshot([]),
+    onAdd: () => undefined,
     ...overrides,
   };
 }
@@ -159,6 +160,18 @@ describe('GraphRenderer', () => {
     expect(aEl.style.top).toBe('12px');
     expect(bEl.style.left).toBe('344px');
     expect(bEl.style.top).toBe('12px');
+  });
+
+  it('flags only the node matching focusPath with is-new', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(makeInput({ focusPath: 'a.md' }));
+
+    const rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aEl.classList.contains('is-new')).toBe(true);
+    expect(rootEl.classList.contains('is-new')).toBe(false);
   });
 
   it('draws one tree edge per parent-child relationship and frames the depth-1 parent', () => {

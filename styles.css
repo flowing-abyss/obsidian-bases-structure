@@ -64,6 +64,24 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   border-style: dashed;
 }
 
+/* Applied for one render right after a successful create (see `RenderInput.focusPath`); the
+   outline fades to transparent over its own duration rather than being removed by a timer. */
+.bases-structure-node.is-new {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  animation: bases-structure-fade-highlight 1.5s ease-out forwards;
+}
+
+@keyframes bases-structure-fade-highlight {
+  from {
+    outline-color: var(--color-accent);
+  }
+
+  to {
+    outline-color: transparent;
+  }
+}
+
 .bases-structure-title {
   flex: 1 1 auto;
 
@@ -122,6 +140,76 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 
 .bases-structure-orphans {
   color: var(--text-muted);
+}
+
+/* "+" affordance: always in the DOM, only visible on hover/focus of its own node so the graph
+   doesn't get visually noisy at rest. */
+.bases-structure-add {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-4-4);
+  height: var(--size-4-4);
+  margin-left: var(--size-2-1);
+  padding: 0;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.bases-structure-add:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+.bases-structure-add:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.bases-structure-node:hover .bases-structure-add,
+.bases-structure-node:focus-within .bases-structure-add {
+  opacity: 1;
+}
+
+/* The inline "name this note" input the "+" flow opens inside the node it was clicked on. */
+.bases-structure-draft {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bases-structure-draft-input {
+  width: 100%;
+  padding: 0;
+  color: var(--text-normal);
+  background-color: transparent;
+  border: none;
+  border-bottom: 1px solid var(--interactive-accent);
+  font: inherit;
+}
+
+.bases-structure-draft-input:focus-visible {
+  outline: none;
+}
+
+/* The "Undo" button inside the Notice a successful create shows. */
+.bases-structure-undo {
+  margin-left: var(--size-4-2);
+  padding: var(--size-2-1) var(--size-2-2);
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.bases-structure-undo:hover {
+  background-color: var(--interactive-accent-hover);
 }
 
 /* Graph renderer */

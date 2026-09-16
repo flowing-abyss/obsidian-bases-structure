@@ -29,6 +29,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     sourcePath: '',
     hoverParent: Component.create__().asOriginalType__(),
     snapshot: snapshot([note('a.md')]),
+    onAdd: () => undefined,
     ...overrides,
   };
 }
@@ -99,6 +100,22 @@ describe('createNodeElement', () => {
 
     expect(el.querySelector('.bases-structure-alsoin')).toBeNull();
   });
+
+  it('always includes an add-child button, after the title', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode());
+
+    const button = el.querySelector('.bases-structure-add');
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute('data-action')).toBe('add');
+    expect(button?.getAttribute('aria-label')).toBe('Add child');
+    expect(button?.getAttribute('type')).toBe('button');
+    const children = Array.from(el.children);
+    expect(children.indexOf(button as Element)).toBeGreaterThan(
+      children.indexOf(el.querySelector('.bases-structure-title') as Element),
+    );
+  });
 });
 
 describe('attachNodeInteractions', () => {
@@ -167,6 +184,41 @@ describe('attachNodeInteractions', () => {
     nodeEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
     expect(openLinkText).not.toHaveBeenCalled();
+  });
+
+  it('calls onAdd with the node path and element on an add-button click, without opening the note', () => {
+    const app = App.createConfigured__();
+    const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
+    const onAdd = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onAdd });
+    const container = createDiv();
+    const nodeEl = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    container.appendChild(nodeEl);
+    attachNodeInteractions(ctx, container);
+
+    container
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(onAdd).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl);
+    expect(openLinkText).not.toHaveBeenCalled();
+  });
+
+  it('stops the add-button click from propagating past the container', () => {
+    const app = App.createConfigured__();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onAdd: vi.fn() });
+    const outer = createDiv();
+    const container = outer.createDiv();
+    container.appendChild(createNodeElement(ctx, makeNode()));
+    attachNodeInteractions(ctx, container);
+    const outerHandler = vi.fn();
+    outer.addEventListener('click', outerHandler);
+
+    container
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(outerHandler).not.toHaveBeenCalled();
   });
 
   it('ignores a mouseover that does not land on the title', () => {

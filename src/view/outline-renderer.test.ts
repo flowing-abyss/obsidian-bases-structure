@@ -19,6 +19,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     sourcePath: '',
     hoverParent: Component.create__().asOriginalType__(),
     snapshot: snapshot([]),
+    onAdd: () => undefined,
     ...overrides,
   };
 }
@@ -56,6 +57,30 @@ describe('OutlineRenderer', () => {
     const grandchildEl = container.querySelector('[data-path="grandchild.md"]');
     const child1Li = container.querySelector('[data-path="child1.md"]')?.closest('li');
     expect(child1Li?.contains(grandchildEl ?? null)).toBe(true);
+  });
+
+  it('flags only the node matching focusPath with is-new', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-focus'),
+      focusPath: 'child.md',
+    });
+
+    const rootEl = container.querySelector('[data-path="root.md"]');
+    const childEl = container.querySelector('[data-path="child.md"]');
+    expect(childEl?.classList.contains('is-new')).toBe(true);
+    expect(rootEl?.classList.contains('is-new')).toBe(false);
   });
 
   it('renders orphans, inside a list, under a final "Without a parent" section when a root exists', () => {
