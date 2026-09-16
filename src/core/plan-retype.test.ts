@@ -366,6 +366,118 @@ describe('planAction — retype: old-type property cleanup and new-type property
   });
 });
 
+describe('planAction — retype: I4 — retype only rewrites frontmatter tags, never body ones', () => {
+  const schema = schemaFrom({
+    types: {
+      Cat: { tag: 'cat', children: { Alpha: 'up', Beta: 'up' } },
+      Alpha: { tag: 'type/alpha' },
+      Beta: { tag: 'type/beta' },
+    },
+  });
+
+  it('rejects when the old type’s tag lives only in the note’s body text', () => {
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: ['type/alpha'],
+        frontmatterTags: [],
+        frontmatter: {},
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'Beta' },
+      envAllowing(),
+    );
+
+    expect(result).toStrictEqual({
+      ok: false,
+      reason: '"n" keeps the tag "type/alpha" in its text; remove it there first',
+    });
+  });
+
+  it('swaps the frontmatter tag with a listItem patch, keeping an unrelated frontmatter tag untouched', () => {
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: ['type/alpha', 'keep'],
+        frontmatterTags: ['type/alpha', 'keep'],
+        frontmatter: { tags: ['type/alpha', 'keep'] },
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'Beta' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          {
+            key: 'tags',
+            value: { kind: 'listItem', remove: 'type/alpha', add: 'type/beta' },
+          },
+        ],
+      },
+    ]);
+    // Sanity: the note still resolves to Beta once the frontmatter tag is swapped, and the
+    // inline/body tag (there is none here beyond the frontmatter ones) is irrelevant either way.
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get('n.md')?.type).toBe('Beta');
+  });
+
+  it('builds a fresh frontmatter tags key as a list when retyping from a type matched without a tag at all', () => {
+    // Untagged is matched purely by a property, so its (empty) tag list never triggers the
+    // body-only-tag rejection and leaves nothing to remove — only "type/beta" needs adding, as a
+    // fresh literal list (not a scalar) even though only one tag is being written.
+    const untaggedSchema = schemaFrom({
+      types: {
+        Cat: { tag: 'cat', children: { Untagged: 'up', Beta: 'up' } },
+        Untagged: { property: { kind: 'untagged' } },
+        Beta: { tag: 'type/beta' },
+      },
+    });
+    const freshSnap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: [],
+        frontmatterTags: [],
+        frontmatter: { kind: 'untagged' },
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      untaggedSchema,
+      freshSnap,
+      { kind: 'retype', node: 'n.md', type: 'Beta' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          { key: 'tags', value: { kind: 'literal', value: ['type/beta'] } },
+          { key: 'kind', value: null },
+        ],
+      },
+    ]);
+  });
+});
+
 describe('planAction — retype: verification failure (resolves to a different type)', () => {
   it('rejects when the written tags tie with an earlier-level type', () => {
     const schema = schemaFrom({
@@ -743,7 +855,10 @@ describe('planAction — retype: I3 — a child edge key that changes is cleaned
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.plan.changes).toStrictEqual([
-      { path: 'Pr.md', writes: [{ key: 'tags', value: { kind: 'literal', value: ['goal'] } }] },
+      {
+        path: 'Pr.md',
+        writes: [{ key: 'tags', value: { kind: 'listItem', remove: 'project', add: 'goal' } }],
+      },
       {
         path: 'T.md',
         writes: [

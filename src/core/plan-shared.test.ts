@@ -37,7 +37,7 @@ function structureOf(nodes: readonly StructureNode[]): Structure {
   };
 }
 
-// The move/retype test suites already exercise `textLinkReason`, `arraysEqual`, `sameSet`,
+// The move/retype test suites already exercise `textLinkReason`, `sameSet`,
 // `recordOverride`, `recordAllOverrides`, and `computeEdgeWrite`'s and `inheritWritesFor`'s
 // write-producing branches end to end, so this file only targets what those integration tests
 // can't reach directly: `firstChangedOtherNode`'s "collateral damage" detection (previously

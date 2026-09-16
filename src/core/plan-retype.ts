@@ -11,7 +11,6 @@ import {
 } from './derive.js';
 import { looseEqual } from './link-patch.js';
 import {
-  arraysEqual,
   buildEdgeWrites,
   type EdgeWriteInputs,
   firstChangedOtherNode,
@@ -199,20 +198,51 @@ function validateRetype(request: RetypeRequest, action: RetypeAction): RetypeVal
 
 // -- Writes for N: tags, recipe properties ----------------------------------------------------
 
-function computeTagsWrite(
-  nTags: readonly string[],
+/** The frontmatter key retype's tag writes target: whichever of `tags`/`tag` the note's
+ * frontmatter already uses (Obsidian accepts either), defaulting to `tags` for a note with
+ * neither — matching `parseFrontMatterTags`'s own reading of both. */
+function tagsKeyOf(frontmatter: Readonly<Record<string, unknown>>): string {
+  if ('tags' in frontmatter) {
+    return 'tags';
+  }
+  return 'tag' in frontmatter ? 'tag' : 'tags';
+}
+
+/** Retype's tag writes: patches — one `'listItem'` write per old/new tag pair — over the note's
+ * *frontmatter* tags only (I4). A tag that lives only in the note's body/inline text is never
+ * touched here; `bodyOnlyTagReason` rejects the action before this runs if the old type's tag is
+ * one of those. When the frontmatter has no tags key at all yet, a single literal write builds it
+ * fresh as a list (the vault-wide convention), rather than deferring to `patchListItem`'s
+ * scalar-unless-already-a-list rule (which exists for recipe properties, not tags). */
+function computeTagsWrites(
+  frontmatter: Readonly<Record<string, unknown>>,
+  frontmatterTags: readonly string[],
   oldMatch: TypeMatch,
   newType: TypeDef,
-): KeyWrite | null {
-  const oldTagsLower = new Set(oldMatch.tags.map((tag) => tag.toLowerCase()));
-  const kept = nTags.filter((tag) => !oldTagsLower.has(tag.toLowerCase()));
-  const keptLower = new Set(kept.map((tag) => tag.toLowerCase()));
-  const added = newType.match.tags.filter((tag) => !keptLower.has(tag.toLowerCase()));
-  const result = [...kept, ...added];
-  if (arraysEqual(result, nTags)) {
-    return null;
+): readonly KeyWrite[] {
+  const key = tagsKeyOf(frontmatter);
+  const currentLower = new Set(frontmatterTags.map((tag) => tag.toLowerCase()));
+  const removeTags = oldMatch.tags.filter((tag) => currentLower.has(tag.toLowerCase()));
+  const addTags = newType.match.tags.filter((tag) => !currentLower.has(tag.toLowerCase()));
+  if (removeTags.length === 0 && addTags.length === 0) {
+    return [];
   }
-  return { key: 'tags', value: { kind: 'literal', value: result } };
+  if (!(key in frontmatter)) {
+    return [{ key, value: { kind: 'literal', value: [...addTags] } }];
+  }
+  const pairCount = Math.max(removeTags.length, addTags.length);
+  return Array.from({ length: pairCount }, (_unused, index) => {
+    const remove = removeTags[index];
+    const add = addTags[index];
+    return {
+      key,
+      value: {
+        kind: 'listItem' as const,
+        ...(remove !== undefined ? { remove } : {}),
+        ...(add !== undefined ? { add } : {}),
+      },
+    };
+  });
 }
 
 /** The array-current branch of `propertyPatchWrite`: a single-element patch that only touches the
@@ -501,20 +531,42 @@ function verifyRetype(inputs: VerifyRetypeInputs): string | null {
   return null;
 }
 
-/** N's `tags`/old-property-cleanup/new-property literal writes, comparing `oldMatch` (N's current
- * type's recipe) against `newType`'s. */
+/** N's `tags`/old-property-cleanup/new-property writes, comparing `oldMatch` (N's current type's
+ * recipe) against `newType`'s. */
 function literalRetypeWrites(
   nNote: NoteData | undefined,
   oldMatch: TypeMatch,
   newType: TypeDef,
 ): readonly KeyWrite[] {
-  const tags = nNote?.tags ?? [];
   const frontmatter = nNote?.frontmatter ?? {};
-  const tagsWrite = computeTagsWrite(tags, oldMatch, newType);
+  const frontmatterTags = nNote?.frontmatterTags ?? [];
   return [
-    ...(tagsWrite === null ? [] : [tagsWrite]),
+    ...computeTagsWrites(frontmatter, frontmatterTags, oldMatch, newType),
     ...propertyWrites(frontmatter, oldMatch, newType),
   ];
+}
+
+/** I4's rejection check: the old type's tag has to actually be rewritable. When it's only present
+ * in the note's body/inline text (not its frontmatter), retype can't remove it there — better to
+ * say so than to silently leave it and add the new type's tag alongside it. */
+function bodyOnlyTagReason(
+  snapshot: Snapshot,
+  node: string,
+  nNote: NoteData | undefined,
+  oldMatch: TypeMatch,
+): string | null {
+  if (nNote === undefined) {
+    return null;
+  }
+  const frontmatterTagsLower = new Set(nNote.frontmatterTags.map((tag) => tag.toLowerCase()));
+  const allTagsLower = new Set(nNote.tags.map((tag) => tag.toLowerCase()));
+  for (const tag of oldMatch.tags) {
+    const lower = tag.toLowerCase();
+    if (allTagsLower.has(lower) && !frontmatterTagsLower.has(lower)) {
+      return `"${displayName(snapshot, node)}" keeps the tag "${tag}" in its text; remove it there first`;
+    }
+  }
+  return null;
 }
 
 export function planRetype(
@@ -530,6 +582,11 @@ export function planRetype(
   }
   const { nNode, newType, folderTo } = validation.fields;
   const oldMatch = oldMatchOf(schema, nNode.type);
+  const nNote = snapshot.notes.get(action.node);
+  const tagReason = bodyOnlyTagReason(snapshot, action.node, nNote, oldMatch);
+  if (tagReason !== null) {
+    return { ok: false, reason: tagReason };
+  }
 
   const ctx: SubtreeContext = {
     schema,
@@ -539,7 +596,7 @@ export function planRetype(
     linkOverrides: new Map(),
   };
   const nWrites = [
-    ...literalRetypeWrites(snapshot.notes.get(action.node), oldMatch, newType),
+    ...literalRetypeWrites(nNote, oldMatch, newType),
     ...buildNOwnWrites(schema, ctx, validation.fields, action),
   ];
   recordAllOverrides(ctx, action.node, nWrites);

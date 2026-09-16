@@ -11,6 +11,7 @@ import type { NoteData, Snapshot } from './snapshot.js';
  * helpers below can build it up incrementally. */
 interface NoteDraft {
   tags: string[];
+  frontmatterTags: string[];
   frontmatter: Record<string, unknown>;
   propertyLinks: Record<string, readonly string[]>;
   links: string[];
@@ -158,6 +159,12 @@ function applyLinksWrite(
   }
 }
 
+/** Whether `key` is one of the two frontmatter keys Obsidian reads tags from (`parseFrontMatterTags`
+ * accepts either). */
+function isTagsKey(key: string): boolean {
+  return key === 'tags' || key === 'tag';
+}
+
 /** Applies one `'listItem'`-kind write to `draft`: patches a plain (non-link) list-shaped value by
  * element (see `patchListItem`) — used by retype's recipe-property writes. */
 function applyListItemWrite(
@@ -176,19 +183,33 @@ function applyListItemWrite(
   }
 }
 
+/** Recomputes `draft.frontmatterTags`/`draft.tags` after a write touched a tags key: `tags` =
+ * `frontmatterTags` (freshly read back off the patched frontmatter value) ∪ `bodyTags` — the
+ * note's inline/body-only tags, captured once before any writes ran and never themselves rewritten
+ * by a plan (I4). */
+function refreshTags(draft: NoteDraft, key: string, bodyTags: readonly string[]): void {
+  draft.frontmatterTags = [...tagsFromFrontmatterValue(draft.frontmatter[key])];
+  draft.tags = [...uniqueInOrder([...draft.frontmatterTags, ...bodyTags])];
+}
+
 /** Applies one write's effect to `frontmatter`/`propertyLinks`/`tags`. Shared by creation (fresh
- * draft) and change (draft seeded from the existing note) application — `links` recomputation for
- * changes happens separately in `applyChangeWrite`, since creation instead rebuilds `links` from
- * scratch once at the end (see `buildCreationLinks`). */
+ * draft, `bodyTags: []` — a new note has no body yet) and change (draft seeded from the existing
+ * note, `bodyTags` from its inline/body-only tags) application — `links` recomputation for changes
+ * happens separately in `applyChangeWrite`, since creation instead rebuilds `links` from scratch
+ * once at the end (see `buildCreationLinks`). */
 function applyWriteToDraft(
   notes: ReadonlyMap<string, NoteData>,
   draft: NoteDraft,
   write: KeyWrite,
+  bodyTags: readonly string[],
 ): void {
   const { key, value } = write;
   if (value === null) {
     delete draft.frontmatter[key];
     delete draft.propertyLinks[key];
+    if (isTagsKey(key)) {
+      refreshTags(draft, key, bodyTags);
+    }
     return;
   }
   if (value.kind === 'links') {
@@ -197,14 +218,14 @@ function applyWriteToDraft(
   }
   if (value.kind === 'listItem') {
     applyListItemWrite(draft, key, value);
-    if (key === 'tags') {
-      draft.tags = [...tagsFromFrontmatterValue(draft.frontmatter[key])];
+    if (isTagsKey(key)) {
+      refreshTags(draft, key, bodyTags);
     }
     return;
   }
   draft.frontmatter[key] = value.value;
-  if (key === 'tags') {
-    draft.tags = [...tagsFromFrontmatterValue(value.value)];
+  if (isTagsKey(key)) {
+    refreshTags(draft, key, bodyTags);
   }
 }
 
@@ -218,14 +239,21 @@ function buildCreationLinks(
 
 function applyCreations(state: SimState, creations: Plan['creations']): void {
   for (const creation of creations) {
-    const draft: NoteDraft = { tags: [], frontmatter: {}, propertyLinks: {}, links: [] };
+    const draft: NoteDraft = {
+      tags: [],
+      frontmatterTags: [],
+      frontmatter: {},
+      propertyLinks: {},
+      links: [],
+    };
     for (const write of creation.writes) {
-      applyWriteToDraft(state.notes, draft, write);
+      applyWriteToDraft(state.notes, draft, write, []);
     }
     const noteData: NoteData = {
       path: creation.path,
       basename: basenameOf(creation.path),
       tags: draft.tags,
+      frontmatterTags: draft.frontmatterTags,
       frontmatter: draft.frontmatter,
       propertyLinks: draft.propertyLinks,
       links: buildCreationLinks(creation.bodyLinks, draft.propertyLinks),
@@ -238,10 +266,19 @@ function applyCreations(state: SimState, creations: Plan['creations']): void {
 function draftFromNote(note: NoteData): NoteDraft {
   return {
     tags: [...note.tags],
+    frontmatterTags: [...note.frontmatterTags],
     frontmatter: { ...note.frontmatter },
     propertyLinks: { ...note.propertyLinks },
     links: [...note.links],
   };
+}
+
+/** The note's inline/body-only tags — every tag it has that isn't one of its frontmatter tags —
+ * captured once before any writes run for a change, since a plan never rewrites the body text
+ * itself (I4). */
+function bodyTagsOf(note: NoteData): readonly string[] {
+  const frontmatterLower = new Set(note.frontmatterTags.map((tag) => tag.toLowerCase()));
+  return note.tags.filter((tag) => !frontmatterLower.has(tag.toLowerCase()));
 }
 
 /** Removes `oldTargets` no longer held by any property (checked across the *updated*
@@ -267,13 +304,14 @@ function applyChangeWrite(
   notes: ReadonlyMap<string, NoteData>,
   draft: NoteDraft,
   write: KeyWrite,
+  bodyTags: readonly string[],
 ): void {
   const oldTargets = draft.propertyLinks[write.key] ?? [];
   const newTargets =
     write.value !== null && write.value.kind === 'links'
       ? resultingTargets(oldTargets, write.value.remove, write.value.add)
       : [];
-  applyWriteToDraft(notes, draft, write);
+  applyWriteToDraft(notes, draft, write, bodyTags);
   draft.links = recomputeLinks(draft.links, draft.propertyLinks, oldTargets, newTargets);
 }
 
@@ -284,13 +322,15 @@ function applyChanges(state: SimState, changes: Plan['changes']): void {
       continue;
     }
     const draft = draftFromNote(existing);
+    const bodyTags = bodyTagsOf(existing);
     for (const write of change.writes) {
-      applyChangeWrite(state.notes, draft, write);
+      applyChangeWrite(state.notes, draft, write, bodyTags);
     }
     state.notes.set(change.path, {
       path: existing.path,
       basename: existing.basename,
       tags: draft.tags,
+      frontmatterTags: draft.frontmatterTags,
       frontmatter: draft.frontmatter,
       propertyLinks: draft.propertyLinks,
       links: draft.links,

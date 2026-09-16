@@ -4,7 +4,7 @@
 // `resolvedLinks`. This is the only place the pure core learns about a note's actual content.
 
 import type { App, FrontMatterCache, FrontmatterLinkCache, TFile } from 'obsidian';
-import { getAllTags, getLinkpath } from 'obsidian';
+import { getAllTags, getLinkpath, parseFrontMatterTags } from 'obsidian';
 import type { NoteData, Snapshot } from '../core/snapshot.js';
 
 /** First-occurrence order, duplicates dropped. */
@@ -77,12 +77,17 @@ export function readNote(app: App, file: TFile): NoteData {
   const cache = app.metadataCache.getFileCache(file) ?? {};
   const tags = uniqueInOrder((getAllTags(cache) ?? []).map(stripHash));
   const frontmatter = copyFrontmatter(cache.frontmatter);
+  // `parseFrontMatterTags` reads both the `tags` and `tag` frontmatter keys (scalar or list) and
+  // handles neither being present — the frontmatter-only subset of `tags` retype is allowed to
+  // rewrite (see `NoteData.frontmatterTags`).
+  const frontmatterTags = uniqueInOrder((parseFrontMatterTags(frontmatter) ?? []).map(stripHash));
   const propertyLinks = readPropertyLinks(app, file, cache.frontmatterLinks ?? []);
   const links = Object.keys(app.metadataCache.resolvedLinks[file.path] ?? {});
   return {
     path: file.path,
     basename: file.basename,
     tags,
+    frontmatterTags,
     frontmatter,
     propertyLinks,
     links,

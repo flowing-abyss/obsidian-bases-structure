@@ -27,6 +27,7 @@ describe('applyPlan — creations', () => {
       path: 'new.md',
       basename: 'new',
       tags: ['type/x'],
+      frontmatterTags: ['type/x'],
       frontmatter: {
         tags: ['#type/x'],
         status: 'done',
@@ -279,6 +280,33 @@ describe('applyPlan — changes', () => {
 
     expect(result.notes.get('n.md')?.frontmatter['type']).toStrictEqual(['task', 'archived']);
   });
+
+  it('after a listItem tags write, tags is frontmatterTags ∪ body tags (I4) and frontmatterTags never includes the body tag', () => {
+    const snap = snapshot([
+      note('n.md', {
+        tags: ['type/alpha', 'inline-only'],
+        frontmatterTags: ['type/alpha'],
+        frontmatter: { tags: ['type/alpha'] },
+      }),
+    ]);
+    const plan = emptyPlan({
+      changes: [
+        {
+          path: 'n.md',
+          writes: [
+            { key: 'tags', value: { kind: 'listItem', remove: 'type/alpha', add: 'type/beta' } },
+          ],
+        },
+      ],
+    });
+
+    const result = applyPlan(snap, plan);
+
+    const changed = result.notes.get('n.md');
+    expect(changed?.frontmatter['tags']).toStrictEqual(['type/beta']);
+    expect(changed?.frontmatterTags).toStrictEqual(['type/beta']);
+    expect(changed?.tags).toStrictEqual(['type/beta', 'inline-only']);
+  });
 });
 
 describe('applyPlan — appends', () => {
@@ -375,6 +403,7 @@ describe('applyPlan — immutability', () => {
       path: 'x.md',
       basename: 'x',
       tags: [],
+      frontmatterTags: [],
       frontmatter: { meta: '[[m]]' },
       propertyLinks: { meta: ['m.md'] },
       links: ['m.md'],

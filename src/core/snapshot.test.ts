@@ -46,6 +46,7 @@ describe('note() builder', () => {
       path: 'base/_hierarchy/dataview.md',
       basename: 'dataview',
       tags: [],
+      frontmatterTags: [],
       frontmatter: {},
       propertyLinks: {},
       links: [],

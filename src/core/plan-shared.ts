@@ -28,11 +28,6 @@ export function textLinkReason(
     : `The link from "${nodeName}" to "${parentName}" lives in note text and cannot be written automatically`;
 }
 
-/** Ordered equality. */
-export function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((item, index) => item === b[index]);
-}
-
 export function recordOverride(
   ctx: SubtreeContext,
   path: string,

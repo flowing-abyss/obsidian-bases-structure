@@ -6,7 +6,12 @@
 export interface NoteData {
   readonly path: string;
   readonly basename: string;
+  /** Every tag the note has, frontmatter and inline body tags alike — used for type matching
+   * (`hasTag`), which doesn't care where a tag lives. */
   readonly tags: readonly string[];
+  /** Only the tags declared in frontmatter (`tags`/`tag`, `#` stripped) — the subset retype is
+   * allowed to rewrite; a tag that lives in the note's body text never appears here. */
+  readonly frontmatterTags: readonly string[];
   readonly frontmatter: Readonly<Record<string, unknown>>;
   readonly propertyLinks: Readonly<Record<string, readonly string[]>>;
   readonly links: readonly string[];

@@ -45,6 +45,38 @@ describe('readNote', () => {
     expect(note.tags).toStrictEqual([]);
   });
 
+  it('frontmatterTags holds only the frontmatter subset of tags, excluding an inline body tag (I4)', () => {
+    const app = App.createConfigured__({
+      files: {
+        'note.md': '---\ntags: [alpha, "#beta"]\n---\nBody with a #gamma tag.\n',
+      },
+    });
+
+    const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
+
+    expect(note.tags).toStrictEqual(['gamma', 'alpha', 'beta']);
+    expect(note.frontmatterTags).toStrictEqual(['alpha', 'beta']);
+  });
+
+  it('frontmatterTags reads a singular `tag:` key the same as `tags:` (I4)', () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\ntag: solo\n---\nBody.\n' },
+    });
+
+    const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
+
+    expect(note.frontmatterTags).toStrictEqual(['solo']);
+  });
+
+  it('frontmatterTags is empty when every tag is inline (I4)', () => {
+    const app = App.createConfigured__({ files: { 'note.md': 'Body with only #inline tag.\n' } });
+
+    const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
+
+    expect(note.tags).toStrictEqual(['inline']);
+    expect(note.frontmatterTags).toStrictEqual([]);
+  });
+
   it('copies frontmatter without the position key', () => {
     const app = App.createConfigured__({
       files: { 'note.md': '---\nstatus: active\ncount: 3\n---\nBody\n' },
