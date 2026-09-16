@@ -206,6 +206,59 @@ describe('UndoManager', () => {
     expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('Before\nAfter\n');
   });
 
+  it('removes a tail append that includes its leading separator newline, when the file still ends with it (I2, branch 1)', async () => {
+    // The parent had no trailing newline when this was appended, so `applyAppend` prefixed the
+    // link with one; reverting while it's still the last thing in the file removes that leading
+    // newline along with it — correct here, since it's genuinely the separator this step added.
+    const app = App.createConfigured__({ files: { 'note.md': 'last line\n- [[Child]]\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Append tail',
+      steps: [{ kind: 'append', path: 'note.md', text: '\n- [[Child]]\n' }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Append tail', skipped: [] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('last line');
+  });
+
+  it('removes only the appended line, keeping the separating newline, once later content follows it (I2, branch 2 — the reviewer’s example)', async () => {
+    // Same leading-newline shape as above, but something was appended after the link (so it's no
+    // longer the file's tail) — naively stripping `step.text` (which starts with "\n") would eat
+    // the newline that separates "last line" from "user line", merging them into one line.
+    const app = App.createConfigured__({
+      files: { 'note.md': '# Parent\nlast line\n- [[Child]]\nuser line\n' },
+    });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Append then more text',
+      steps: [{ kind: 'append', path: 'note.md', text: '\n- [[Child]]\n' }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Append then more text', skipped: [] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('# Parent\nlast line\nuser line\n');
+  });
+
+  it('skips (and leaves the file untouched) when the appended line no longer exists at all (I2, branch 3)', async () => {
+    const app = App.createConfigured__({ files: { 'note.md': '# Parent\nsomething else\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Append gone',
+      steps: [{ kind: 'append', path: 'note.md', text: '\n- [[Child]]\n' }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Append gone', skipped: ['note.md'] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('# Parent\nsomething else\n');
+  });
+
   it('skips a frontmatter step when the note it targeted no longer exists', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());

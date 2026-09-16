@@ -72,6 +72,42 @@ async function revertRename(app: App, step: RenameStep): Promise<boolean> {
   return true;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The bare link line an append step's `text` wraps: `applyAppend` prefixes it with a `"\n"`
+ * separator only when the parent didn't already end with one, and always suffixes it with a
+ * `"\n"` — stripping both leaves just the line itself (e.g. `"- [[Child]]"`). */
+function bareLineOf(text: string): string {
+  const withoutLeadingNewline = text.startsWith('\n') ? text.slice(1) : text;
+  return withoutLeadingNewline.endsWith('\n')
+    ? withoutLeadingNewline.slice(0, -1)
+    : withoutLeadingNewline;
+}
+
+/** Removes the last whole-line occurrence of `line` from `data` — matched at a real line boundary
+ * (start of file, or right after a `"\n"`) — keeping that boundary character itself and only
+ * dropping the line's own text and its trailing `"\n"`. `null` when no such line exists. This is
+ * the "content was appended after ours" fallback `revertAppend` uses once `data` no longer simply
+ * ends with the recorded text: blindly stripping the recorded text (which may start with a
+ * separator `"\n"` `applyAppend` added ahead of it) would instead delete the newline terminating
+ * the *previous* line, merging it with whatever now follows (I2). */
+function removeLastWholeLine(data: string, line: string): string | null {
+  const regex = new RegExp(`(^|\\n)${escapeRegExp(line)}\\n`, 'g');
+  let lastMatch: RegExpExecArray | null = null;
+  for (const match of data.matchAll(regex)) {
+    lastMatch = match;
+  }
+  if (lastMatch === null) {
+    return null;
+  }
+  const boundary = lastMatch[1] ?? '';
+  return (
+    data.slice(0, lastMatch.index) + boundary + data.slice(lastMatch.index + lastMatch[0].length)
+  );
+}
+
 async function revertAppend(app: App, step: AppendStep): Promise<boolean> {
   const file = app.vault.getFileByPath(step.path);
   if (file === null) {
@@ -83,12 +119,12 @@ async function revertAppend(app: App, step: AppendStep): Promise<boolean> {
       handled = true;
       return data.slice(0, data.length - step.text.length);
     }
-    const lastIndex = data.lastIndexOf(step.text);
-    if (lastIndex === -1) {
+    const replaced = removeLastWholeLine(data, bareLineOf(step.text));
+    if (replaced === null) {
       return data;
     }
     handled = true;
-    return data.slice(0, lastIndex) + data.slice(lastIndex + step.text.length);
+    return replaced;
   });
   return handled;
 }
