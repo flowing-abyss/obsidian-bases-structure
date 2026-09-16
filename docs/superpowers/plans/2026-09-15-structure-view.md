@@ -329,3 +329,36 @@ export function retypeOptions(
 - Vault writes across many notes (move cascade): Check — planner verification test rejects any plan that changes other nodes’ parents; applier test covers partial failure recorded in the undo transaction.
 - Undo after external edits: Check — undo-manager test skips keys whose current value differs from the recorded “after”.
 - Critical workflow not provable by unit tests (drag, embed root detection): Check — manual CLI verification in Task 10–12 and 14 with screenshots.
+
+### Task 15: Visual pass and option trim
+
+**Files:** Modify `styles.css`, `src/view/graph-renderer.ts`, `src/view/node-element.ts`, `src/view/outline-renderer.ts`, `src/main.ts`, tests.
+
+Run after Task 13, before Task 14.
+
+- [ ] Drop the group frames from the rendering (layout keeps the spacing), so no branch is visually
+      privileged over another.
+- [ ] Quiet visual language: neutral tree edges without arrowheads, accent-tinted dashed edges for the
+      secondary ("also lives here") links, one uniform node height, root slightly emphasised.
+- [ ] All graph affordances become aligned SVG icons (`setIcon`): collapse chevron, node "+", toolbar
+      zoom in/out/fit. Icons sized 16 px and vertically centred inside their hit area.
+- [ ] "+" and drag affordances stay invisible until the node is hovered, focused or keyboard-active.
+- [ ] View options in the Bases UI keep only what changes the picture (`layout`); the schema is edited
+      in the `.base` file.
+- [ ] First render fits the graph into the embed when the user has not zoomed yet.
+- [ ] Visual review in the dev vault with screenshots, in both light and dark themes.
+
+### Task 16: Mind-map keyboard control
+
+**Files:** Create `src/view/keyboard.ts`; modify `src/view/graph-renderer.ts`, `src/view/outline-renderer.ts`, `src/view/structure-view.ts`, `styles.css`, tests.
+
+Run after Task 15.
+
+- [ ] Roving focus over nodes: arrows move between siblings, to the parent and to the first child;
+      collapsed branches expand on the way in.
+- [ ] `Space` toggles collapse, `Enter` opens the note, `Mod+Enter` opens it in a new tab.
+- [ ] `Tab` adds a child, `Shift+Enter` adds a sibling — both reuse the existing create flow with its
+      type menu.
+- [ ] `m` opens "Move to…", `t` opens "Change type", `Mod+Z` undoes.
+- [ ] The active node is scrolled into view and marked with a focus ring; the keyboard never hijacks
+      typing inside the draft input.
