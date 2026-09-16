@@ -14,6 +14,7 @@ import type { EdgeRule } from '../core/schema.js';
 import { displayName, folderOf, type Snapshot } from '../core/snapshot.js';
 import { commitPlan } from '../obsidian/plan-applier.js';
 import type { UndoManager, UndoResult } from '../obsidian/undo-manager.js';
+import { reportOpenFailure } from './open-note.js';
 import type { RenderInput } from './structure-view.js';
 
 export interface ActionsDeps {
@@ -303,7 +304,11 @@ export class StructureActions {
   }
 
   private openNode(node: string, newLeaf: boolean | PaneType): void {
-    this.deps.app.workspace.openLinkText(node, this.deps.hostPath, newLeaf).catch(logError);
+    this.deps.app.workspace
+      .openLinkText(node, this.deps.hostPath, newLeaf)
+      .catch((error: unknown) => {
+        reportOpenFailure(this.deps.getInput().snapshot, node, error);
+      });
   }
 
   private commitRetype(node: string, type: string, name: string): void {

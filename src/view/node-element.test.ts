@@ -1,5 +1,6 @@
+import type * as ObsidianModule from 'obsidian';
 import { App, Component } from 'obsidian-test-mocks/obsidian';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import type { StructureNode } from '../core/structure.js';
 import {
@@ -7,6 +8,29 @@ import {
   createNodeElement,
   type NodeElementContext,
 } from './node-element.js';
+
+const { NoticeMock } = vi.hoisted(() => {
+  class NoticeMock {
+    static readonly instances: NoticeMock[] = [];
+    readonly message: string | DocumentFragment;
+
+    constructor(message: string | DocumentFragment) {
+      this.message = message;
+      NoticeMock.instances.push(this);
+    }
+  }
+  return { NoticeMock };
+});
+
+vi.mock('obsidian', async (importOriginal) => {
+  const actual = await importOriginal<typeof ObsidianModule>();
+  return { ...actual, Notice: NoticeMock };
+});
+
+afterEach(() => {
+  NoticeMock.instances.length = 0;
+  vi.restoreAllMocks();
+});
 
 function makeNode(overrides: Partial<StructureNode> = {}): StructureNode {
   return {
@@ -248,7 +272,7 @@ describe('attachNodeInteractions', () => {
     expect(openLinkText).not.toHaveBeenCalled();
   });
 
-  it('logs an error when opening the link rejects', async () => {
+  it("logs an error and shows a Notice with the note's display name when opening the link rejects", async () => {
     const app = App.createConfigured__();
     const error = new Error('failed to open');
     vi.spyOn(app.workspace, 'openLinkText').mockRejectedValue(error);
@@ -266,6 +290,8 @@ describe('attachNodeInteractions', () => {
     });
 
     expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', error);
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "a"');
   });
 
   it('the disposer removes both listeners from the container', () => {

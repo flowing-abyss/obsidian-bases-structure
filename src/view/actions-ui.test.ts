@@ -927,6 +927,23 @@ describe('startMove', () => {
     expect(h.undo.canUndo).toBe(false);
     expect(h.refresh).not.toHaveBeenCalled();
   });
+
+  it('refreshes but skips the undo notice when commitPlan could not apply the move', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    vi.spyOn(h.app.fileManager, 'processFrontMatter').mockRejectedValueOnce(new Error('disk full'));
+
+    h.actions.startMove('meta.md', 'cat2.md');
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    // `commitPlan` itself already shows its own failure Notice (see plan-applier.ts) — no
+    // "Moved ..." undo notice on top of it.
+    expect(NoticeMock.instances.some((notice) => notice.message === 'Moved "meta" to "cat2"')).toBe(
+      false,
+    );
+    expect(h.undo.canUndo).toBe(false);
+  });
 });
 
 interface MoveModal {
@@ -1179,19 +1196,108 @@ describe('openNodeMenu', () => {
     expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', false);
   });
 
-  it('"Open in new tab" uses the mod-aware openLinkText', () => {
+  it('logs and shows a Notice with the note\'s display name when "Open" fails', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const error = new Error('boom');
+    vi.spyOn(h.app.workspace, 'openLinkText').mockRejectedValue(error);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', error);
+    });
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "leaf"');
+  });
+
+  it('"Open in new tab" defaults to a new tab when no modifier is held', () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
     const showAtMouseEventSpy = mockShowAtMouseEvent();
     const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
-    const modClick = new MouseEvent('click', { ctrlKey: true, metaKey: true });
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[1]?.onClick__?.(new MouseEvent('click'));
+
+    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'tab');
+  });
+
+  it('"Open in new tab" escalates to split/window via extra modifiers (mod-aware)', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
+    // Mod (either Ctrl or Meta, platform-independent here) + Alt, no Shift → 'split' per
+    // `Keymap.isModEvent` — proves `mod` (not the `'tab'` literal) is what gets forwarded.
+    const modClick = new MouseEvent('click', { ctrlKey: true, metaKey: true, altKey: true });
 
     h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
     menu.items__[1]?.onClick__?.(modClick);
 
-    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'tab');
+    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'split');
+  });
+
+  it('logs and shows a Notice with the note\'s display name when "Open in new tab" fails', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const error = new Error('boom');
+    vi.spyOn(h.app.workspace, 'openLinkText').mockRejectedValue(error);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[1]?.onClick__?.(new MouseEvent('click'));
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', error);
+    });
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "leaf"');
+  });
+
+  it('falls back to no anchor (Add child / Change type become no-ops) when the event target is not an HTMLElement', () => {
+    const h = makeHarness(baseFiles());
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const target = document.createTextNode('x');
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'target', { value: target, configurable: true });
+
+    h.actions.openNodeMenu('leaf.md', event);
+    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    menu.items__[2]?.onClick__?.(new MouseEvent('click')); // Add child
+    menu.items__[4]?.onClick__?.(new MouseEvent('click')); // Change type
+
+    expect(NoticeMock.instances).toHaveLength(0);
+  });
+
+  it('"Add child" positions the type menu at the anchor (not the mouse) when activated via keyboard', () => {
+    const h = makeHarness(baseFiles());
+    const catEl = h.nodes.get('cat.md');
+    if (catEl === undefined) throw new Error('missing cat element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.openNodeMenu('cat.md', targetEvent(catEl));
+    const contextMenu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+    // A keyboard "activate" (not a real click) reaches the same onClick callback; only a real
+    // MouseEvent is a sensible anchor for the follow-up type menu's own `showAtMouseEvent`.
+    contextMenu.items__[2]?.onClick__?.(new KeyboardEvent('keydown', { key: 'Enter' }));
+
+    expect(showAtPositionSpy).toHaveBeenCalledTimes(1);
   });
 
   it('"Add child" opens a draft anchored to the right-clicked node', () => {
@@ -1290,6 +1396,18 @@ describe('undoLast', () => {
     expect(NoticeMock.instances[0]?.message).toBe(
       'Structure: undone "Create "New Sub"" (skipped 1 note(s))',
     );
+  });
+
+  it('shows the "undone" notice with no suffix when nothing was skipped', async () => {
+    const h = makeHarness(baseFiles());
+    vi.spyOn(h.undo, 'undo').mockResolvedValue({ label: 'Move "leaf"', skipped: [] });
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: undone "Move "leaf""');
   });
 
   it('logs and shows a failure notice when undo.undo() rejects', async () => {

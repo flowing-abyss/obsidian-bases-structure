@@ -9,6 +9,7 @@ import { Keymap, setIcon } from 'obsidian';
 import type { Snapshot } from '../core/snapshot.js';
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
+import { reportOpenFailure } from './open-note.js';
 
 export interface NodeElementContext {
   readonly app: App;
@@ -54,10 +55,6 @@ const TITLE_SELECTOR = '.bases-structure-title';
 const ADD_SELECTOR = '[data-action="add"]';
 const NODE_SELECTOR = '.bases-structure-node';
 const ALSO_IN_PREFIX = '↗ ';
-
-function logHandlerError(error: unknown): void {
-  console.error('[bases-structure]', error);
-}
 
 function appendAlsoIn(el: HTMLElement, ctx: NodeElementContext, node: StructureNode): void {
   if (node.alsoIn.length === 0) {
@@ -169,7 +166,9 @@ export function attachNodeInteractions(
     event.preventDefault();
     ctx.app.workspace
       .openLinkText(hit.path, ctx.sourcePath, Keymap.isModEvent(event))
-      .catch(logHandlerError);
+      .catch((error: unknown) => {
+        reportOpenFailure(ctx.snapshot, hit.path, error);
+      });
   };
   const handleMouseOver = (event: MouseEvent): void => {
     const hit = readTitlePath(event);
