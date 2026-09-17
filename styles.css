@@ -36,7 +36,8 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 .bases-structure .bases-structure-toolbar-btn .svg-icon,
 .bases-structure .bases-structure-alsoin-icon .svg-icon,
 .bases-structure .bases-structure-extras-icon .svg-icon,
-.bases-structure .bases-structure-two-way-icon .svg-icon {
+.bases-structure .bases-structure-two-way-icon .svg-icon,
+.bases-structure .bases-structure-problem .svg-icon {
   width: var(--bases-structure-icon-size);
   height: var(--bases-structure-icon-size);
 }
@@ -281,6 +282,22 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   justify-content: center;
   margin-right: var(--size-2-1);
   color: var(--text-faint);
+
+  --bases-structure-icon-size: 10px;
+}
+
+/* Task 5: always on, no severity distinction of its own (an edge already carries `.is-error`/
+   `.is-warning` — see below) — a node either has a problem worth a glance or it doesn't. Same
+   icon-led shape as `.bases-structure-two-way-icon` (small, muted-but-visible, right before the
+   title), always in the DOM's normal flow (not hover-revealed, unlike the toggle/"+") since a
+   diagnostic is worth surfacing at rest, not just on hover. */
+.bases-structure-problem {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-right: var(--size-2-1);
+  color: var(--text-error);
 
   --bases-structure-icon-size: 10px;
 }
@@ -590,6 +607,39 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 
 .bases-structure-edge.is-edge-active {
   opacity: 1;
+}
+
+/* Task 5 ("Draw diagnostics"): a schema violation the graph can point straight at — dashed, in a
+   theme colour, never a literal one. `.is-error` (illegal-parent/broken-link) reads more urgent
+   (tighter dashes) than `.is-warning` (inherit-mismatch); neither animates, matching the view's
+   otherwise quiet visual language. */
+.bases-structure-edge.is-error {
+  stroke: var(--text-error);
+  stroke-dasharray: 4 3;
+}
+
+.bases-structure-edge.is-warning {
+  stroke: var(--text-warning);
+  stroke-dasharray: 1 4;
+}
+
+/* The mid-edge "✕" marker every diagnostic edge (or edge marked `.is-error`/`.is-warning`) gets —
+   an SVG `<text>` with a nested `<title>` carrying the diagnostic's own message as a native hover
+   tooltip. Sized off the same icon variable every other marker in the view uses, centred on its
+   own `x`/`y` (set in `graph-renderer.ts`). */
+.bases-structure-edge-problem {
+  font-size: var(--bases-structure-icon-size);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: auto;
+}
+
+.bases-structure-edge-problem.is-error {
+  fill: var(--text-error);
+}
+
+.bases-structure-edge-problem.is-warning {
+  fill: var(--text-warning);
 }
 
 .bases-structure-arrowhead-tree {

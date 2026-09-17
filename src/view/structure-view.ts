@@ -13,6 +13,8 @@
 
 import type { QueryController } from 'obsidian';
 import { BasesView, Notice } from 'obsidian';
+import type { Diagnostic } from '../core/diagnostics.js';
+import { collectDiagnostics } from '../core/diagnostics.js';
 import { moveTargets } from '../core/plan-move.js';
 import type { Schema, SchemaIssue } from '../core/schema.js';
 import { parseSchema } from '../core/schema.js';
@@ -65,6 +67,10 @@ export interface RenderInput {
   readonly snapshot: Snapshot;
   readonly structure: Structure;
   readonly state: ViewUiState;
+  /** Always on (no view option, no setting) — every diagnostic `collectDiagnostics` finds for the
+   * exact `schema`/`snapshot`/`structure` this render shows, computed once here and read by both
+   * renderers instead of each recomputing it. */
+  readonly diagnostics: readonly Diagnostic[];
   /** The path to flag `is-new` in this render only — set for the one render right after a
    * successful create, then cleared (see `StructureActions.consumeFocus`). */
   readonly focusPath?: string;
@@ -273,7 +279,11 @@ export class StructureView extends BasesView {
     const { snapshot, structure } = this.resolveDisplayData(schema, realSnapshot, realStructure);
     this.renderIssues(issues, structure.issues, snapshot);
     const state = getUiState(this.resolveStateKey(host));
-    const input: RenderInput = { schema, snapshot, structure, state };
+    // Computed from exactly what this render shows (the optimistic snapshot/structure while I11's
+    // prediction is up, the real ones otherwise) — never the "current data" `computeCurrentData`
+    // read, which `resolveDisplayData` may have just overridden.
+    const diagnostics = collectDiagnostics(schema, snapshot, structure);
+    const input: RenderInput = { schema, snapshot, structure, state, diagnostics };
     this.lastInput = input;
     const actions = this.resolveActions(host?.path ?? '', () => this.lastInput ?? input);
     const ctx: NodeElementContext = {

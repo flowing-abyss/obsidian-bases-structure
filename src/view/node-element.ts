@@ -6,6 +6,7 @@
 
 import type { App, Component, FrontMatterCache } from 'obsidian';
 import { getAllTags, Keymap } from 'obsidian';
+import type { Diagnostic } from '../core/diagnostics.js';
 import type { Snapshot } from '../core/snapshot.js';
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
@@ -47,6 +48,11 @@ export interface NodeElementFlags {
    * map callers pass this from. Only consulted for an element being created fresh: a reused
    * element's own title is never replaced, so it has nothing to carry from. */
   readonly previousTitle?: HTMLElement;
+  /** Every diagnostic naming this node (Task 5) — `undefined`/empty means clean. Drives the
+   * `.bases-structure-problem` marker; both `createNodeElement` and `updateNodeElement` must
+   * re-derive it from this on every render, since a node can gain or lose a diagnostic between
+   * renders the same way it can gain or lose `isNew`. */
+  readonly diagnostics?: readonly Diagnostic[];
 }
 
 /** A renderer's own working copy of a `NodeElementContext`: both renderers own one of these and
@@ -76,9 +82,28 @@ export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeEle
 const HOVER_SOURCE = 'bases-structure';
 const TITLE_SELECTOR = '.bases-structure-title';
 const ALSOIN_SELECTOR = '.bases-structure-alsoin';
+const PROBLEM_SELECTOR = '.bases-structure-problem';
 const ADD_SELECTOR = '[data-action="add"]';
 const MENU_SELECTOR = '[data-action="menu"]';
 const NODE_SELECTOR = '.bases-structure-node';
+
+/** Groups diagnostics by the node they name — both renderers build this once per render (from
+ * `RenderInput.diagnostics`) and read a node's own list out of it while reconciling, since a
+ * node's marker needs every diagnostic naming it, not just the first. */
+export function groupDiagnosticsByNode(
+  diagnostics: readonly Diagnostic[],
+): ReadonlyMap<string, readonly Diagnostic[]> {
+  const byNode = new Map<string, Diagnostic[]>();
+  for (const diagnostic of diagnostics) {
+    const forNode = byNode.get(diagnostic.node);
+    if (forNode === undefined) {
+      byNode.set(diagnostic.node, [diagnostic]);
+    } else {
+      forNode.push(diagnostic);
+    }
+  }
+  return byNode;
+}
 
 /** Muted, icon-led chip: an `arrow-up-right` SVG followed by the extra parents' display names —
  * see task 15's decisions (no more text-glyph prefix). */
@@ -224,6 +249,34 @@ function updateAlsoIn(el: HTMLElement, ctx: NodeElementContext, node: StructureN
   appendAlsoIn(el, ctx, node);
 }
 
+/** Every diagnostic's own message, joined with a newline — the marker's `title`, so hovering it
+ * (or a screen reader reading it) surfaces every problem the node has, not just one. */
+function diagnosticsTitle(diagnostics: readonly Diagnostic[]): string {
+  return diagnostics.map((diagnostic) => diagnostic.message).join('\n');
+}
+
+/** The `.bases-structure-problem` (alert-circle) marker, right before the title — drop-then-
+ * conditionally-readd (same idempotent shape as `updateAlsoIn`), so a node that gains or loses its
+ * last diagnostic between renders picks up or drops the marker instead of ever accumulating one or
+ * leaking a stale one. A no-op (beyond dropping any stale marker) with no title to anchor before —
+ * not expected in practice, every real node has one. */
+function applyProblemMarker(el: HTMLElement, diagnostics: readonly Diagnostic[] | undefined): void {
+  el.querySelector(PROBLEM_SELECTOR)?.remove();
+  if (diagnostics === undefined || diagnostics.length === 0) {
+    return;
+  }
+  const titleEl = el.querySelector(TITLE_SELECTOR);
+  if (titleEl === null) {
+    return;
+  }
+  const marker = el.createSpan({
+    cls: 'bases-structure-problem',
+    attr: { title: diagnosticsTitle(diagnostics) },
+  });
+  setSizedIcon(marker, 'alert-circle');
+  titleEl.before(marker);
+}
+
 /** The node card: `div.bases-structure-node` (`data-path`, `data-type`, `is-root`/`is-orphan`)
  * containing the title link and, when present, the "also in" chip. */
 export function createNodeElement(
@@ -251,6 +304,7 @@ export function createNodeElement(
   titleEl.classList.add('data-link-icon', 'data-link-icon-after', 'data-link-text');
   applySuperchargedLinkAttributes(ctx.app, titleEl, node.path);
   carryOverSuperchargedLinkState(titleEl, flags.previousTitle, ctx.app, node.path);
+  applyProblemMarker(el, flags.diagnostics);
   appendAddButton(el);
   appendNodeMenuButton(el);
   appendAlsoIn(el, ctx, node);
@@ -276,6 +330,7 @@ export function updateNodeElement(
     updateTitleContent(titleEl, ctx, node);
   }
   updateAlsoIn(el, ctx, node);
+  applyProblemMarker(el, flags.diagnostics);
 }
 
 /** Keeps a *reused* title's `data-link-*` state in sync with current frontmatter/tags — the

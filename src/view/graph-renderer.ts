@@ -8,6 +8,7 @@
 // are created or removed. The SVG's dynamic content (everything after `<defs>`) is still rebuilt
 // each time.
 
+import type { Diagnostic } from '../core/diagnostics.js';
 import type { Box, LayoutOptions, LayoutResult, Size } from '../core/layout.js';
 import {
   DEFAULT_LAYOUT_OPTIONS,
@@ -22,8 +23,17 @@ import {
   unhookSuperchargedLinks,
   type SuperchargedWatch,
 } from '../obsidian/supercharged-links.js';
-import type { EdgeLabelChild } from './edges.js';
-import { edgeAnchors, edgePath, planEdgeLabels } from './edges.js';
+import type { DiagnosticSeverity, EdgeAnchors, Point } from './edges.js';
+import {
+  diagnosticEdgeSeverity,
+  edgeAnchors,
+  edgeMidpoint,
+  edgePath,
+  planEdgeLabels,
+  straightPath,
+  stubEdge,
+  type EdgeLabelChild,
+} from './edges.js';
 import { setSizedIcon } from './icon.js';
 import type {
   MutableNodeElementContext,
@@ -37,6 +47,7 @@ import {
   collectTitleElements,
   createNodeElement,
   focusActiveNode,
+  groupDiagnosticsByNode,
   refreshSuperchargedLinkAttributes,
   updateNodeElement,
 } from './node-element.js';
@@ -75,6 +86,17 @@ interface LayoutContext {
   readonly input: RenderInput;
   readonly forestTops: readonly string[];
   readonly direction: Direction;
+}
+
+/** Bundles what `drawDiagnosticEdges`' own helpers need from a finished layout, so none of them
+ * has to take more than `max-params` (4) parameters on its own. */
+interface DiagnosticDrawCtx {
+  readonly layoutResult: LayoutResult;
+  readonly direction: Direction;
+  /** This render's own tree edges, keyed by child path — built by `drawTreeEdges` so a
+   * target-less diagnostic (today, only `inherit-mismatch`) can mark the exact edge already drawn
+   * for its node, instead of drawing a second one on top of it. */
+  readonly treeEdgeByChild: ReadonlyMap<string, SVGPathElement>;
 }
 
 interface ToolbarElements {
@@ -371,6 +393,10 @@ export class GraphRenderer implements StructureRenderer {
   // destroying and rebuilding all of them. `getNodeElement` reads straight from this map, which
   // only ever holds entries for paths currently in the DOM (see `pruneGoneElements`/`showEmpty`).
   private readonly elementsByPath = new Map<string, HTMLElement>();
+  // Recomputed at the top of every `update()` (task 5) from that render's own `input.diagnostics`
+  // — read both while reconciling node elements (a node's own marker) and while drawing the SVG
+  // layer (edges/stubs for a diagnostic that names a `target`).
+  private diagnosticsByNode: ReadonlyMap<string, readonly Diagnostic[]> = new Map();
 
   constructor(container: HTMLElement, ctx: NodeElementContext, options: GraphRendererOptions = {}) {
     this.container = container;
@@ -476,6 +502,7 @@ export class GraphRenderer implements StructureRenderer {
     this.lastDirection = input.schema.direction;
     this.ctx.snapshot = input.snapshot;
     this.ctx.sourcePath = input.snapshot.host ?? '';
+    this.diagnosticsByNode = groupDiagnosticsByNode(input.diagnostics);
 
     const forestTops = [...input.structure.tops, ...input.structure.orphans];
     const entries = collectVisibleEntries(input.structure, forestTops, input.state.collapsed);
@@ -631,10 +658,12 @@ export class GraphRenderer implements StructureRenderer {
     focusPath: string | undefined,
     previousTitles: ReadonlyMap<string, HTMLElement>,
   ): void {
+    const diagnostics = this.diagnosticsByNode.get(entry.path);
     const flags: NodeElementFlags = {
       isRoot: entry.isRoot,
       isOrphan: entry.isOrphan,
       isNew: entry.path === focusPath,
+      ...(diagnostics !== undefined ? { diagnostics } : {}),
     };
     const existing = this.elementsByPath.get(entry.path);
     if (existing !== undefined) {
@@ -969,7 +998,9 @@ export class GraphRenderer implements StructureRenderer {
   }
 
   /** Group frames are a layout-only concept now (`layoutTree` still computes them so spacing
-   * doesn't change) — nothing here draws `layoutResult.groups`. */
+   * doesn't change) — nothing here draws `layoutResult.groups`. Diagnostic edges/markers (task 5)
+   * are drawn last, after every plain tree/extra edge exists, so `drawDiagnosticEdges` can mark an
+   * already-drawn tree edge and every marker paints on top. */
   private drawSvg(
     entries: readonly VisibleEntry[],
     layoutResult: LayoutResult,
@@ -981,15 +1012,17 @@ export class GraphRenderer implements StructureRenderer {
       }
     }
     this.edgesByPath = new Map();
-    this.drawTreeEdges(entries, layoutResult, direction);
+    const treeEdgeByChild = this.drawTreeEdges(entries, layoutResult, direction);
     this.drawExtraEdges(entries, layoutResult, direction);
+    this.drawDiagnosticEdges(entries, { layoutResult, direction, treeEdgeByChild });
   }
 
   private drawTreeEdges(
     entries: readonly VisibleEntry[],
     layoutResult: LayoutResult,
     direction: Direction,
-  ): void {
+  ): Map<string, SVGPathElement> {
+    const treeEdgeByChild = new Map<string, SVGPathElement>();
     for (const entry of entries) {
       if (entry.node.parent === null) {
         continue;
@@ -1009,7 +1042,9 @@ export class GraphRenderer implements StructureRenderer {
       }
       this.svgEl.appendChild(path);
       this.registerEdge(path, entry.node.parent, entry.path);
+      treeEdgeByChild.set(entry.path, path);
     }
+    return treeEdgeByChild;
   }
 
   private drawExtraEdges(
@@ -1041,6 +1076,107 @@ export class GraphRenderer implements StructureRenderer {
     path.setAttribute('marker-end', EXTRA_ARROW_MARKER_URL);
     this.svgEl.appendChild(path);
     this.registerEdge(path, extra.parent, childPath);
+  }
+
+  /** Task 5: every diagnostic that names a currently visible node gets its own edge/marker
+   * treatment — see `drawOneDiagnostic`. Runs after every plain edge already exists (`drawSvg`'s
+   * own ordering), so `ctx.treeEdgeByChild` is complete before a target-less diagnostic looks its
+   * node's own tree edge up. */
+  private drawDiagnosticEdges(entries: readonly VisibleEntry[], ctx: DiagnosticDrawCtx): void {
+    for (const entry of entries) {
+      const diagnostics = this.diagnosticsByNode.get(entry.path);
+      if (diagnostics === undefined) {
+        continue;
+      }
+      for (const diagnostic of diagnostics) {
+        this.drawOneDiagnostic(diagnostic, entry, ctx);
+      }
+    }
+  }
+
+  /** A diagnostic with no `target` (today, only `inherit-mismatch`) marks its node's own existing
+   * tree edge; one that names a `target` (`illegal-parent`/`broken-link`) gets its own connecting
+   * edge or stub instead — see `markParentEdge`/`drawTargetedDiagnostic`. */
+  private drawOneDiagnostic(
+    diagnostic: Diagnostic,
+    entry: VisibleEntry,
+    ctx: DiagnosticDrawCtx,
+  ): void {
+    if (diagnostic.target === undefined) {
+      this.markParentEdge(diagnostic, entry, ctx);
+      return;
+    }
+    this.drawTargetedDiagnostic(diagnostic, entry, ctx);
+  }
+
+  /** Marks `entry`'s own already-drawn tree edge (`ctx.treeEdgeByChild`) with the diagnostic's
+   * severity class and adds a mid-edge marker at that edge's own anchors — a no-op when there is
+   * no tree edge to mark (no parent, or the parent isn't currently visible) or the kind carries no
+   * edge severity at all. */
+  private markParentEdge(
+    diagnostic: Diagnostic,
+    entry: VisibleEntry,
+    ctx: DiagnosticDrawCtx,
+  ): void {
+    const severity = diagnosticEdgeSeverity(diagnostic.kind);
+    const treeEdge = ctx.treeEdgeByChild.get(entry.path);
+    const parentPath = entry.node.parent;
+    if (severity === null || treeEdge === undefined || parentPath === null) {
+      return;
+    }
+    const parentBox = ctx.layoutResult.boxes.get(parentPath);
+    const childBox = ctx.layoutResult.boxes.get(entry.path);
+    if (parentBox === undefined || childBox === undefined) {
+      return;
+    }
+    treeEdge.classList.add(severity);
+    const anchors = edgeAnchors(parentBox, childBox, ctx.direction);
+    this.appendDiagnosticMarker(edgeMidpoint(anchors), severity, diagnostic.message);
+  }
+
+  /** Draws a diagnostic's own connecting edge to its `target` when that target is a currently
+   * rendered node, or a short stub from `entry`'s own box otherwise (Task 5's decision: a
+   * diagnostic whose target isn't rendered still has to be visible). Always paints the same
+   * severity class and mid-edge marker either way. */
+  private drawTargetedDiagnostic(
+    diagnostic: Diagnostic,
+    entry: VisibleEntry,
+    ctx: DiagnosticDrawCtx,
+  ): void {
+    const severity = diagnosticEdgeSeverity(diagnostic.kind);
+    const fromBox = ctx.layoutResult.boxes.get(entry.path);
+    if (severity === null || fromBox === undefined || diagnostic.target === undefined) {
+      return;
+    }
+    const toBox = ctx.layoutResult.boxes.get(diagnostic.target);
+    const anchors: EdgeAnchors =
+      toBox === undefined
+        ? stubEdge(fromBox, ctx.direction)
+        : edgeAnchors(fromBox, toBox, ctx.direction);
+    const d =
+      toBox === undefined
+        ? straightPath(anchors.start, anchors.end)
+        : edgePath(fromBox, toBox, ctx.direction);
+    const path = createSvgEl(this.container.doc, 'path');
+    path.classList.add('bases-structure-edge', severity);
+    path.setAttribute('d', d);
+    this.svgEl.appendChild(path);
+    this.appendDiagnosticMarker(edgeMidpoint(anchors), severity, diagnostic.message);
+  }
+
+  /** The mid-edge `✕` marker every diagnostic edge/marked tree edge gets: an SVG `<text>` with a
+   * nested `<title>` (the standard way an SVG element gets a native hover tooltip — a plain
+   * `title` attribute alone isn't one). */
+  private appendDiagnosticMarker(mid: Point, severity: DiagnosticSeverity, message: string): void {
+    const marker = createSvgEl(this.container.doc, 'text');
+    marker.classList.add('bases-structure-edge-problem', severity);
+    marker.setAttribute('x', String(mid.x));
+    marker.setAttribute('y', String(mid.y));
+    marker.textContent = '✕';
+    const titleEl = createSvgEl(this.container.doc, 'title');
+    titleEl.textContent = message;
+    marker.appendChild(titleEl);
+    this.svgEl.appendChild(marker);
   }
 
   /** Indexes `edgeEl` under both endpoints it connects, so a hover on either one can raise its

@@ -1,6 +1,7 @@
 import { App, Component } from 'obsidian-test-mocks/obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
+import type { Diagnostic } from '../core/diagnostics.js';
 import type { Size } from '../core/layout.js';
 import { parseSchema } from '../core/schema.js';
 import type { Structure, StructureNode } from '../core/structure.js';
@@ -161,6 +162,7 @@ function makeInput(overrides: Partial<RenderInput> = {}): RenderInput {
     snapshot: chainSnapshot(),
     structure: chainStructure(),
     state: makeState(),
+    diagnostics: [],
     ...overrides,
   };
 }
@@ -2067,5 +2069,170 @@ describe('GraphRenderer — scroll anchoring on the active node (task 3)', () =>
 
     expect(state.scrollLeft).toBe(0);
     expect(state.scrollTop).toBe(0);
+  });
+});
+
+/** `parentPath` with a single real tree child `childPath` — for the inherit-mismatch test, which
+ * needs an existing parent/child edge for the diagnostic to mark (unlike `illegal-parent`/
+ * `broken-link`, whose own `target` is never the node's real structural parent). */
+function parentChildStructure(parentPath: string, childPath: string): Structure {
+  const nodes = new Map<string, StructureNode>([
+    [
+      parentPath,
+      {
+        path: parentPath,
+        type: null,
+        parent: null,
+        edge: null,
+        children: [childPath],
+        extras: [],
+        alsoIn: [],
+        twoWay: false,
+      },
+    ],
+    [
+      childPath,
+      {
+        path: childPath,
+        type: null,
+        parent: parentPath,
+        edge: null,
+        children: [],
+        extras: [],
+        alsoIn: [],
+        twoWay: false,
+      },
+    ],
+  ]);
+  return { root: parentPath, tops: [parentPath], orphans: [], nodes, issues: [] };
+}
+
+describe('GraphRenderer — diagnostics (task 5)', () => {
+  const illegalParent: Diagnostic = {
+    kind: 'illegal-parent',
+    node: 'h.md',
+    target: 'p.md',
+    property: 'category',
+    message: '"Problem" cannot be the category of "Hierarchy"',
+  };
+
+  const brokenLink: Diagnostic = {
+    kind: 'broken-link',
+    node: 'h.md',
+    target: 'missing.md',
+    property: 'category',
+    message: '"h" links to "missing.md" as category, but no such note exists.',
+  };
+
+  const inheritMismatch: Diagnostic = {
+    kind: 'inherit-mismatch',
+    node: 'c.md',
+    keys: ['category'],
+    message: '"c" does not match its parent for category.',
+  };
+
+  it('draws an error edge and a problem marker for an illegal-parent diagnostic between two rendered nodes', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(flatInput(['h.md', 'p.md'], { diagnostics: [illegalParent] }));
+
+    expect(container.querySelector('.bases-structure-edge.is-error')).not.toBeNull();
+    expect(container.querySelector('.bases-structure-edge-problem')).not.toBeNull();
+  });
+
+  it('marks a broken-link diagnostic with a stub error edge when its target is not a rendered node', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(flatInput(['h.md'], { diagnostics: [brokenLink] }));
+
+    expect(container.querySelectorAll('.bases-structure-edge.is-error')).toHaveLength(1);
+    expect(container.querySelector('.bases-structure-edge-problem')).not.toBeNull();
+  });
+
+  it('marks an inheritance mismatch on the node and its own parent tree edge', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const structure = parentChildStructure('p.md', 'c.md');
+
+    renderer.update(
+      makeInput({
+        structure,
+        snapshot: snapshot([note('p.md'), note('c.md')]),
+        diagnostics: [inheritMismatch],
+      }),
+    );
+
+    expect(
+      renderer.getNodeElement('c.md')?.querySelector('.bases-structure-problem'),
+    ).not.toBeNull();
+    expect(container.querySelector('.bases-structure-edge.is-warning')).not.toBeNull();
+  });
+
+  it("sets the mid-edge marker's title to the diagnostic message", () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(flatInput(['h.md', 'p.md'], { diagnostics: [illegalParent] }));
+
+    const marker = must(
+      container.querySelector<SVGTitleElement>('.bases-structure-edge-problem title'),
+    );
+    expect(marker.textContent).toBe(illegalParent.message);
+  });
+
+  it('joins several diagnostics naming the same node into one marker title', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const second: Diagnostic = {
+      kind: 'broken-link',
+      node: 'h.md',
+      target: 'missing2.md',
+      property: 'meta',
+      message: 'second message',
+    };
+
+    renderer.update(flatInput(['h.md'], { diagnostics: [brokenLink, second] }));
+
+    const marker = must(renderer.getNodeElement('h.md')?.querySelector('.bases-structure-problem'));
+    expect(marker.getAttribute('title')).toBe(`${brokenLink.message}\n${second.message}`);
+  });
+
+  it('drops the error edge, marker and node problem-marker once the diagnostic is resolved (no leaked marker)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(flatInput(['h.md', 'p.md'], { diagnostics: [illegalParent] }));
+    expect(container.querySelector('.bases-structure-edge.is-error')).not.toBeNull();
+
+    renderer.update(flatInput(['h.md', 'p.md'], { diagnostics: [] }));
+
+    expect(container.querySelector('.bases-structure-edge.is-error')).toBeNull();
+    expect(container.querySelector('.bases-structure-edge-problem')).toBeNull();
+    expect(renderer.getNodeElement('h.md')?.querySelector('.bases-structure-problem')).toBeNull();
+  });
+
+  it('drops is-warning from the tree edge once the inherit-mismatch diagnostic is resolved', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const structure = parentChildStructure('p.md', 'c.md');
+    const snap = snapshot([note('p.md'), note('c.md')]);
+    renderer.update(makeInput({ structure, snapshot: snap, diagnostics: [inheritMismatch] }));
+    expect(container.querySelector('.bases-structure-edge.is-warning')).not.toBeNull();
+
+    renderer.update(makeInput({ structure, snapshot: snap, diagnostics: [] }));
+
+    expect(container.querySelector('.bases-structure-edge.is-warning')).toBeNull();
+  });
+
+  it('ignores a diagnostic naming a node that is not currently rendered (defensive)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const ghost: Diagnostic = { ...illegalParent, node: 'ghost.md' };
+
+    expect(() => {
+      renderer.update(flatInput(['h.md'], { diagnostics: [ghost] }));
+    }).not.toThrow();
+    expect(container.querySelector('.bases-structure-edge-problem')).toBeNull();
   });
 });

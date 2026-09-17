@@ -12,6 +12,7 @@
 //         div.bases-structure-node               (from node-element.ts, unchanged)
 //         ul.bases-structure-outline-list        (children, omitted when collapsed or empty)
 
+import type { Diagnostic } from '../core/diagnostics.js';
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
 import {
@@ -32,6 +33,7 @@ import {
   collectTitleElements,
   createNodeElement,
   focusActiveNode,
+  groupDiagnosticsByNode,
   refreshSuperchargedLinkAttributes,
   restoreSuppressedFocus,
   updateNodeElement,
@@ -66,6 +68,9 @@ interface RenderCtx {
    * why. Owned by the renderer instance; threaded through here since rendering is a set of free
    * functions, not methods. */
   readonly elementsByPath: Map<string, HTMLElement>;
+  /** Task 5: this render's own diagnostics, grouped by node — the outline has no edges to mark, so
+   * this only ever feeds a row's own `.bases-structure-problem` marker. */
+  readonly diagnosticsByNode: ReadonlyMap<string, readonly Diagnostic[]>;
 }
 
 /** Same button, same classes/attrs and same icon choice as the graph's own `addToggle` — only
@@ -205,10 +210,12 @@ function reconcileNode(
   ctx: RenderCtx,
   isOrphanTop: boolean,
 ): HTMLElement {
+  const diagnostics = ctx.diagnosticsByNode.get(path);
   const flags: NodeElementFlags = {
     isRoot: path === ctx.input.structure.root,
     isOrphan: isOrphanTop,
     isNew: path === ctx.input.focusPath,
+    ...(diagnostics !== undefined ? { diagnostics } : {}),
   };
   const existing = ctx.elementsByPath.get(path);
   const el = existing ?? createFreshNode(path, node, ctx, flags);
@@ -371,6 +378,7 @@ export class OutlineRenderer implements StructureRenderer {
       seen: new Set(),
       previousTitles,
       elementsByPath: this.elementsByPath,
+      diagnosticsByNode: groupDiagnosticsByNode(input.diagnostics),
     };
     const listEl = this.outlineEl.createEl('ul', { cls: LIST_CLASS });
     for (const path of input.structure.tops) {

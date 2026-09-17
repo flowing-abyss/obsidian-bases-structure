@@ -1,6 +1,7 @@
 import { App, Component } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
+import type { Diagnostic } from '../core/diagnostics.js';
 import { parseSchema } from '../core/schema.js';
 import type { Structure, StructureNode } from '../core/structure.js';
 import { buildStructure } from '../core/structure.js';
@@ -67,7 +68,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-nesting') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-nesting'),
+    });
 
     const nodes = container.querySelectorAll('.bases-structure-title');
     expect(Array.from(nodes).map((el) => el.textContent)).toStrictEqual([
@@ -91,7 +98,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-shape') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-shape'),
+    });
 
     const outline = outlineEl(container);
     const topList = outline.querySelector(':scope > ul.bases-structure-outline-list');
@@ -113,6 +126,7 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure,
@@ -139,7 +153,13 @@ describe('OutlineRenderer', () => {
       makeCtx({ snapshot: snap, sourcePath: 'host.md' }),
     );
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-orphans') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-orphans'),
+    });
 
     const orphansLi = container.querySelector('.bases-structure-orphans');
     expect(orphansLi?.textContent).toContain('Without a parent');
@@ -193,7 +213,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-cycle') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-cycle'),
+    });
 
     expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(2);
   });
@@ -226,6 +252,7 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure,
@@ -242,7 +269,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-empty') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-empty'),
+    });
 
     const emptyEl = container.querySelector('.bases-structure-empty');
     expect(emptyEl?.classList.contains('is-hidden')).toBe(false);
@@ -252,6 +285,7 @@ describe('OutlineRenderer', () => {
     const snap2 = snapshot([note('a.md')], { results: ['a.md'] });
     const structure2 = buildStructure(schema, snap2);
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap2,
       structure: structure2,
@@ -273,7 +307,7 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-toggle');
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     const rootToggle = container.querySelector<HTMLButtonElement>(
       '[data-path="root.md"] > .bases-structure-toggle',
@@ -300,7 +334,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-gutter') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-gutter'),
+    });
 
     const rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
     const childEl = must(container.querySelector<HTMLElement>('[data-path="child.md"]'));
@@ -331,7 +371,7 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-collapse-persist');
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
     container
       .querySelector('[data-path="root.md"] .bases-structure-toggle')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -343,7 +383,7 @@ describe('OutlineRenderer', () => {
         ?.getAttribute('aria-expanded'),
     ).toBe('false');
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     expect(container.querySelector('[data-path="child.md"]')).toBeNull();
     expect(container.querySelector('[data-path="root.md"]')).not.toBeNull();
@@ -366,7 +406,7 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-toggle-miss');
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
     container
       .querySelector('[data-path="root.md"] .bases-structure-title')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -400,7 +440,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-alsoin') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-alsoin'),
+    });
 
     const metaChip = container.querySelector('[data-path="meta.md"] .bases-structure-alsoin');
     expect(metaChip?.textContent).toBe('other');
@@ -422,7 +468,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-twoway') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-twoway'),
+    });
 
     const childEl = container.querySelector('[data-path="child.md"]');
     const icon = childEl?.querySelector('.bases-structure-two-way-icon');
@@ -454,7 +506,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-extras') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-extras'),
+    });
 
     const chip = container.querySelector('[data-path="child.md"] .bases-structure-extras');
     expect(chip?.querySelector('.bases-structure-extras-icon')).not.toBeNull();
@@ -472,7 +530,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap, onAdd }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-add') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-add'),
+    });
     const nodeEl = container.querySelector<HTMLElement>('[data-path="a.md"]');
     const buttonEl = container.querySelector('[data-path="a.md"] .bases-structure-add');
     buttonEl?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -487,7 +551,13 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
 
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-drag') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-drag'),
+    });
 
     const nodeEl = container.querySelector<HTMLElement>('[data-path="a.md"]');
     expect(nodeEl?.getAttribute('data-path')).toBe('a.md');
@@ -508,7 +578,13 @@ describe('OutlineRenderer', () => {
       container,
       makeCtx({ app: app.asOriginalType__(), snapshot: snap, sourcePath: 'host.md' }),
     );
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-click') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-click'),
+    });
 
     const title = container.querySelector('[data-path="a.md"] .bases-structure-title');
     title?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -530,7 +606,13 @@ describe('OutlineRenderer', () => {
       container,
       makeCtx({ app: app.asOriginalType__(), snapshot: snap, sourcePath: 'host.md' }),
     );
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-hover') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-hover'),
+    });
 
     const title = container.querySelector('[data-path="a.md"] .bases-structure-title');
     title?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -559,6 +641,7 @@ describe('OutlineRenderer', () => {
       makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
     );
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure,
@@ -586,6 +669,7 @@ describe('OutlineRenderer', () => {
       makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
     );
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure,
@@ -610,7 +694,13 @@ describe('OutlineRenderer', () => {
       container,
       makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
     );
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-click-miss') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-click-miss'),
+    });
 
     outlineEl(container).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
@@ -628,7 +718,13 @@ describe('OutlineRenderer', () => {
       container,
       makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
     );
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-hover-miss') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-hover-miss'),
+    });
 
     outlineEl(container).dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
 
@@ -643,7 +739,13 @@ describe('OutlineRenderer', () => {
       const structure = buildStructure(schema, snap);
       const container = createDiv();
       const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
-      renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-getnode') });
+      renderer.update({
+        diagnostics: [],
+        schema,
+        snapshot: snap,
+        structure,
+        state: getUiState('outline-getnode'),
+      });
 
       const el = renderer.getNodeElement(path);
 
@@ -658,6 +760,7 @@ describe('OutlineRenderer', () => {
       const container = createDiv();
       const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
       renderer.update({
+        diagnostics: [],
         schema,
         snapshot: snap,
         structure,
@@ -681,7 +784,7 @@ describe('OutlineRenderer', () => {
     const state = getUiState('outline-active');
     state.active = 'child.md';
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     let childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     let rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
@@ -690,7 +793,7 @@ describe('OutlineRenderer', () => {
     expect(rootEl?.classList.contains('is-active')).toBe(false);
     expect(rootEl?.tabIndex).toBe(-1);
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
@@ -715,7 +818,7 @@ describe('OutlineRenderer', () => {
     const state = getUiState('outline-active-first-render');
     state.active = 'child.md';
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(childEl?.classList.contains('is-active')).toBe(true);
@@ -733,15 +836,15 @@ describe('OutlineRenderer', () => {
     document.body.appendChild(container);
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-active-focus');
-    renderer.update({ schema, snapshot: snap, structure, state }); // First render: nothing active.
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state }); // First render: nothing active.
 
     state.active = 'child.md';
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
     const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(document.activeElement).toBe(childEl);
 
     state.active = 'root.md';
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
     const rootEl = container.querySelector<HTMLElement>('[data-path="root.md"]');
     expect(document.activeElement).toBe(rootEl);
   });
@@ -761,14 +864,14 @@ describe('OutlineRenderer', () => {
     document.body.appendChild(container);
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-active-refocus');
-    renderer.update({ schema, snapshot: snap, structure, state }); // First render: nothing active.
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state }); // First render: nothing active.
 
     state.active = 'child.md';
-    renderer.update({ schema, snapshot: snap, structure, state }); // Active newly set: focus follows.
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state }); // Active newly set: focus follows.
     const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(document.activeElement).toBe(childEl);
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     const sameChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(sameChildEl).toBe(childEl);
@@ -787,13 +890,13 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-active-no-steal');
     state.active = 'child.md';
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
     const outside = createEl('input');
     document.body.appendChild(outside);
     outside.focus();
     expect(document.activeElement).toBe(outside);
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     expect(document.activeElement).toBe(outside);
   });
@@ -814,14 +917,21 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-active-suppress-focus');
     state.active = 'child.md';
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
     const childEl = must(container.querySelector<HTMLElement>('[data-path="child.md"]'));
     const draftInput = createEl('input');
     childEl.appendChild(draftInput);
     draftInput.focus();
     expect(document.activeElement).toBe(draftInput);
 
-    renderer.update({ schema, snapshot: snap, structure, state, suppressFocus: true });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state,
+      suppressFocus: true,
+    });
 
     expect(document.activeElement).toBe(draftInput);
   });
@@ -838,7 +948,7 @@ describe('OutlineRenderer', () => {
     const state = getUiState('outline-scroll');
     state.scrollTop = 42;
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     expect(container.scrollTop).toBe(42);
   });
@@ -857,7 +967,7 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-scroll-toggle');
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     container.scrollTop = 77;
     container.dispatchEvent(new Event('scroll'));
@@ -878,7 +988,7 @@ describe('OutlineRenderer', () => {
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-scroll-destroy');
-    renderer.update({ schema, snapshot: snap, structure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
     renderer.destroy();
     container.scrollTop = 99;
@@ -898,7 +1008,13 @@ describe('OutlineRenderer', () => {
       container,
       makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
     );
-    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-destroy') });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure,
+      state: getUiState('outline-destroy'),
+    });
 
     renderer.destroy();
 
@@ -925,14 +1041,14 @@ describe('OutlineRenderer', () => {
       otherDoc.body.appendChild(container);
       const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
       const state = getUiState('outline-popout');
-      renderer.update({ schema, snapshot: snap, structure, state }); // First render: I9.
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state }); // First render: I9.
 
       state.active = 'child.md';
-      renderer.update({ schema, snapshot: snap, structure, state }); // Active newly set: focus follows.
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state }); // Active newly set: focus follows.
       const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
       expect(otherDoc.activeElement).toBe(childEl);
 
-      renderer.update({ schema, snapshot: snap, structure, state }); // Same path: only hadFocus can trigger refocus.
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state }); // Same path: only hadFocus can trigger refocus.
 
       // `childEl` is reused now (perf task) and never actually lost focus — this still guards
       // `hadFocus` reading the right document for whichever node a render *does* have to replace.
@@ -977,12 +1093,14 @@ describe('OutlineRenderer', () => {
       hookSpy.mockClear();
 
       renderer.update({
+        diagnostics: [],
         schema,
         snapshot: snap,
         structure,
         state: getUiState('outline-sl-rerender'),
       });
       renderer.update({
+        diagnostics: [],
         schema,
         snapshot: snap,
         structure,
@@ -1036,7 +1154,7 @@ describe('OutlineRenderer', () => {
         makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
       );
       const state = getUiState('outline-sl-carry-over');
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
       // Simulate Supercharged Links' own observer adding a non-scalar attribute asynchronously,
       // some time after the first render — `applySuperchargedLinkAttributes` never sets one
       // itself (scalars only), by design.
@@ -1045,7 +1163,7 @@ describe('OutlineRenderer', () => {
       );
       title.setAttribute('data-link-related', 'x y');
 
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       // Node elements are reused across updates now (perf task): the title is the *same*
       // instance, so the attribute simply survives — nothing has to copy it onto a replacement.
@@ -1066,7 +1184,7 @@ describe('OutlineRenderer', () => {
         makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
       );
       const state = getUiState('outline-sl-key-removed');
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
       const firstTitle = must(
         container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
       );
@@ -1074,7 +1192,7 @@ describe('OutlineRenderer', () => {
       expect(firstTitle.style.getPropertyValue('--data-link-type')).toBe('A');
 
       app.metadataCache.setCache__('root.md', { frontmatter: {} });
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       const title = container.querySelector<HTMLElement>(
         '[data-path="root.md"] .bases-structure-title',
@@ -1095,14 +1213,14 @@ describe('OutlineRenderer', () => {
         makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
       );
       const state = getUiState('outline-sl-tags-removed');
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
       const firstTitle = must(
         container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
       );
       firstTitle.setAttribute('data-link-tags', '#x');
 
       app.metadataCache.setCache__('root.md', { frontmatter: {} });
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
       expect(title?.hasAttribute('data-link-tags')).toBe(false);
@@ -1115,13 +1233,13 @@ describe('OutlineRenderer', () => {
       const container = createDiv();
       const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
       const state = getUiState('outline-sl-path-carried');
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
       const firstTitle = must(
         container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
       );
       firstTitle.setAttribute('data-link-path', 'root.md');
 
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
       expect(title?.getAttribute('data-link-path')).toBe('root.md');
@@ -1139,10 +1257,10 @@ describe('OutlineRenderer', () => {
         makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
       );
       const state = getUiState('outline-sl-current-wins');
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       app.metadataCache.setCache__('root.md', { frontmatter: { type: 'B' } });
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
       expect(title?.getAttribute('data-link-type')).toBe('B');
@@ -1156,14 +1274,14 @@ describe('OutlineRenderer', () => {
       const container = createDiv();
       const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
       const state = getUiState('outline-sl-carry-over-no-double-hook');
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
       const title = must(
         container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
       );
       title.setAttribute('data-link-tags', '#a');
       hookSpy.mockClear();
 
-      renderer.update({ schema, snapshot: snap, structure, state });
+      renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
 
       expect(hookSpy).not.toHaveBeenCalled();
     });
@@ -1216,6 +1334,7 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-reconcile-reuse');
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['a.md', 'b.md']),
@@ -1224,6 +1343,7 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const first = renderer.getNodeElement('a.md');
 
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['a.md', 'b.md', 'c.md']),
@@ -1241,13 +1361,20 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-reconcile-drop');
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['a.md', 'b.md']),
       state,
     });
 
-    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md']),
+      state,
+    });
 
     expect(renderer.getNodeElement('b.md')).toBeNull();
     expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(1);
@@ -1260,6 +1387,7 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-reconcile-move');
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['root.md'], { 'root.md': ['a.md', 'b.md'] }),
@@ -1270,6 +1398,7 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
 
     // `a.md` moves from being a direct child of `root.md` to being `b.md`'s child instead.
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['root.md'], { 'root.md': ['b.md'], 'b.md': ['a.md'] }),
@@ -1293,6 +1422,7 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-reconcile-is-new');
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['a.md']),
@@ -1301,7 +1431,13 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     });
     expect(renderer.getNodeElement('a.md')?.classList.contains('is-new')).toBe(true);
 
-    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md']),
+      state,
+    });
 
     expect(renderer.getNodeElement('a.md')?.classList.contains('is-new')).toBe(false);
   });
@@ -1312,13 +1448,20 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const container = createDiv();
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-reconcile-toggle');
-    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md']),
+      state,
+    });
     expect(renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle')).toBeNull();
     expect(
       renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle-spacer'),
     ).not.toBeNull();
 
     renderer.update({
+      diagnostics: [],
       schema,
       snapshot: snap,
       structure: outlineStructure(['a.md'], { 'a.md': ['b.md'] }),
@@ -1331,7 +1474,13 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
       renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle-spacer'),
     ).toBeNull();
 
-    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+    renderer.update({
+      diagnostics: [],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md']),
+      state,
+    });
     expect(renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle')).toBeNull();
     expect(
       renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle-spacer'),
@@ -1345,7 +1494,7 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-reconcile-twoway');
     const notTwoWay = outlineStructure(['a.md']);
-    renderer.update({ schema, snapshot: snap, structure: notTwoWay, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure: notTwoWay, state });
     expect(
       renderer.getNodeElement('a.md')?.querySelector('.bases-structure-two-way-icon'),
     ).toBeNull();
@@ -1356,10 +1505,122 @@ describe('OutlineRenderer — reconciling node elements instead of rebuilding th
       ...notTwoWay,
       nodes: new Map(notTwoWay.nodes).set('a.md', { ...baseNode, twoWay: true }),
     };
-    renderer.update({ schema, snapshot: snap, structure: twoWayStructure, state });
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure: twoWayStructure, state });
 
     expect(
       renderer.getNodeElement('a.md')?.querySelector('.bases-structure-two-way-icon'),
     ).not.toBeNull();
+  });
+});
+
+describe('OutlineRenderer — diagnostics (task 5)', () => {
+  const illegalParent: Diagnostic = {
+    kind: 'illegal-parent',
+    node: 'h.md',
+    target: 'p.md',
+    property: 'category',
+    message: '"Problem" cannot be the category of "Hierarchy"',
+  };
+
+  it('gives a row with a diagnostic a problem marker with the diagnostic message as its title', () => {
+    const { schema } = parseSchema(makeRead({}));
+    const snap = snapshot([note('h.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({
+      diagnostics: [illegalParent],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['h.md']),
+      state: getUiState('outline-diag-marker'),
+    });
+
+    const marker = renderer.getNodeElement('h.md')?.querySelector('.bases-structure-problem');
+    expect(marker).not.toBeNull();
+    expect(marker?.getAttribute('title')).toBe(illegalParent.message);
+  });
+
+  it('leaves a clean row (no diagnostic) without a problem marker', () => {
+    const { schema } = parseSchema(makeRead({}));
+    const snap = snapshot([note('h.md'), note('p.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({
+      diagnostics: [illegalParent],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['h.md', 'p.md']),
+      state: getUiState('outline-diag-clean-row'),
+    });
+
+    expect(renderer.getNodeElement('p.md')?.querySelector('.bases-structure-problem')).toBeNull();
+  });
+
+  it('joins several diagnostics naming the same row into one marker title', () => {
+    const { schema } = parseSchema(makeRead({}));
+    const snap = snapshot([note('h.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const second: Diagnostic = {
+      kind: 'broken-link',
+      node: 'h.md',
+      target: 'missing.md',
+      property: 'meta',
+      message: 'second message',
+    };
+
+    renderer.update({
+      diagnostics: [illegalParent, second],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['h.md']),
+      state: getUiState('outline-diag-join'),
+    });
+
+    const marker = renderer.getNodeElement('h.md')?.querySelector('.bases-structure-problem');
+    expect(marker?.getAttribute('title')).toBe(`${illegalParent.message}\n${second.message}`);
+  });
+
+  it('drops the marker once a reused row no longer has a diagnostic (no leaked marker between renders)', () => {
+    const { schema } = parseSchema(makeRead({}));
+    const snap = snapshot([note('h.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const structure = outlineStructure(['h.md']);
+    const state = getUiState('outline-diag-clears');
+    renderer.update({ diagnostics: [illegalParent], schema, snapshot: snap, structure, state });
+    expect(
+      renderer.getNodeElement('h.md')?.querySelector('.bases-structure-problem'),
+    ).not.toBeNull();
+
+    renderer.update({ diagnostics: [], schema, snapshot: snap, structure, state });
+
+    expect(renderer.getNodeElement('h.md')?.querySelector('.bases-structure-problem')).toBeNull();
+  });
+
+  it('draws no edges at all for a diagnostic naming an unrendered target (the outline has none)', () => {
+    const { schema } = parseSchema(makeRead({}));
+    const snap = snapshot([note('h.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const brokenLink: Diagnostic = {
+      kind: 'broken-link',
+      node: 'h.md',
+      target: 'missing.md',
+      property: 'category',
+      message: 'broken',
+    };
+
+    renderer.update({
+      diagnostics: [brokenLink],
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['h.md']),
+      state: getUiState('outline-diag-no-edges'),
+    });
+
+    expect(container.querySelectorAll('svg, path')).toHaveLength(0);
   });
 });

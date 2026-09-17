@@ -1,6 +1,7 @@
 // Pure edge geometry for the graph renderer: the anchor points a parent→child (or extra) edge
 // connects, and the cubic-bezier SVG path string between them. No DOM, no Obsidian imports.
 
+import type { DiagnosticKind } from '../core/diagnostics.js';
 import type { Box } from '../core/layout.js';
 import type { Direction } from '../core/schema.js';
 
@@ -70,6 +71,55 @@ function verticalPath(start: Point, end: Point): string {
 export function edgePath(from: Box, to: Box, direction: Direction): string {
   const { start, end } = edgeAnchors(from, to, direction);
   return direction === 'down' ? verticalPath(start, end) : horizontalPath(start, end);
+}
+
+export type DiagnosticSeverity = 'is-error' | 'is-warning';
+
+/** The edge/marker class a diagnostic's own kind draws — `null` for a kind that never anchors an
+ * edge at all (`untyped` is a note-only problem, with no link of its own to mark).
+ * `illegal-parent`/`broken-link` are definite rule violations (error); `inherit-mismatch` is a
+ * softer drift (warning) on an edge that's otherwise perfectly legal. */
+export function diagnosticEdgeSeverity(kind: DiagnosticKind): DiagnosticSeverity | null {
+  switch (kind) {
+    case 'illegal-parent':
+    case 'broken-link':
+      return 'is-error';
+    case 'inherit-mismatch':
+      return 'is-warning';
+    case 'untyped':
+      return null;
+  }
+}
+
+const STUB_LENGTH = 28;
+
+/** A short "leads nowhere" edge from `from`'s own tree-edge anchor, extending `STUB_LENGTH`
+ * further along whichever axis `direction` grows — for a diagnostic (`illegal-parent`/
+ * `broken-link`) whose `target` isn't a currently rendered node, so there is no second box for a
+ * real connecting edge. */
+export function stubEdge(from: Box, direction: Direction): EdgeAnchors {
+  const start =
+    direction === 'down'
+      ? { x: from.x + from.width / 2, y: from.y + from.height }
+      : { x: from.x + from.width, y: from.y + from.height / 2 };
+  const end =
+    direction === 'down'
+      ? { x: start.x, y: start.y + STUB_LENGTH }
+      : { x: start.x + STUB_LENGTH, y: start.y };
+  return { start, end };
+}
+
+/** A plain straight line between two points, rounded to 2 decimals like every other path here —
+ * a stub edge has nothing to curve toward, so it skips `horizontalPath`/`verticalPath`'s bezier
+ * control points entirely. */
+export function straightPath(start: Point, end: Point): string {
+  return `M ${round2(start.x)} ${round2(start.y)} L ${round2(end.x)} ${round2(end.y)}`;
+}
+
+/** The point midway between a pair of anchors — where a diagnostic's own mid-edge marker sits,
+ * whether the anchors came from a real connecting edge, a stub, or an existing tree edge. */
+export function edgeMidpoint(anchors: EdgeAnchors): Point {
+  return { x: (anchors.start.x + anchors.end.x) / 2, y: (anchors.start.y + anchors.end.y) / 2 };
 }
 
 /** D2: one child, as seen by `planEdgeLabels` — a run only cares about a child's own type, never

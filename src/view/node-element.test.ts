@@ -2,12 +2,14 @@ import type * as ObsidianModule from 'obsidian';
 import { App, Component } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
+import type { Diagnostic } from '../core/diagnostics.js';
 import type { StructureNode } from '../core/structure.js';
 import {
   applyActiveNode,
   attachNodeInteractions,
   createNodeElement,
   focusActiveNode,
+  groupDiagnosticsByNode,
   type NodeElementContext,
   refreshSuperchargedLinkAttributes,
   updateNodeElement,
@@ -70,6 +72,17 @@ function makeNodes(paths: readonly string[]): HTMLElement {
     root.appendChild(createNodeElement(ctx, makeNode({ path })));
   }
   return root;
+}
+
+function makeDiagnostic(overrides: Partial<Diagnostic> = {}): Diagnostic {
+  return {
+    kind: 'broken-link',
+    node: 'a.md',
+    target: 'missing.md',
+    property: 'category',
+    message: 'a.md links to missing.md as category, but no such note exists.',
+    ...overrides,
+  };
 }
 
 describe('createNodeElement', () => {
@@ -677,6 +690,125 @@ describe('attachNodeInteractions', () => {
 
     expect(openLinkText).not.toHaveBeenCalled();
     expect(trigger).not.toHaveBeenCalled();
+  });
+});
+
+describe('createNodeElement — diagnostics (Task 5)', () => {
+  it('omits the problem marker when the node has no diagnostics', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode());
+
+    expect(el.querySelector('.bases-structure-problem')).toBeNull();
+  });
+
+  it('adds a problem marker before the title when the node has a diagnostic', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+
+    const marker = el.querySelector('.bases-structure-problem');
+    expect(marker).not.toBeNull();
+    const children = Array.from(el.children);
+    expect(children.indexOf(marker as Element)).toBeLessThan(
+      children.indexOf(el.querySelector('.bases-structure-title') as Element),
+    );
+  });
+
+  it("sets the marker's title to the diagnostic's own message", () => {
+    const ctx = makeCtx();
+    const diagnostic = makeDiagnostic({ message: 'Custom message' });
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [diagnostic] });
+
+    expect(el.querySelector('.bases-structure-problem')?.getAttribute('title')).toBe(
+      'Custom message',
+    );
+  });
+
+  it('joins several diagnostics into the marker title with a newline', () => {
+    const ctx = makeCtx();
+    const diagnostics: Diagnostic[] = [
+      makeDiagnostic({ message: 'First problem' }),
+      { kind: 'inherit-mismatch', node: 'a.md', keys: ['category'], message: 'Second problem' },
+    ];
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics });
+
+    expect(el.querySelector('.bases-structure-problem')?.getAttribute('title')).toBe(
+      'First problem\nSecond problem',
+    );
+  });
+
+  it('omits the marker for an empty diagnostics array (same as undefined)', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [] });
+
+    expect(el.querySelector('.bases-structure-problem')).toBeNull();
+  });
+});
+
+describe('updateNodeElement — diagnostics (Task 5)', () => {
+  it('adds the marker to a previously clean node once it gains a diagnostic', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode());
+    expect(el.querySelector('.bases-structure-problem')).toBeNull();
+
+    updateNodeElement(el, ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+
+    expect(el.querySelector('.bases-structure-problem')).not.toBeNull();
+  });
+
+  it('drops the marker once the node no longer has any diagnostics (no leaked marker between renders)', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+    expect(el.querySelector('.bases-structure-problem')).not.toBeNull();
+
+    updateNodeElement(el, ctx, makeNode(), {});
+
+    expect(el.querySelector('.bases-structure-problem')).toBeNull();
+  });
+
+  it('refreshes the title when the set of diagnostics changes between renders', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode(), {
+      diagnostics: [makeDiagnostic({ message: 'Old problem' })],
+    });
+
+    updateNodeElement(el, ctx, makeNode(), {
+      diagnostics: [makeDiagnostic({ message: 'New problem' })],
+    });
+
+    expect(el.querySelector('.bases-structure-problem')?.getAttribute('title')).toBe('New problem');
+  });
+
+  it('never duplicates the marker across repeated updates with a diagnostic present each time', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+
+    updateNodeElement(el, ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+    updateNodeElement(el, ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+
+    expect(el.querySelectorAll('.bases-structure-problem')).toHaveLength(1);
+  });
+});
+
+describe('groupDiagnosticsByNode', () => {
+  it('groups diagnostics by their own node path, preserving each list order', () => {
+    const first = makeDiagnostic({ node: 'a.md', message: 'first' });
+    const second = makeDiagnostic({ node: 'a.md', message: 'second' });
+    const third = makeDiagnostic({ node: 'b.md', message: 'third' });
+
+    const byNode = groupDiagnosticsByNode([first, second, third]);
+
+    expect(byNode.get('a.md')).toStrictEqual([first, second]);
+    expect(byNode.get('b.md')).toStrictEqual([third]);
+    expect(byNode.get('nope.md')).toBeUndefined();
+  });
+
+  it('returns an empty map for no diagnostics', () => {
+    expect(groupDiagnosticsByNode([]).size).toBe(0);
   });
 });
 

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Box } from '../core/layout.js';
-import type { EdgeLabelChild, Point } from './edges.js';
-import { edgeAnchors, edgePath, planEdgeLabels } from './edges.js';
+import {
+  diagnosticEdgeSeverity,
+  edgeAnchors,
+  edgeMidpoint,
+  edgePath,
+  planEdgeLabels,
+  straightPath,
+  stubEdge,
+  type EdgeLabelChild,
+  type Point,
+} from './edges.js';
 
 const from: Box = { x: 0, y: 0, width: 100, height: 20 };
 const to: Box = { x: 200, y: 100, width: 80, height: 40 };
@@ -123,6 +132,58 @@ describe('planEdgeLabels (D2)', () => {
     const children = [child('a.md', null), child('b.md', null)];
 
     expect(planEdgeLabels(children)).toStrictEqual([]);
+  });
+});
+
+describe('diagnosticEdgeSeverity (Task 5)', () => {
+  it('maps illegal-parent and broken-link to is-error', () => {
+    expect(diagnosticEdgeSeverity('illegal-parent')).toBe('is-error');
+    expect(diagnosticEdgeSeverity('broken-link')).toBe('is-error');
+  });
+
+  it('maps inherit-mismatch to is-warning', () => {
+    expect(diagnosticEdgeSeverity('inherit-mismatch')).toBe('is-warning');
+  });
+
+  it('maps untyped (no edge of its own to mark) to null', () => {
+    expect(diagnosticEdgeSeverity('untyped')).toBeNull();
+  });
+});
+
+describe('stubEdge (Task 5)', () => {
+  it('extends right from the right-edge centre of `from` for direction: right', () => {
+    const box: Box = { x: 0, y: 0, width: 100, height: 20 };
+
+    const anchors = stubEdge(box, 'right');
+
+    expect(anchors.start).toStrictEqual({ x: 100, y: 10 });
+    expect(anchors.end.x).toBeGreaterThan(anchors.start.x);
+    expect(anchors.end.y).toBe(anchors.start.y);
+  });
+
+  it('extends down from the bottom-edge centre of `from` for direction: down', () => {
+    const box: Box = { x: 0, y: 0, width: 100, height: 20 };
+
+    const anchors = stubEdge(box, 'down');
+
+    expect(anchors.start).toStrictEqual({ x: 50, y: 20 });
+    expect(anchors.end.y).toBeGreaterThan(anchors.start.y);
+    expect(anchors.end.x).toBe(anchors.start.x);
+  });
+});
+
+describe('straightPath (Task 5)', () => {
+  it('draws a plain M/L line between two points, rounded to 2 decimals', () => {
+    expect(straightPath({ x: 0, y: 0 }, { x: 10.126, y: 5.004 })).toBe('M 0 0 L 10.13 5');
+  });
+});
+
+describe('edgeMidpoint (Task 5)', () => {
+  it('averages the start and end of a pair of anchors', () => {
+    expect(edgeMidpoint({ start: { x: 0, y: 0 }, end: { x: 10, y: 20 } })).toStrictEqual({
+      x: 5,
+      y: 10,
+    });
   });
 });
 

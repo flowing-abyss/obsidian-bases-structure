@@ -7,6 +7,7 @@
 import type * as ObsidianModule from 'obsidian';
 import { App, Menu, Modal, type TFile } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { collectDiagnostics } from '../core/diagnostics.js';
 import { parseSchema, type Schema } from '../core/schema.js';
 import type { Snapshot } from '../core/snapshot.js';
 import { buildStructure } from '../core/structure.js';
@@ -163,7 +164,8 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
       .map((file) => file.asOriginalType2__());
     const snapshot = readSnapshot(originalApp, vaultFiles, null);
     const structure = buildStructure(schema, snapshot);
-    return { schema, snapshot, structure, state };
+    const diagnostics = collectDiagnostics(schema, snapshot, structure);
+    return { schema, snapshot, structure, state, diagnostics };
   }
 
   function getInput(): RenderInput {
