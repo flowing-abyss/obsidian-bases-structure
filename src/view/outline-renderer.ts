@@ -12,6 +12,8 @@
 //         div.bases-structure-node               (from node-element.ts, unchanged)
 //         ul.bases-structure-outline-list        (children, omitted when collapsed or empty)
 
+import { displayName } from '../core/snapshot.js';
+import type { StructureNode } from '../core/structure.js';
 import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
@@ -29,6 +31,7 @@ const LIST_CLASS = 'bases-structure-outline-list';
 const ITEM_CLASS = 'bases-structure-outline-item';
 const TOGGLE_SELECTOR = '.bases-structure-toggle';
 const NODE_SELECTOR = '.bases-structure-node';
+const TITLE_SELECTOR = '.bases-structure-title';
 
 interface RenderCtx {
   readonly input: RenderInput;
@@ -51,6 +54,46 @@ function addToggle(el: HTMLElement, collapsed: boolean): void {
   el.prepend(toggle);
 }
 
+/** I8: only the outline marks a two-way edge on the node itself — the graph already draws it as
+ * an arrowed-both-ways SVG edge (see `graph-renderer.ts`'s `TREE_ARROW_MARKER_URL`), which the
+ * outline has no equivalent of (no edges at all). A small icon right before the title, not
+ * prepended to the node wholesale, so it lands after the toggle (which prepends *after* this
+ * runs) but still ahead of the title text itself. */
+function addTwoWayMarker(el: HTMLElement, node: StructureNode): void {
+  if (!node.twoWay) {
+    return;
+  }
+  const title = el.querySelector(TITLE_SELECTOR);
+  const icon = el.createSpan({ cls: 'bases-structure-two-way-icon' });
+  setSizedIcon(icon, 'arrow-left-right');
+  title?.before(icon);
+}
+
+/** I8: the outline's only way to show a node's *extra* parents (candidates the planner found but
+ * didn't pick as the primary one — see `structure.ts`'s `ExtraLink`) — the graph already draws
+ * each as its own dashed edge; the outline has no edges to draw them as, so this is a muted chip
+ * instead, the same icon-led shape as `node-element.ts`'s own `alsoIn` chip. Unlike that chip
+ * (icon-only, no text — see its own doc comment), this one's text is prefixed ("also under …")
+ * since it shares that exact same icon: without the words, the two chips would be visually
+ * identical for two different meanings sitting on the same row. */
+function addExtrasChip(
+  el: HTMLElement,
+  nodeCtx: MutableNodeElementContext,
+  node: StructureNode,
+): void {
+  if (node.extras.length === 0) {
+    return;
+  }
+  const names = node.extras.map((extra) => displayName(nodeCtx.snapshot, extra.parent));
+  const label = `also under ${names.join(', ')}`;
+  const chip = el.createSpan({
+    cls: 'bases-structure-extras',
+    attr: { title: label },
+  });
+  setSizedIcon(chip.createSpan({ cls: 'bases-structure-extras-icon' }), 'arrow-up-right');
+  chip.createSpan({ text: label });
+}
+
 /** Builds one `<li>` (node + optional nested child list) into `ul` and recurses depth-first in
  * `children` order. `ctx.seen` is a defensive cycle guard — `structure.ts` already guarantees an
  * acyclic primary-parent tree, but this renderer doesn't trust that blindly. */
@@ -68,6 +111,8 @@ function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx, isOrphanTop =
     isRoot: path === ctx.input.structure.root,
     isOrphan: isOrphanTop,
   });
+  addTwoWayMarker(nodeEl, node);
+  addExtrasChip(nodeEl, ctx.nodeCtx, node);
   const collapsed = ctx.input.state.collapsed.has(path);
   if (node.children.length > 0) {
     addToggle(nodeEl, collapsed);

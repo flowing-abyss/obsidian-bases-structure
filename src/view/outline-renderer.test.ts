@@ -365,6 +365,62 @@ describe('OutlineRenderer', () => {
     expect(hierChip).toBeNull();
   });
 
+  it('marks a two-way node with a small icon right before the title, and omits it otherwise (I8)', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const base = buildStructure(schema, snap);
+    const childNode = base.nodes.get('child.md');
+    if (childNode === undefined) throw new Error('missing child node');
+    const nodes = new Map(base.nodes).set('child.md', { ...childNode, twoWay: true });
+    const structure: Structure = { ...base, nodes };
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-twoway') });
+
+    const childEl = container.querySelector('[data-path="child.md"]');
+    const icon = childEl?.querySelector('.bases-structure-two-way-icon');
+    expect(icon).not.toBeNull();
+    const title = childEl?.querySelector('.bases-structure-title');
+    expect(icon?.nextElementSibling).toBe(title);
+    const rootEl = container.querySelector('[data-path="root.md"]');
+    expect(rootEl?.querySelector('.bases-structure-two-way-icon')).toBeNull();
+  });
+
+  it('renders the extras chip ("also under <names>") for a node with extra candidate parents, and omits it otherwise (I8)', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [
+        note('root.md'),
+        note('other.md', { basename: 'Other' }),
+        note('child.md', { propertyLinks: { up: ['root.md'] } }),
+      ],
+      { results: ['child.md', 'root.md'] },
+    );
+    const base = buildStructure(schema, snap);
+    const childNode = base.nodes.get('child.md');
+    if (childNode === undefined) throw new Error('missing child node');
+    const nodes = new Map(base.nodes).set('child.md', {
+      ...childNode,
+      extras: [{ parent: 'other.md', kind: 'property' }],
+    });
+    const structure: Structure = { ...base, nodes };
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-extras') });
+
+    const chip = container.querySelector('[data-path="child.md"] .bases-structure-extras');
+    expect(chip?.querySelector('.bases-structure-extras-icon')).not.toBeNull();
+    expect(chip?.textContent).toBe('also under Other');
+    expect(chip?.getAttribute('title')).toBe('also under Other');
+    const rootChip = container.querySelector('[data-path="root.md"] .bases-structure-extras');
+    expect(rootChip).toBeNull();
+  });
+
   it('the "+" button reuses the shared onAdd handler', () => {
     const onAdd = vi.fn();
     const { schema } = parseSchema(makeRead({ parent: 'up' }));

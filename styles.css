@@ -34,7 +34,9 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 .bases-structure .bases-structure-add .svg-icon,
 .bases-structure .bases-structure-node-menu .svg-icon,
 .bases-structure .bases-structure-toolbar-btn .svg-icon,
-.bases-structure .bases-structure-alsoin-icon .svg-icon {
+.bases-structure .bases-structure-alsoin-icon .svg-icon,
+.bases-structure .bases-structure-extras-icon .svg-icon,
+.bases-structure .bases-structure-two-way-icon .svg-icon {
   width: var(--bases-structure-icon-size);
   height: var(--bases-structure-icon-size);
 }
@@ -239,6 +241,41 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   --bases-structure-icon-size: 10px;
 }
 
+/* I8 (outline only — the graph draws these as dashed edges instead, see `graph-renderer.ts`'s
+   `drawExtraEdge`): a node's *extra* candidate parents, same icon-led chip shape as `.bases-structure-alsoin`
+   above — see `addExtrasChip`'s own doc comment for why this one's text carries an "also under …"
+   prefix the alsoIn chip doesn't. */
+.bases-structure-extras {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  margin-top: var(--size-2-1);
+  color: var(--text-faint);
+  font-size: var(--font-smallest);
+}
+
+.bases-structure-extras-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+
+  --bases-structure-icon-size: 10px;
+}
+
+/* I8 (outline only — the graph marks a two-way edge with arrowheads on both ends instead, see
+   `graph-renderer.ts`'s `TREE_ARROW_MARKER_URL`): a small icon just before the title. */
+.bases-structure-two-way-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-right: var(--size-2-1);
+  color: var(--text-faint);
+
+  --bases-structure-icon-size: 10px;
+}
+
 /* Toggle and "+" share the same 20x20 icon box (see the `.bases-structure`
    `--bases-structure-icon-size` rule above) and the same "invisible until the node is hovered/
    focused" behaviour: always in the DOM
@@ -358,7 +395,9 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 .bases-structure-node.is-drafting > .bases-structure-add,
 .bases-structure-node.is-drafting > .bases-structure-node-menu,
 .bases-structure-node.is-drafting > .bases-structure-toggle,
-.bases-structure-node.is-drafting > .bases-structure-alsoin {
+.bases-structure-node.is-drafting > .bases-structure-alsoin,
+.bases-structure-node.is-drafting > .bases-structure-extras,
+.bases-structure-node.is-drafting > .bases-structure-two-way-icon {
   display: none;
 }
 
