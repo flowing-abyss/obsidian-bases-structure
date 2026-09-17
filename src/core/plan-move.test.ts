@@ -352,6 +352,44 @@ describe('planAction — move: round 2 C1 — remove only what the action invali
       '[[user added]]',
     ]);
   });
+
+  it('moving a node directly under a grandparent it already inherited this key from is a no-op for that value, not a silent drop', () => {
+    // "child.md" currently sits under "meta.md" (via the "meta" edge) and separately inherits
+    // "category" from it — "cat1.md" (via meta.md's own category). Moving child.md so its *new*
+    // edge parent is that same cat1.md (reparenting it directly under its own grandparent) means
+    // the new parent is simultaneously "already present" and "stale" (meta.md's own contribution
+    // to this key *was* cat1.md) — edgeKeyPatch must never remove it without re-adding it.
+    const schema = schemaFrom({
+      types: {
+        Category: { tag: 'category', children: { MetaT: 'category', Hier: 'category' } },
+        MetaT: { tag: 'meta', children: { Hier: 'meta' } },
+        Hier: { tag: 'hier' },
+      },
+      inherit: ['category'],
+    });
+    const snap = snapshot([
+      note('cat1.md', { tags: ['category'] }),
+      note('meta.md', { tags: ['meta'], propertyLinks: { category: ['cat1.md'] } }),
+      note('child.md', {
+        tags: ['hier'],
+        frontmatter: { meta: ['[[meta]]'], category: ['[[cat1]]'] },
+        propertyLinks: { meta: ['meta.md'], category: ['cat1.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'child.md', parent: 'cat1.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('child.md')?.frontmatter['category']).toStrictEqual(['[[cat1]]']);
+    expect(after.notes.get('child.md')?.propertyLinks['category']).toStrictEqual(['cat1.md']);
+  });
 });
 
 describe('moveTargets', () => {

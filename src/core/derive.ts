@@ -139,7 +139,11 @@ export function edgeKeyPatch(
   stale: ReadonlySet<string>,
   newParent: string,
 ): LinkPatch {
-  const remove = [...new Set(current.filter((t) => stale.has(t)))];
+  // `newParent` is never removed even when it's also (technically) stale — reachable when it was
+  // already sitting in `current` as an *inherited* value from the old parent (e.g. moving a node
+  // directly under a grandparent it already inherited this same key's value from) — removing it
+  // without re-adding would otherwise leave the key without its new parent at all.
+  const remove = [...new Set(current.filter((t) => stale.has(t) && t !== newParent))];
   const add = current.includes(newParent) ? [] : [newParent];
   return { remove, add };
 }

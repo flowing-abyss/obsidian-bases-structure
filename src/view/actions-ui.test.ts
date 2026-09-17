@@ -1112,6 +1112,30 @@ describe('startMove', () => {
     expect(h.undo.canUndo).toBe(false);
   });
 
+  it('clears the committing lock after a failed commit, so a subsequent move is not ignored (round 2 minor 7)', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    vi.spyOn(h.app.fileManager, 'processFrontMatter').mockRejectedValueOnce(new Error('disk full'));
+
+    h.actions.startMove('meta.md', 'cat2.md');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    // Before round 2, only the *success* path was ever exercised here — a failed `commitPlan`
+    // resolving with `false` (not rejecting) still needs to clear `committing`, or every action
+    // after a failure would be silently ignored as "still applying the previous change".
+    h.actions.startMove('child.md', 'cat1.md');
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      NoticeMock.instances.some(
+        (notice) => notice.message === 'Structure: still applying the previous change',
+      ),
+    ).toBe(false);
+  });
+
   it('ignores a second move started while the first is still committing, with its own Notice (I5)', async () => {
     const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
 

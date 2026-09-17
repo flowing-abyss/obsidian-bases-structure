@@ -215,6 +215,21 @@ describe('edgeKeyPatch', () => {
 
     expect(result).toStrictEqual({ remove: ['A'], add: ['C'] });
   });
+
+  it('never removes newParent even when it is also stale (moving directly under a grandparent already inherited from)', () => {
+    // Discovered while testing round 2 minor 7: moving a node so its new parent is a value the
+    // *old* parent had already contributed to this same key (e.g. reparenting a hierarchy note
+    // straight under the category its meta-note parent was already filed under) put newParent in
+    // both `current` and `stale`. Removing it without re-adding (since it looked "already present"
+    // before the removal ran) left the key without its new parent at all.
+    const result = edgeKeyPatch(
+      ['grandparent.md'],
+      new Set(['meta.md', 'grandparent.md']),
+      'grandparent.md',
+    );
+
+    expect(result).toStrictEqual({ remove: [], add: [] });
+  });
 });
 
 describe('ruleBetween', () => {

@@ -3,6 +3,7 @@ import { App, type TFile } from 'obsidian-test-mocks/obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import type { Plan } from '../core/plan-types.js';
+import { applyPlan as simulateApplyPlan } from '../core/simulate.js';
 import type { Snapshot } from '../core/snapshot.js';
 import { applyPlan, commitPlan } from './plan-applier.js';
 import { UndoManager } from './undo-manager.js';
@@ -639,5 +640,60 @@ describe('commitPlan', () => {
 
     expect(result).toBe(false);
     expect(noticeMock).toHaveBeenCalledWith('Structure: could not apply all changes. boom');
+  });
+});
+
+describe('applyPlan parity with the simulator (round 2 minor 7)', () => {
+  it('produces the same resulting frontmatter as simulate.ts’s applyPlan for the same plan, across a links write, a listItem write, and a literal write', async () => {
+    const snap = snapshot([
+      note('old.md'),
+      note('new.md'),
+      note('n.md', {
+        tags: ['a'],
+        frontmatterTags: ['a'],
+        frontmatter: { up: ['[[old]]', '[[Not yet written]]'], tags: ['a'], status: 'todo' },
+        propertyLinks: { up: ['old.md'] },
+      }),
+    ]);
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        {
+          path: 'n.md',
+          writes: [
+            {
+              key: 'up',
+              value: { kind: 'links', remove: ['old.md'], add: ['new.md'], list: true },
+            },
+            { key: 'tags', value: { kind: 'listItem', remove: 'a', add: 'b' } },
+            { key: 'status', value: { kind: 'literal', value: 'doing' } },
+          ],
+        },
+      ],
+    };
+
+    const simulated = simulateApplyPlan(snap, plan);
+    const simulatedFrontmatter = simulated.notes.get('n.md')?.frontmatter;
+
+    const app = App.createConfigured__({
+      files: {
+        'old.md': '',
+        'new.md': '',
+        'n.md':
+          '---\nup:\n  - "[[old]]"\n  - "[[Not yet written]]"\ntags:\n  - a\nstatus: todo\n---\n',
+      },
+    });
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Parity', emptySnapshot());
+    const realFrontmatter = app.metadataCache.getFileCache(mustFile(app, 'n.md'))?.frontmatter;
+
+    expect(outcome.error).toBeNull();
+    expect(simulatedFrontmatter).toStrictEqual({
+      up: ['[[new]]', '[[Not yet written]]'],
+      tags: ['b'],
+      status: 'doing',
+    });
+    expect(realFrontmatter?.['up']).toStrictEqual(simulatedFrontmatter?.['up']);
+    expect(realFrontmatter?.['tags']).toStrictEqual(simulatedFrontmatter?.['tags']);
+    expect(realFrontmatter?.['status']).toStrictEqual(simulatedFrontmatter?.['status']);
   });
 });
