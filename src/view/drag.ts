@@ -35,10 +35,6 @@ interface DragSession {
   hoveredEl: HTMLElement | null;
 }
 
-function defaultElementAt(x: number, y: number): Element | null {
-  return document.elementFromPoint(x, y);
-}
-
 function nodeAncestor(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof HTMLElement)) {
     return null;
@@ -126,7 +122,11 @@ function beginDrag(container: HTMLElement, current: DragSession, x: number, y: n
   current.started = true;
   safePointerCapture(current.sourceEl, current.pointerId, false);
   applyStartClasses(container, current);
-  document.body.appendChild(current.ghostEl);
+  // M3: `container.doc` (the element's own owner document, or the global one when there isn't a
+  // more specific one — see `obsidian.d.ts`'s `Node.doc`), not the bare global `document` — a drag
+  // started inside an Obsidian pop-out window must show its ghost in that window, not silently
+  // append it to the main window's `<body>` where nothing in the pop-out could ever see it.
+  container.doc.body.appendChild(current.ghostEl);
   positionGhost(current.ghostEl, x, y);
 }
 
@@ -151,7 +151,11 @@ function updateHover(
  * listener it registered (on both the container and `document`) and tears down any drag still in
  * progress. */
 export function attachDrag(deps: DragDeps): () => void {
-  const elementAt = deps.elementAt ?? defaultElementAt;
+  // M3: the container's own document (a pop-out window's, when the view is open in one), not the
+  // global `document` — `document.elementFromPoint`/pointer listeners on the wrong window's
+  // document would silently never see events the pop-out's own window actually dispatches.
+  const doc = deps.container.doc;
+  const elementAt = deps.elementAt ?? ((x, y) => doc.elementFromPoint(x, y));
   const box: SessionBox = { current: null };
 
   const handlePointerDown = (event: PointerEvent): void => {
@@ -218,17 +222,17 @@ export function attachDrag(deps: DragDeps): () => void {
   };
 
   deps.container.addEventListener('pointerdown', handlePointerDown);
-  document.addEventListener('pointermove', handlePointerMove);
-  document.addEventListener('pointerup', handlePointerUp);
-  document.addEventListener('pointercancel', handlePointerCancel);
-  document.addEventListener('keydown', handleKeyDown);
+  doc.addEventListener('pointermove', handlePointerMove);
+  doc.addEventListener('pointerup', handlePointerUp);
+  doc.addEventListener('pointercancel', handlePointerCancel);
+  doc.addEventListener('keydown', handleKeyDown);
 
   return () => {
     deps.container.removeEventListener('pointerdown', handlePointerDown);
-    document.removeEventListener('pointermove', handlePointerMove);
-    document.removeEventListener('pointerup', handlePointerUp);
-    document.removeEventListener('pointercancel', handlePointerCancel);
-    document.removeEventListener('keydown', handleKeyDown);
+    doc.removeEventListener('pointermove', handlePointerMove);
+    doc.removeEventListener('pointerup', handlePointerUp);
+    doc.removeEventListener('pointercancel', handlePointerCancel);
+    doc.removeEventListener('keydown', handleKeyDown);
     endSession(box, deps.container);
   };
 }

@@ -689,3 +689,48 @@ describe('attachKeyboard — disposer', () => {
     expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 });
+
+describe('attachKeyboard — pop-out window (M3)', () => {
+  it('checks/moves focus against the container’s own document, not the global one', () => {
+    // An `<iframe>` gives jsdom a genuine second `Window`/`Document` pair — standing in for an
+    // Obsidian pop-out window — with real focus tracking (`document.implementation
+    // .createHTMLDocument()` has no `defaultView`, so it never tracks `activeElement` at all).
+    // Elements are still built with the ordinary global `createElement` (main-realm `HTMLElement`,
+    // so the module's own `instanceof HTMLElement` checks keep matching — cross-realm `instanceof`
+    // is a separate, unrelated gap Obsidian works around with its own `instanceOf()` helper, not
+    // what M3 fixes here) and only *adopted* into the iframe's document via `appendChild`, which is
+    // enough to move their `ownerDocument`/`.doc` and hence where `.focus()` actually lands.
+    const iframe = createEl('iframe');
+    document.body.appendChild(iframe);
+    const otherDoc = iframe.contentDocument;
+    if (otherDoc === null) throw new Error('Test setup error: iframe has no contentDocument');
+    const container = createDiv();
+    otherDoc.body.appendChild(container);
+    const nodeEl = createDiv();
+    nodeEl.className = 'bases-structure-node';
+    nodeEl.setAttribute('data-path', 'a.md');
+    container.appendChild(nodeEl);
+    const state = makeState();
+    const deps: KeyboardDeps = {
+      container,
+      getStructure: vi.fn(() => makeStructure()),
+      getState: vi.fn(() => state),
+      renderCollapse: vi.fn(),
+      open: vi.fn(),
+      addChild: vi.fn(),
+      addSibling: vi.fn(),
+      movePicker: vi.fn(),
+      retype: vi.fn(),
+      undo: vi.fn(),
+    };
+    attachKeyboard(deps);
+    nodeEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(otherDoc.activeElement).toBe(nodeEl);
+
+    container.dispatchEvent(keyEvent('Escape'));
+
+    // If the code still checked the global `document.activeElement`, it would see `nodeEl` as not
+    // focused at all and skip moving focus to the container entirely.
+    expect(otherDoc.activeElement).toBe(container);
+  });
+});

@@ -911,3 +911,34 @@ describe('GraphRenderer', () => {
     expect(container.querySelector('[data-path="b.md"]')).not.toBeNull();
   });
 });
+
+describe('GraphRenderer — pop-out window (M3)', () => {
+  it('checks focus against the container’s own document on a same-active-path re-render, not the global one', () => {
+    // See `keyboard.test.ts`'s identical pop-out test for why an `<iframe>` (real focus tracking)
+    // and a main-realm `container` merely *adopted* into it (keeps `instanceof HTMLElement`
+    // matching, which this module's own node-element click handling depends on elsewhere).
+    const iframe = createEl('iframe');
+    document.body.appendChild(iframe);
+    const otherDoc = iframe.contentDocument;
+    if (otherDoc === null) throw new Error('Test setup error: iframe has no contentDocument');
+    const container = createDiv();
+    otherDoc.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: null });
+    renderer.update(makeInput({ state })); // First render: nothing active yet (I9).
+
+    state.active = 'a.md';
+    renderer.update(makeInput({ state })); // Active newly set: real focus follows.
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(otherDoc.activeElement).toBe(aEl);
+
+    renderer.update(makeInput({ state })); // Same active path: only `hadFocus` can trigger refocus.
+
+    // Before M3, `hadFocus` read the *global* `document.activeElement` — never `aEl` (which was
+    // genuinely focused inside the pop-out's own document) — so the rebuilt node never got real
+    // focus back, and `otherDoc.activeElement` would have fallen back to `otherDoc.body`.
+    const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(rebuiltAEl).not.toBe(aEl);
+    expect(otherDoc.activeElement).toBe(rebuiltAEl);
+  });
+});

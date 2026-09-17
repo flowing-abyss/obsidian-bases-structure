@@ -407,3 +407,53 @@ describe('attachDrag — disposer', () => {
     }
   });
 });
+
+describe('attachDrag — pop-out window (M3)', () => {
+  it('drives pointermove/pointerup/Escape through the container’s own document, not the global one', () => {
+    // A second, detached `Document` (never attached to the real `document`'s tree) standing in
+    // for an Obsidian pop-out window's own document. `source`/`parent`/`container` are built with
+    // the ordinary global `createDiv` (main-realm elements — every event dispatched below still
+    // reaches ordinary `instanceof HTMLElement` checks) and only *adopted* into `otherDoc` by the
+    // final `appendChild` — enough to move their owner document (and hence `.doc`) without it. If
+    // `attachDrag` still listened on the global `document` (as it did before M3), none of these
+    // dispatched events would ever reach it.
+    const otherDoc = document.implementation.createHTMLDocument('pop-out');
+    const container = createDiv();
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    container.append(source, parent);
+    otherDoc.body.appendChild(container);
+    const onDrop = vi.fn();
+    const elementAt = vi.fn<(x: number, y: number) => Element | null>(() => parent);
+    const dispose = attachDrag({
+      container,
+      targetsFor: () => new Set(['parent.md']),
+      onDrop,
+      elementAt,
+    });
+
+    source.dispatchEvent(pointerEvent('pointerdown', { target: source }));
+    container.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 10 }));
+    expect(source.classList.contains('is-dragging')).toBe(true);
+    otherDoc.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(onDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md');
+    dispose();
+  });
+
+  it('appends the drag ghost into the container’s own document body, not the global document’s', () => {
+    const otherDoc = document.implementation.createHTMLDocument('pop-out');
+    const container = createDiv();
+    const source = makeNode('source.md');
+    container.appendChild(source);
+    otherDoc.body.appendChild(container);
+    const dispose = attachDrag({ container, targetsFor: () => new Set(), onDrop: vi.fn() });
+
+    source.dispatchEvent(pointerEvent('pointerdown', { target: source }));
+    container.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 10 }));
+
+    expect(otherDoc.querySelector('.bases-structure-drag-ghost')).not.toBeNull();
+    expect(document.querySelector('.bases-structure-drag-ghost')).toBeNull();
+    dispose();
+  });
+});

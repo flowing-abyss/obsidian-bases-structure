@@ -82,15 +82,22 @@ function defaultMeasure(el: HTMLElement): Size {
   };
 }
 
-function createSvgEl<K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTagNameMap[K] {
-  return document.createElementNS(SVG_NS, tag);
+// M3: takes `doc` explicitly (the container's own owner document — a pop-out window's, when the
+// view is open in one) rather than reaching for the global `document.createElementNS` — an
+// `appendChild` further up the tree would eventually *adopt* a wrong-document node into the right
+// one anyway, but building it in the right document from the start needs no such rescue.
+function createSvgEl<K extends keyof SVGElementTagNameMap>(
+  doc: Document,
+  tag: K,
+): SVGElementTagNameMap[K] {
+  return doc.createElementNS(SVG_NS, tag);
 }
 
 /** One arrow marker definition, `id` and its arrowhead's class parameterized so the tree
  * (two-way-only) and extra-edge markers can be styled with different colours in CSS without
  * duplicating the marker geometry. */
-function buildArrowMarker(id: string, arrowClass: string): SVGMarkerElement {
-  const marker = createSvgEl('marker');
+function buildArrowMarker(doc: Document, id: string, arrowClass: string): SVGMarkerElement {
+  const marker = createSvgEl(doc, 'marker');
   marker.setAttribute('id', id);
   marker.setAttribute('viewBox', '0 0 10 10');
   marker.setAttribute('refX', '8');
@@ -98,7 +105,7 @@ function buildArrowMarker(id: string, arrowClass: string): SVGMarkerElement {
   marker.setAttribute('markerWidth', '6');
   marker.setAttribute('markerHeight', '6');
   marker.setAttribute('orient', 'auto-start-reverse');
-  const arrow = createSvgEl('path');
+  const arrow = createSvgEl(doc, 'path');
   arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
   arrow.classList.add(arrowClass);
   marker.appendChild(arrow);
@@ -140,13 +147,16 @@ function buildToolbar(graphEl: HTMLElement): ToolbarElements {
 }
 
 function buildCanvas(graphEl: HTMLElement): CanvasElements {
+  const doc = graphEl.doc;
   const wrapEl = graphEl.createDiv('bases-structure-canvas-wrap');
   const canvasEl = wrapEl.createDiv('bases-structure-canvas');
-  const svgEl = createSvgEl('svg');
+  const svgEl = createSvgEl(doc, 'svg');
   svgEl.classList.add('bases-structure-edges');
-  const defsEl = createSvgEl('defs');
-  defsEl.appendChild(buildArrowMarker(TREE_ARROW_MARKER_ID, 'bases-structure-arrowhead-tree'));
-  defsEl.appendChild(buildArrowMarker(EXTRA_ARROW_MARKER_ID, 'bases-structure-arrowhead-extra'));
+  const defsEl = createSvgEl(doc, 'defs');
+  defsEl.appendChild(buildArrowMarker(doc, TREE_ARROW_MARKER_ID, 'bases-structure-arrowhead-tree'));
+  defsEl.appendChild(
+    buildArrowMarker(doc, EXTRA_ARROW_MARKER_ID, 'bases-structure-arrowhead-extra'),
+  );
   svgEl.appendChild(defsEl);
   canvasEl.appendChild(svgEl);
   const nodesEl = canvasEl.createDiv('bases-structure-nodes');
@@ -275,7 +285,10 @@ export class GraphRenderer implements StructureRenderer {
     // `data-path` is unchanged (e.g. a collapse/expand `refresh()`) — without this, focus would
     // silently fall back to `document.body`, and the next real keydown would never reach the
     // container's delegated listener again (see `applyActiveState`).
-    const hadFocus = this.nodesEl.contains(document.activeElement);
+    // M3: `this.container.doc` (its own owner document — a pop-out window's, when the view is
+    // open in one), not the global `document`, which would never match focus genuinely inside a
+    // pop-out and so never re-focus a rebuilt node there.
+    const hadFocus = this.nodesEl.contains(this.container.doc.activeElement);
     if (!this.hasRenderedOnce) {
       this.lastActivePath = input.state.active;
       this.hasRenderedOnce = true;
@@ -456,7 +469,7 @@ export class GraphRenderer implements StructureRenderer {
       if (fromBox === undefined || toBox === undefined) {
         continue;
       }
-      const path = createSvgEl('path');
+      const path = createSvgEl(this.container.doc, 'path');
       path.classList.add('bases-structure-edge');
       path.setAttribute('d', edgePath(fromBox, toBox));
       if (entry.node.twoWay) {
@@ -483,7 +496,7 @@ export class GraphRenderer implements StructureRenderer {
     if (fromBox === undefined || toBox === undefined) {
       return;
     }
-    const path = createSvgEl('path');
+    const path = createSvgEl(this.container.doc, 'path');
     path.classList.add('bases-structure-edge', 'is-extra');
     path.setAttribute('d', edgePath(fromBox, toBox));
     path.setAttribute('marker-end', EXTRA_ARROW_MARKER_URL);

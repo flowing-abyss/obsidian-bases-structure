@@ -778,4 +778,37 @@ describe('OutlineRenderer', () => {
     container.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(openLinkText).not.toHaveBeenCalled();
   });
+
+  describe('pop-out window (M3)', () => {
+    it('checks focus against the container’s own document on a same-active-path re-render, not the global one', () => {
+      // See `keyboard.test.ts`'s identical pop-out test for why an `<iframe>` (real focus
+      // tracking) and a main-realm `container` merely *adopted* into it.
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot(
+        [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+        { results: ['child.md', 'root.md'] },
+      );
+      const structure = buildStructure(schema, snap);
+      const iframe = createEl('iframe');
+      document.body.appendChild(iframe);
+      const otherDoc = iframe.contentDocument;
+      if (otherDoc === null) throw new Error('Test setup error: iframe has no contentDocument');
+      const container = createDiv();
+      otherDoc.body.appendChild(container);
+      const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+      const state = getUiState('outline-popout');
+      renderer.update({ schema, snapshot: snap, structure, state }); // First render: I9.
+
+      state.active = 'child.md';
+      renderer.update({ schema, snapshot: snap, structure, state }); // Active newly set: focus follows.
+      const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+      expect(otherDoc.activeElement).toBe(childEl);
+
+      renderer.update({ schema, snapshot: snap, structure, state }); // Same path: only hadFocus can trigger refocus.
+
+      const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+      expect(rebuiltChildEl).not.toBe(childEl);
+      expect(otherDoc.activeElement).toBe(rebuiltChildEl);
+    });
+  });
 });

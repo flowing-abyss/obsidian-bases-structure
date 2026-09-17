@@ -141,8 +141,11 @@ export class OutlineRenderer implements StructureRenderer {
 
   update(input: RenderInput): void {
     // See the graph renderer's identical capture in its own `update()` for why: this has to be
-    // read before the rebuild below destroys whatever real DOM focus is currently inside.
-    const hadFocus = this.outlineEl.contains(document.activeElement);
+    // read before the rebuild below destroys whatever real DOM focus is currently inside. M3:
+    // `this.containerEl.doc` (its own owner document — a pop-out window's, when the view is open
+    // in one), not the global `document`, which would never match focus genuinely inside a
+    // pop-out and so never re-focus a rebuilt node there.
+    const hadFocus = this.outlineEl.contains(this.containerEl.doc.activeElement);
     if (!this.hasRenderedOnce) {
       this.lastActivePath = input.state.active;
       this.hasRenderedOnce = true;

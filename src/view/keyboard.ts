@@ -197,7 +197,11 @@ function setActive(deps: KeyboardDeps, path: string | null): void {
     focusActiveNode(activeEl);
     return;
   }
-  if (deps.container.contains(document.activeElement)) {
+  // M3: `deps.container.doc` (its own owner document — a pop-out window's, when the view is open
+  // in one), not the global `document` — otherwise this always read the *main* window's
+  // `activeElement`, which is never the container even when focus genuinely is inside it, just in
+  // a different window.
+  if (deps.container.contains(deps.container.doc.activeElement)) {
     focusingContainerProgrammatically.add(deps.container);
     deps.container.focus({ preventScroll: true });
     focusingContainerProgrammatically.delete(deps.container);
