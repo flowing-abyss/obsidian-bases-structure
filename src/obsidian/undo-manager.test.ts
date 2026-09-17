@@ -263,11 +263,22 @@ describe('UndoManager', () => {
   });
 
   it('reinserts a whole removed line at its recorded index, exactly', async () => {
+    // Recorded as if cut from '# H\n\n- [[Child]]\n- [[Other]]\n' (body-link.test.ts's own first
+    // example): seamBefore is everything before the cut, seamAfter the line that followed it.
     const app = App.createConfigured__({ files: { 'note.md': '# H\n\n- [[Other]]\n' } });
     const undo = new UndoManager(app.asOriginalType__());
     const transaction: Transaction = {
       label: 'Body edit',
-      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 5 }],
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'note.md',
+          removed: '- [[Child]]\n',
+          index: 5,
+          seamBefore: '# H\n\n',
+          seamAfter: '- [[Other]]\n',
+        },
+      ],
     };
     undo.push(transaction);
 
@@ -284,7 +295,16 @@ describe('UndoManager', () => {
     const undo = new UndoManager(app.asOriginalType__());
     const transaction: Transaction = {
       label: 'Body edit',
-      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 0 }],
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'note.md',
+          removed: '- [[Child]]\n',
+          index: 0,
+          seamBefore: '',
+          seamAfter: '- [[Other]]\n',
+        },
+      ],
     };
     undo.push(transaction);
 
@@ -295,11 +315,21 @@ describe('UndoManager', () => {
   });
 
   it('reinserts a removed bare mid-sentence mention at its recorded index, exactly', async () => {
+    // Recorded as if cut from 'See [[Child]] for details.\n'.
     const app = App.createConfigured__({ files: { 'note.md': 'See for details.\n' } });
     const undo = new UndoManager(app.asOriginalType__());
     const transaction: Transaction = {
       label: 'Body edit',
-      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '[[Child]] ', index: 4 }],
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'note.md',
+          removed: '[[Child]] ',
+          index: 4,
+          seamBefore: 'See ',
+          seamAfter: 'for details.\n',
+        },
+      ],
     };
     undo.push(transaction);
 
@@ -310,13 +340,23 @@ describe('UndoManager', () => {
   });
 
   it('appends the removed line at the end and reports the note skipped once the seam has drifted', async () => {
-    // The recorded index (5) used to be a line boundary right after a blank line; that blank
-    // line is gone now, so splicing "removed" back in there would land mid-line instead.
+    // Recorded against the same original as the first test above, but the file at undo time has
+    // lost the blank line the index used to sit right after — splicing "removed" back in there
+    // would land mid-line instead, so the seam check (seamBefore no longer matches) must catch it.
     const app = App.createConfigured__({ files: { 'note.md': '# H\n- [[Other]]\n' } });
     const undo = new UndoManager(app.asOriginalType__());
     const transaction: Transaction = {
       label: 'Body edit drift',
-      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 5 }],
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'note.md',
+          removed: '- [[Child]]\n',
+          index: 5,
+          seamBefore: '# H\n\n',
+          seamAfter: '- [[Other]]\n',
+        },
+      ],
     };
     undo.push(transaction);
 
@@ -331,7 +371,16 @@ describe('UndoManager', () => {
     const undo = new UndoManager(app.asOriginalType__());
     const transaction: Transaction = {
       label: 'Body edit oob',
-      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 50 }],
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'note.md',
+          removed: '- [[Child]]\n',
+          index: 50,
+          seamBefore: '',
+          seamAfter: '',
+        },
+      ],
     };
     undo.push(transaction);
 
@@ -341,12 +390,56 @@ describe('UndoManager', () => {
     expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('X\n- [[Child]]\n');
   });
 
+  it('reports a conflict instead of splicing mid-word when an inline removal’s note was edited before undo, even with the index still in bounds', async () => {
+    // Recorded as if cut from 'See [[Child]] for details.\n' (same capture as the mid-sentence
+    // test above), but the note was rewritten entirely before undo ran. The old index (4) is
+    // still comfortably inside the new, unrelated text — a bounds-only check would silently
+    // splice "removed" into the middle of "Completely", corrupting the word. The seam context
+    // (recorded "See "/"for details.\n") no longer matches, so this must be reported as a
+    // conflict instead, leaving the edited note's own text untouched apart from the fallback
+    // append.
+    const app = App.createConfigured__({
+      files: { 'note.md': 'Completely different note content now.\n' },
+    });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit conflict',
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'note.md',
+          removed: '[[Child]] ',
+          index: 4,
+          seamBefore: 'See ',
+          seamAfter: 'for details.\n',
+        },
+      ],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit conflict', skipped: ['note.md'] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe(
+      'Completely different note content now.\n[[Child]] \n',
+    );
+  });
+
   it('skips a bodyEdit step when the note it targeted no longer exists', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());
     const transaction: Transaction = {
       label: 'Body edit gone',
-      steps: [{ kind: 'bodyEdit', path: 'gone.md', removed: '- [[Child]]\n', index: 0 }],
+      steps: [
+        {
+          kind: 'bodyEdit',
+          path: 'gone.md',
+          removed: '- [[Child]]\n',
+          index: 0,
+          seamBefore: '',
+          seamAfter: '',
+        },
+      ],
     };
     undo.push(transaction);
 

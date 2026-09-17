@@ -110,19 +110,18 @@ async function revertAppend(app: App, step: AppendStep): Promise<boolean> {
   return handled;
 }
 
-/** Whether `step.removed` can be spliced back into `data` at `step.index`: the index must still
- * be inside the file, and — for a removal that took the whole line (`removed` ends in `"\n"`) —
- * it must still sit at a real line boundary, not somewhere a later edit joined into the middle of
- * another line. An inline (mid-sentence) removal has no comparably strong invariant to check
- * beyond staying in bounds. */
+/** Whether `step.removed` can be spliced back into `data` at `step.index`: the text immediately
+ * flanking that position must still read exactly as it did when the cut was made
+ * (`step.seamBefore`/`step.seamAfter`, captured at cut time) — the only way to tell a byte offset
+ * that still points at the same seam from one a later edit shifted into the middle of something
+ * else entirely, whether that seam is a line boundary or the middle of a sentence. */
 function seamIntact(data: string, step: BodyEditStep): boolean {
   if (step.index > data.length) {
     return false;
   }
-  if (!step.removed.endsWith('\n')) {
-    return true;
-  }
-  return step.index === 0 || data[step.index - 1] === '\n';
+  const before = data.slice(Math.max(0, step.index - step.seamBefore.length), step.index);
+  const after = data.slice(step.index, step.index + step.seamAfter.length);
+  return before === step.seamBefore && after === step.seamAfter;
 }
 
 /** `removed` as the last thing in the file — the fallback once the seam it was cut from no

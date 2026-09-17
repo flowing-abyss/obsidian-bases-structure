@@ -5,7 +5,7 @@
 
 import type { App, TFile } from 'obsidian';
 import { Notice } from 'obsidian';
-import { removeBodyLink } from '../core/body-link.js';
+import { removeBodyLink, type BodyLinkRemoval } from '../core/body-link.js';
 import { deepEqual } from '../core/deep-equal.js';
 import type { KeyWrite, Plan } from '../core/plan-types.js';
 import { folderOf, lastSegmentBasename, type Snapshot } from '../core/snapshot.js';
@@ -31,6 +31,11 @@ export type TransactionStep =
       readonly path: string;
       readonly removed: string;
       readonly index: number;
+      /** The text immediately surrounding the cut at the time it was made — undo's only way to
+       * tell a byte offset that still points at the same seam from one a later edit shifted
+       * somewhere else entirely (e.g. mid-word); `index` alone carries no such guarantee. */
+      readonly seamBefore: string;
+      readonly seamAfter: string;
     };
 
 export interface Transaction {
@@ -270,6 +275,29 @@ function linktextsFor(app: App, target: string, sourcePath: string): readonly st
   ];
 }
 
+interface BodyEditCut extends BodyLinkRemoval {
+  readonly seamBefore: string;
+  readonly seamAfter: string;
+}
+
+/** How much text on each side of a cut gets remembered for undo's seam check — enough to catch a
+ * realistic edit near the removal, small enough that an unrelated change further down the same
+ * line doesn't spuriously read as a conflict. */
+const SEAM_CONTEXT = 20;
+
+/** `cut` plus the text immediately flanking it in `data` (`data`'s pre-removal state), clamped to
+ * the file's own bounds — every removal (whole-line or inline) gets the same seam context, since
+ * `index` alone gives undo no way to tell a stale-but-in-bounds offset from a genuinely intact
+ * one. */
+function withSeamContext(data: string, cut: BodyLinkRemoval): BodyEditCut {
+  const cutEnd = cut.index + cut.removed.length;
+  return {
+    ...cut,
+    seamBefore: data.slice(Math.max(0, cut.index - SEAM_CONTEXT), cut.index),
+    seamAfter: data.slice(cutEnd, cutEnd + SEAM_CONTEXT),
+  };
+}
+
 async function applyBodyLinkRemoval(
   app: App,
   removal: Plan['bodyLinkRemovals'][number],
@@ -280,10 +308,11 @@ async function applyBodyLinkRemoval(
   // A plain `let` reassigned only inside the closure below keeps TypeScript's outer-scope
   // narrowing pinned to its initial value; a wrapper object sidesteps that (`no-unnecessary-
   // condition`/`no-unsafe-assignment` false positives).
-  const outcome: { cut: ReturnType<typeof removeBodyLink> } = { cut: null };
+  const outcome: { cut: BodyEditCut | null } = { cut: null };
   await app.vault.process(file, (data: string) => {
-    outcome.cut = removeBodyLink(data, linktexts);
-    return outcome.cut === null ? data : outcome.cut.text;
+    const cut = removeBodyLink(data, linktexts);
+    outcome.cut = cut === null ? null : withSeamContext(data, cut);
+    return cut === null ? data : cut.text;
   });
   if (outcome.cut === null) {
     throw new Error(
@@ -295,6 +324,8 @@ async function applyBodyLinkRemoval(
     path: removal.path,
     removed: outcome.cut.removed,
     index: outcome.cut.index,
+    seamBefore: outcome.cut.seamBefore,
+    seamAfter: outcome.cut.seamAfter,
   });
 }
 

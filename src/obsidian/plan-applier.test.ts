@@ -607,7 +607,14 @@ describe('applyPlan — body link removals', () => {
     expect(outcome.error).toBeNull();
     expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('- [[Other]]\n');
     expect(outcome.transaction.steps).toStrictEqual([
-      { kind: 'bodyEdit', path: 'parent.md', removed: '- [[Child]]\n', index: 0 },
+      {
+        kind: 'bodyEdit',
+        path: 'parent.md',
+        removed: '- [[Child]]\n',
+        index: 0,
+        seamBefore: '',
+        seamAfter: '- [[Other]]\n',
+      },
     ]);
   });
 
