@@ -466,9 +466,22 @@ export class GraphRenderer implements StructureRenderer {
     }
   }
 
+  /** Also gives `wrapEl` its natural, *unscaled* size (zoom 1), not just `canvasEl`/the SVG —
+   * `wrapEl` otherwise only ever gets a size from `applyZoom`, called after `applyAutoFit`
+   * (`update()`'s own ordering). `.bases-structure-graph` has no explicit height of its own in
+   * CSS; it shrink-wraps to its in-flow content, and `.bases-structure-canvas` is absolutely
+   * positioned (so it never counts) — meaning `wrapEl` is the *only* thing that gives the
+   * container a real, content-driven height at all. Without this, `applyAutoFit`'s `clientHeight`
+   * read is a chicken-and-egg bug: on the very first render `wrapEl` has no size yet, so the
+   * container reports a tiny (near-toolbar-only) height, the computed fit ratio comes out far
+   * below `ZOOM_MIN`, and — since auto-fit only gets one attempt per direction — that wrong zoom
+   * sticks forever. Harmless to set here even though `applyZoom` immediately overwrites it a few
+   * lines later in `update()`: nothing paints between the two synchronous calls. */
   private applyCanvasSize(layoutResult: LayoutResult): void {
     this.canvasEl.style.width = `${layoutResult.width}px`;
     this.canvasEl.style.height = `${layoutResult.height}px`;
+    this.wrapEl.style.width = `${layoutResult.width}px`;
+    this.wrapEl.style.height = `${layoutResult.height}px`;
     this.svgEl.setAttribute('width', String(layoutResult.width));
     this.svgEl.setAttribute('height', String(layoutResult.height));
   }

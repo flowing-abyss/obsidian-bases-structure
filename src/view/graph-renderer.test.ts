@@ -695,6 +695,41 @@ describe('GraphRenderer', () => {
     expect(state.zoom).toBeCloseTo(0.5);
   });
 
+  it('computes a sane auto-fit zoom even when the container shrink-wraps to the canvas wrapper (real-browser CSS quirk)', () => {
+    // In a real browser, `.bases-structure-graph` has no explicit height of its own — it
+    // shrink-wraps to its in-flow content (just the toolbar; `.bases-structure-canvas` is
+    // absolutely positioned, so it never counts) *plus* `.bases-structure-canvas-wrap`, which
+    // only ever gets an explicit size from `applyZoom`. Reading `clientHeight` for auto-fit
+    // *before* giving the wrapper its natural (unscaled) size is a chicken-and-egg bug: on the
+    // very first render the wrapper has no size yet, so the container reports a tiny height,
+    // `computeFitZoom` computes a bogus ratio far below `ZOOM_MIN`, and — since auto-fit only gets
+    // one attempt per direction — that wrong zoom sticks forever (only direction: down actually
+    // reads height at all, per U2, so this was invisible for the default direction: right).
+    // jsdom has no real layout engine, so `clientHeight` is faked everywhere else in this file as
+    // a static number; here it's faked as a *function* of the wrapper's own current inline
+    // height instead, to model that shrink-wrap relationship and actually exercise the bug.
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const graphEl = must(container.querySelector<HTMLElement>('.bases-structure-graph'));
+    const wrapEl = must(container.querySelector<HTMLElement>('.bases-structure-canvas-wrap'));
+    const TOOLBAR_FLOW_HEIGHT = 40;
+    Object.defineProperty(graphEl, 'clientWidth', { value: 200, configurable: true });
+    Object.defineProperty(graphEl, 'clientHeight', {
+      configurable: true,
+      get: () =>
+        TOOLBAR_FLOW_HEIGHT + parseFloat(wrapEl.style.height === '' ? '0' : wrapEl.style.height),
+    });
+    const state = makeState();
+
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    // Layout is 124x140 unscaled (see the "direction: down" describe block below): a 200-wide,
+    // "container that grows with its own content" box comfortably fits both axes at 100% once
+    // the wrapper is measured at its real, unscaled size — not clamped down to ZOOM_MIN (0.3),
+    // which is exactly what the unfixed chicken-and-egg read produced.
+    expect(state.zoom).toBe(1);
+  });
+
   it('exposes aria-labels for the three toolbar controls with no leftover text labels', () => {
     const container = createDiv();
     expect(new GraphRenderer(container, makeCtx(), { measure: fixedMeasure })).toBeInstanceOf(
