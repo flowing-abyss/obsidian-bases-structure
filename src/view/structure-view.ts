@@ -176,13 +176,16 @@ export class StructureView extends BasesView {
 
   /** Wired as `ActionsDeps.onDraftClosed`: runs the render `onDataUpdated` deferred, exactly once,
    * the moment a draft closes for any reason — including the view's own `onunload` (`actions`'s
-   * `destroy()` also funnels through `cancelDraft`), so a pending render is never silently lost. */
-  private flushPendingRender(): void {
+   * `destroy()` also funnels through `cancelDraft`), so a pending render is never silently lost.
+   * Returns whether it actually rendered (I6) — `StructureActions.runCommit` uses this to skip its
+   * own following `refresh()` when this already did the exact same work moments earlier. */
+  private flushPendingRender(): boolean {
     if (!this.pendingRender) {
-      return;
+      return false;
     }
     this.pendingRender = false;
     this.safeRender();
+    return true;
   }
 
   /** Parses the schema and re-reads the snapshot/structure straight from the vault's current
@@ -276,9 +279,7 @@ export class StructureView extends BasesView {
       refresh: () => {
         this.safeRender();
       },
-      onDraftClosed: () => {
-        this.flushPendingRender();
-      },
+      onDraftClosed: () => this.flushPendingRender(),
     });
     return this.actions;
   }

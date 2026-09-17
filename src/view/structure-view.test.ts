@@ -390,6 +390,33 @@ describe('StructureView — deferred render while a create draft is open', () =>
     expect(reopenedInput).not.toBe(input);
   });
 
+  it('merges a flushed deferred render with the commit’s own refresh into one, not two (I6)', async () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = openDraftView(app);
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    // An unrelated data update arrives while the draft is still open: deferred (the carried-over
+    // fix this describe block is named for), not applied yet.
+    view.onDataUpdated();
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+
+    // Before this fix: closing the draft flushed the deferred render (1), and `runCommit`'s own
+    // explicit `refresh()` ran again immediately after (2) — same schema/snapshot/structure both
+    // times (nothing else runs in between), pure waste. I6 skips the second one.
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+  });
+
   it('does not lose a pending render when the view unloads with the draft still open', () => {
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);

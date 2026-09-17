@@ -1105,10 +1105,44 @@ describe('hasOpenDraft / onDraftClosed — carried-over fix: keep an open create
       expect(h.refresh).toHaveBeenCalled();
     });
 
-    // The chain reopens a sibling draft after the commit, so a draft is open again by the time
-    // this assertion runs — onDraftClosed must still have fired exactly once for the draft that
-    // actually closed (the committed one), not for the freshly reopened one.
+    // onDraftClosed fires once for the draft that actually closed (the committed one) — the chain
+    // itself only reopens a sibling draft once a later render actually contains the created path
+    // (I7), not synchronously here, so there's nothing else that could have fired it again yet.
     expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips its own refresh() when closing the committed draft already rendered (I6 — merges the two into one)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+    // Simulates a data update deferred while the draft was open, now flushed by this commit's own
+    // close of it — `onDraftClosed` returning `true` (something else already rendered) should make
+    // `runCommit` skip its own following `refresh()` as redundant.
+    h.onDraftClosed.mockReturnValueOnce(true);
+
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+    });
+
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('still calls its own refresh() when closing the committed draft did not render anything (the ordinary case)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.onDraftClosed).toHaveBeenCalledTimes(1);
+    });
+
+    expect(h.refresh).toHaveBeenCalledTimes(1);
   });
 
   it('calls onDraftClosed when destroy() closes an open draft, and not when nothing is open', () => {

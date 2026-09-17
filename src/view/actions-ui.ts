@@ -45,8 +45,11 @@ export interface ActionsDeps {
    * while one is already open) does *not* fire this: it's a single continuous draft session from
    * `StructureView`'s point of view, not a close, so the deferred render must stay deferred (see
    * `openDraft`'s own note). `StructureView` uses this to flush a data-driven render it deferred
-   * while the draft was open (see the class doc comment). */
-  readonly onDraftClosed: () => void;
+   * while the draft was open (see the class doc comment). Returns whether this call itself
+   * performed that flush (I6) — `runCommit` uses it to skip its own following `refresh()` when
+   * this already did the exact same work moments earlier, against the exact same data (nothing
+   * else can run in between — see `runCommit`'s own doc comment). */
+  readonly onDraftClosed: () => boolean;
 }
 
 type ChainMode = 'enter' | 'tab';
@@ -261,12 +264,15 @@ export class StructureActions {
   }
 
   /** Drops any create still waiting for its render (I7) — called at the start of every other
-   * action (a new create/move/retype/undo) and from `teardownDraft` (a draft closing, whether via
-   * `cancelDraft` or `openDraft` superseding it), per the decision's "the next user action or draft
-   * close cancels it" rule. Does *not* run from inside `runCommit` itself: that method calls
-   * `cancelDraft`/`teardownDraft` for the draft it is *itself* finishing, strictly before setting
-   * `pendingCreate` for that same commit — clearing here first and assigning after keeps that
-   * self-close from wiping out the very state it's about to create. */
+   * action (a new create/move/retype/undo) and from `teardownDraft(true)` (an *external* draft
+   * close: `cancelDraft` — Escape, blur, `destroy()` — or `openDraft` superseding it), per the
+   * decision's "the next user action or draft close cancels it" rule. `runCommit`'s own close of
+   * the draft it just finished goes through `teardownDraft(false)` instead (via
+   * `closeCommittedDraft`) specifically to skip this: by the time that runs, either a fresh
+   * `pendingCreate` for *this* commit is already sitting in `this.pendingCreate` (set immediately
+   * before, so a render this close flushes can see it — see `runCommit`), or nothing was created
+   * and there is nothing to clear anyway (any older `pendingCreate` was already dropped back when
+   * *this* draft was first opened, via `startCreate`/`openDraft`'s own `teardownDraft(true)`). */
   private clearPendingCreate(): void {
     this.pendingCreate = null;
   }
@@ -287,23 +293,42 @@ export class StructureActions {
     this.showTypeMenu(parentPath, anchorEl, options, event);
   }
 
-  /** The externally-visible close path for a draft — Escape, blur, a successful/failed commit, and
-   * `destroy()` all funnel through this. Unlike `teardownDraft` (which this wraps), it reports the
+  /** The externally-visible close path for a draft — Escape, blur, and `destroy()` funnel through
+   * this (a successful/failed commit closes its own draft through `closeCommittedDraft` instead —
+   * see its own doc comment for why). Unlike `teardownDraft` (which this wraps), it reports the
    * close via `onDraftClosed` — the no-op early return when nothing is open matters here too: it
    * keeps `onDraftClosed` from firing (and `StructureView` from rendering) when there was nothing
    * to close. `openDraft` deliberately does *not* call this when it supersedes an already-open
    * draft — see its own note. */
   cancelDraft(): void {
-    if (this.teardownDraft()) {
+    if (this.teardownDraft(true)) {
       this.deps.onDraftClosed();
     }
   }
 
+  /** `runCommit`'s own close of the draft it just finished (I6) — unlike `cancelDraft` (every
+   * *external* close), this must not clear `pendingCreate` via `teardownDraft`: the caller has
+   * already set a fresh one for *this* commit, immediately before calling this, precisely so a
+   * render this triggers (a data update deferred while the draft was open, now flushed) can
+   * complete the highlight/chain right there — clearing it here would wipe that out before any
+   * render gets a chance to see it. Still reports the close via `onDraftClosed`, and returns
+   * whether that itself rendered, so `runCommit` can skip a redundant `refresh()` right after. */
+  private closeCommittedDraft(): boolean {
+    if (this.teardownDraft(false)) {
+      return this.deps.onDraftClosed();
+    }
+    return false;
+  }
+
   /** Removes an open draft's DOM/listeners and clears `this.draft`, without reporting the close —
-   * the shared teardown `cancelDraft` and `openDraft` both build on. Returns whether a draft was
-   * actually open (so callers that need to notify can tell a real close from a no-op). */
-  private teardownDraft(): boolean {
-    this.clearPendingCreate();
+   * the shared teardown `cancelDraft` and `openDraft` both build on (`closeCommittedDraft` is the
+   * one exception that needs the two steps split — see its own doc comment). Returns whether a
+   * draft was actually open (so callers that need to notify can tell a real close from a no-op).
+   * `clearPending` is `false` only from `closeCommittedDraft`; every other caller passes `true`. */
+  private teardownDraft(clearPending: boolean): boolean {
+    if (clearPending) {
+      this.clearPendingCreate();
+    }
     const draft = this.draft;
     if (draft === null) {
       return false;
@@ -541,7 +566,7 @@ export class StructureActions {
    * detaching `anchorEl` before this method gets to use it (the deferred render only makes sense
    * once the *whole* session actually ends, via `cancelDraft`/`destroy`). */
   private openDraft(parentPath: string, anchorEl: HTMLElement, type: string): void {
-    this.teardownDraft();
+    this.teardownDraft(true);
     const target = this.resolveAnchor(anchorEl, parentPath);
     this.lastRoot = target.closest<HTMLElement>(ROOT_SELECTOR) ?? this.lastRoot;
     target.classList.add(DRAFTING_CLASS);
@@ -663,31 +688,36 @@ export class StructureActions {
     this.committing = false;
     // Captured before this method's own cleanup below touches `this.draft`: if the user cancelled
     // this draft (Escape/blur) or opened a different one while the commit was in flight, `draft`
-    // no longer matches, and chaining has nothing sensible to reopen against. `cancelDraft`
-    // operates on whatever `this.draft` currently is, so it must only run when that's still this
-    // commit's own draft — otherwise it would tear down a newer draft the user has since opened.
+    // no longer matches, and chaining has nothing sensible to reopen against.
     const wasCurrent = this.isCurrentDraft(draft);
-    if (wasCurrent) {
-      this.cancelDraft();
+    // Set *before* closing the draft below (I6/I7): closing can itself trigger a render (a data
+    // update deferred while the draft was open, now flushed by `closeCommittedDraft`) — this has
+    // to already be in place for that render's own `resolveFocus`/`completePending` to have any
+    // chance of completing the highlight/chain right there, instead of leaving it stranded until
+    // some later, possibly-never-arriving `onDataUpdated`. Chaining only when this draft was still
+    // the one on screen when the commit settled (`wasCurrent`) — a superseded draft already moved
+    // the user's attention elsewhere, so nothing should reopen on their behalf; the `is-new`
+    // highlight itself still applies either way. Nothing to set when the commit failed — no note
+    // exists to highlight or chain from.
+    if (applied) {
+      this.pendingCreate = {
+        path: result.focus,
+        chain: wasCurrent ? { mode, parentPath: draft.parentPath, type: draft.type } : null,
+      };
     }
-    this.deps.refresh();
+    // I6: skip the explicit `refresh()` below when closing the draft already rendered — that
+    // render (`closeCommittedDraft`'s flush, if one was owed) used the exact same
+    // schema/snapshot/structure this `refresh()` would produce a moment later (nothing else runs
+    // in between: no `await` separates them), so running it again would just redo the same
+    // `buildStructure` for a result that can't have changed.
+    const alreadyRendered = wasCurrent && this.closeCommittedDraft();
+    if (!alreadyRendered) {
+      this.deps.refresh();
+    }
     if (!applied) {
       return;
     }
     this.showUndoNotice(`Created "${name}"`);
-    // Kept pending (I7), not completed here and now: this `refresh()` almost never has Bases' own
-    // data caught up with the note `commitPlan` just wrote, so `result.focus` isn't in the
-    // `Structure` it just rendered from yet — `resolveFocus`/`completePending` finish the
-    // highlight/chain against whichever later render (from `onDataUpdated`) first actually
-    // contains it. `cancelDraft` above already ran (and, via `teardownDraft`, already cleared any
-    // *older* `pendingCreate`) before this assignment, so this one survives it. Chaining only when
-    // this draft was still the one on screen when the commit settled (`wasCurrent`) — a superseded
-    // draft already moved the user's attention elsewhere, so nothing should reopen on their behalf;
-    // the `is-new` highlight itself still applies either way.
-    this.pendingCreate = {
-      path: result.focus,
-      chain: wasCurrent ? { mode, parentPath: draft.parentPath, type: draft.type } : null,
-    };
   }
 
   private continueChain(ctx: {
