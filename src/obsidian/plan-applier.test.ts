@@ -320,6 +320,63 @@ describe('applyPlan — changes', () => {
     expect(cache?.frontmatter?.['meta']).toStrictEqual(['[[M2]]', '[[Random]]', '[[WrongType]]']);
     expect(cache?.frontmatter?.['category']).toStrictEqual(['[[C2]]', '[[ExtCat]]', '[[UserCat]]']);
   });
+
+  it('round 4: moving a note whose old edge to an untyped host was through an inherited key keeps the host’s own value for that key, and undo restores it', async () => {
+    // MOC is an untyped host — its own "category" ([[Knowledge]]) was never inherited by m.md;
+    // m.md's link to MOC *is* the edge itself (both go through "category", which also happens to
+    // be a schema.inherit key). Moving m.md must remove only MOC, never Knowledge.
+    const app = App.createConfigured__({
+      files: {
+        'Knowledge.md': '',
+        'MOC.md': '---\ncategory: "[[Knowledge]]"\n---\n',
+        'C2.md': '---\ntags: [category]\n---\n',
+        'm.md': '---\ntags: [meta]\ncategory:\n  - "[[MOC]]"\n  - "[[Knowledge]]"\n---\n',
+      },
+    });
+    const schema = parseSchema(
+      (key: string) =>
+        ({
+          inherit: ['category'],
+          types: {
+            Category: { tag: 'category', children: { MetaT: 'category' } },
+            MetaT: { tag: 'meta' },
+          },
+        })[key],
+    ).schema;
+    const env = { defaultFolder: '', exists: (): boolean => false };
+    const realFile = (path: string): RealTFile => mustFile(app, path).asOriginalType2__();
+    const originalApp = app.asOriginalType__();
+    const undo = new UndoManager(originalApp);
+    const initialSnapshot = readSnapshot(
+      originalApp,
+      [realFile('C2.md'), realFile('m.md')],
+      realFile('MOC.md'),
+    );
+
+    const result = planAction(
+      schema,
+      initialSnapshot,
+      { kind: 'move', node: 'm.md', parent: 'C2.md' },
+      env,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const outcome = await applyPlan(originalApp, result.plan, 'Move', initialSnapshot);
+
+    expect(outcome.error).toBeNull();
+    if (outcome.transaction.steps.length > 0) {
+      undo.push(outcome.transaction);
+    }
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'm.md'));
+    expect(cache?.frontmatter?.['category']).toStrictEqual(['[[C2]]', '[[Knowledge]]']);
+
+    const undoResult = await undo.undo();
+
+    expect(undoResult.skipped).toStrictEqual([]);
+    const restoredCache = app.metadataCache.getFileCache(mustFile(app, 'm.md'));
+    expect(restoredCache?.frontmatter?.['category']).toStrictEqual(['[[MOC]]', '[[Knowledge]]']);
+  });
 });
 
 describe('applyPlan — phantom steps (round 2 minor 5)', () => {

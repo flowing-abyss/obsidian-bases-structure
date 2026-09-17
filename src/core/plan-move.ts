@@ -175,12 +175,20 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
   // for that same property name are unrelated data that happens to share a name, not something O
   // ever contributed to N — including them here deleted a value N held for its own reasons (e.g.
   // O and N both happening to link the same third note through a same-named, non-inherited key).
+  // Round 4 fix: that fallback also has to be skipped when `k` *is* N's old edge property itself
+  // (`oldEdge.property === k`) — the "copy O's own raw value for k" branch exists only to model
+  // chain-forwarding through a *different* property than the edge (mirrors `plan-create.ts`'s
+  // `addInheritWrites`, which skips this exact copy `when key === rule.property`, and `derive.ts`'s
+  // `inheritKeysFor`, which excludes a node's own edge property from the generic recompute). When
+  // O was N's old parent through k directly (typically an untyped host or root, whose own type
+  // never claims k as an edge property), N's own values under k are N's, not something O
+  // contributed — folding O's raw value in here silently deleted it.
   const staleForNewKey = new Set(
     oldParent === null
       ? []
       : [
           oldParent,
-          ...(schema.inherit.includes(rule.property)
+          ...(schema.inherit.includes(rule.property) && oldEdge?.property !== rule.property
             ? oldContribOf(ctx, oldParent, rule.property)
             : []),
         ],

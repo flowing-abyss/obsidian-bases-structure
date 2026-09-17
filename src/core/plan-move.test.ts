@@ -591,6 +591,63 @@ describe('planAction — move: round 2 C1 — remove only what the action invali
     const after = applyPlan(snap, result.plan);
     expect(after.notes.get('task.md')?.frontmatter['up']).toStrictEqual(['[[Proj]]', '[[Home]]']);
   });
+
+  it('round 4: an inherited edge key removes only the old parent, never the old parent’s own value for that same key, when the node’s old edge to it was through that key', () => {
+    // "category" is both N's edge key to its untyped host MOC (schema.inherit includes it) *and*
+    // the key through which MOC — an untyped host — is itself N's old parent. MOC's own "category"
+    // value ([[Knowledge]]) was never contributed to N by inheritance: N's link to MOC *is* the
+    // edge relationship itself (oldEdge.property === rule.property), so nothing should fold MOC's
+    // own raw value into the removal set — that fallback (`oldContribOf`'s "copy the parent's own
+    // value" branch) exists only for chain-forwarding through a *different* property than the edge,
+    // exactly like plan-create's `addInheritWrites` (`key === rule.property` skip) and derive.ts's
+    // `inheritKeysFor` (excludes the node's own edge property) never touch this key via inheritance
+    // either. Before the fix, staleForNewKey wrongly included Knowledge (MOC's own category value),
+    // deleting a value that belongs to N, not to MOC.
+    const schema = schemaFrom({
+      types: {
+        Category: { tag: 'cat', children: { MetaT: 'category' } },
+        MetaT: { tag: 'meta' },
+      },
+      inherit: ['category'],
+    });
+    const snap = snapshot(
+      [
+        note('Knowledge.md'),
+        note('MOC.md', {
+          propertyLinks: { category: ['Knowledge.md'] },
+          frontmatter: { category: '[[Knowledge]]' },
+        }),
+        note('C2.md', { tags: ['cat'] }),
+        note('m.md', {
+          tags: ['meta'],
+          propertyLinks: { category: ['MOC.md', 'Knowledge.md'] },
+          frontmatter: { category: ['[[MOC]]', '[[Knowledge]]'] },
+        }),
+      ],
+      { host: 'MOC.md' },
+    );
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'm.md', parent: 'C2.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'm.md',
+        writes: [
+          {
+            key: 'category',
+            value: { kind: 'links', remove: ['MOC.md'], add: ['C2.md'], list: true },
+          },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('m.md')?.frontmatter['category']).toStrictEqual([
+      '[[C2]]',
+      '[[Knowledge]]',
+    ]);
+  });
 });
 
 describe('moveTargets', () => {
