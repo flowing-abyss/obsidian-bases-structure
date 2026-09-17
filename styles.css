@@ -71,11 +71,19 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   display: flex;
   align-items: flex-start;
 
-  /* `width: fit-content` makes the node size itself from its own content regardless of what
-     width (if any) its ancestors have resolved at the time it's measured — the graph renderer's
-     containers (`.bases-structure-nodes`/`.bases-structure-canvas`) are only sized *from* that
-     measurement, so relying on inherited/auto width here would be circular. */
-  width: fit-content;
+  /* `max-content`, not `fit-content` — `fit-content` is `min(max-content, max(min-content,
+     available))`, and `available` still resolves against the containing-block chain
+     (`.bases-structure-nodes` → `.bases-structure-canvas` → `.bases-structure-canvas-wrap`),
+     which the graph renderer only gives an explicit size *from* this same measurement
+     (`applyCanvasSize`, called after `measureAll` in `graph-renderer.ts`'s `update()`). On the
+     very first render that chain has no width yet, so `available` is 0 and `fit-content` collapses
+     every node to its min-content (one-word-per-line) width — confirmed live via `offsetWidth`
+     instrumentation: the canvas measured 0px at measurement time on a fresh open, but a
+     stale-but-nonzero inline width left over from the *previous* render on any subsequent one,
+     which is why only the first render was ever affected. `max-content` ignores available space
+     entirely, so the node always sizes from its own content regardless of ancestor width — still
+     capped by `max-width` below. */
+  width: max-content;
   max-width: 260px;
   padding: 4px 8px;
   color: var(--text-normal);
