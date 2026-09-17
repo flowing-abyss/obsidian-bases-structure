@@ -355,7 +355,7 @@ describe('StructureView — deferred render while a create draft is open', () =>
     expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
   });
 
-  it('the commit → chain flow reopens the sibling draft only once a render actually contains the new note (I7)', async () => {
+  it('the commit → chain flow reopens the sibling draft immediately after the commit’s own render, without waiting for the new note (U5)', async () => {
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
     const { view, parentEl } = openDraftView(app);
     const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
@@ -372,9 +372,54 @@ describe('StructureView — deferred render while a create draft is open', () =>
     await vi.waitFor(() => {
       expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
     });
-    // The render right after commit (`StructureActions.commitAndNotify`'s own `refresh()`) reads
-    // from `view.data.data`, which this harness — like Bases itself — only updates explicitly, not
-    // in the same tick as the vault write. So the chain must still be pending here, not reopened.
+    // Enter-mode's sibling chain only needs its own *parent* (`cat.md`), which already exists —
+    // unlike a Tab chain (which reopens ON the new node itself, and so still has to wait for a
+    // render that actually contains it), this reopens on the very first render after commit.
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    expect(reopenedInput).not.toBeNull();
+    expect(reopenedInput).not.toBe(input);
+
+    // `is-new` itself still waits for Bases to actually catch up with the new note (I7) — and,
+    // since the reopened draft above is itself now open, that later update is deferred until it
+    // closes, same as any other open draft (see the "defers a data update" test above).
+    view.data = {
+      data: [mustFile(app, 'cat.md'), mustFile(app, 'New Leaf.md')].map((file) => ({ file })),
+    } as unknown as BasesQueryResult;
+    view.onDataUpdated();
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('the commit → Tab-chain flow reopens on the new node only once a render actually contains it (I7)', async () => {
+    // Unlike Enter's own chain (U5, above), Tab reopens *on* the newly created node itself —
+    // which, unlike the parent, genuinely doesn't exist in the render right after commit — so it
+    // still has to wait for a later render that actually contains it, same as before U5.
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', {
+      Cat: { tag: 'cat', children: { Leaf: 'up' } },
+      Leaf: { tag: 'leaf', children: { Sub: 'up' } },
+      Sub: { tag: 'sub' },
+    });
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
 
@@ -387,7 +432,7 @@ describe('StructureView — deferred render while a create draft is open', () =>
     expect(updateSpy).toHaveBeenCalledTimes(2);
     const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     expect(reopenedInput).not.toBeNull();
-    expect(reopenedInput).not.toBe(input);
+    expect(reopenedInput?.placeholder).toBe('Sub');
   });
 
   it('merges a flushed deferred render with the commit’s own refresh into one, not two (I6)', async () => {
@@ -412,9 +457,11 @@ describe('StructureView — deferred render while a create draft is open', () =>
 
     // Before this fix: closing the draft flushed the deferred render (1), and `runCommit`'s own
     // explicit `refresh()` ran again immediately after (2) — same schema/snapshot/structure both
-    // times (nothing else runs in between), pure waste. I6 skips the second one.
+    // times (nothing else runs in between), pure waste. I6 skips the second one. The Enter chain
+    // reopening a sibling draft (U5) straight after doesn't call `update()` again either — it's
+    // pure DOM, not a render — so this still stays at exactly one.
     expect(updateSpy).toHaveBeenCalledTimes(1);
-    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+    expect(parentEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
   });
 
   it('does not lose a pending render when the view unloads with the draft still open', () => {

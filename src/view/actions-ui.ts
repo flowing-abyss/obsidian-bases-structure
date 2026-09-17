@@ -71,27 +71,23 @@ interface DraftState {
   committing: boolean;
 }
 
-/** What a chained draft (I7) still needs once the create it followed becomes visible: which
- * parent/type to reopen on, and whether that reopen is an "enter" (same parent, sibling) or "tab"
- * (the newly created node itself, child) chain — see `PendingCreate.chain`. */
-interface PendingChain {
-  readonly mode: ChainMode;
-  readonly parentPath: string;
-  readonly type: string;
-}
-
 /** A just-committed create's path, kept until a render's `Structure` actually contains it (I7):
  * `refresh()` right after `commitPlan` resolves runs against whatever Bases last handed the view,
- * which usually does *not* include the brand new note yet (Bases updates asynchronously) — so
- * neither the `is-new` highlight nor a Tab/Enter chain can complete on that first render. Instead
- * of firing them against a structure that doesn't have the node, this is kept pending and resolved
- * by `resolveFocus`/`completePending` on whichever later render (from `onDataUpdated`, once Bases
- * catches up) first has `path` in its `Structure`. `chain` is `null` when nothing should reopen —
- * either the draft that created it was already superseded by the time the commit settled, or (see
- * `clearPendingCreate`) a later user action/draft close cancelled it before it could fire. */
+ * which usually does *not* include the brand new note yet (Bases updates asynchronously) — so the
+ * `is-new` highlight can't complete on that first render, regardless of chain mode. Resolved by
+ * `resolveFocus`/`completePending` on whichever later render (from `onDataUpdated`, once Bases
+ * catches up) first has `path` in its `Structure`.
+ *
+ * `chain` (U5): only ever `true` for a Tab chain — it reopens a create-child draft *on* the new
+ * node itself, which by definition doesn't exist until this same render does, so it has to wait
+ * here like the highlight does. An Enter chain reopens a create-*sibling* draft on the node's own
+ * *parent*, which already exists right now — `runCommit` fires it immediately instead of routing
+ * it through here at all. `false` when nothing should reopen once the node appears: the draft that
+ * created it was already superseded by the time the commit settled, or (see `clearPendingCreate`)
+ * a later user action/draft close cancelled it before it could fire. */
 interface PendingCreate {
   readonly path: string;
-  readonly chain: PendingChain | null;
+  readonly chain: boolean;
 }
 
 const DRAFT_CLASS = 'bases-structure-draft';
@@ -260,14 +256,8 @@ export class StructureActions {
       return;
     }
     this.pendingCreate = null;
-    if (pending.chain !== null) {
-      this.continueChain({
-        root,
-        parentPath: pending.chain.parentPath,
-        type: pending.chain.type,
-        mode: pending.chain.mode,
-        focusPath: pending.path,
-      });
+    if (pending.chain) {
+      this.continueTabChain(root, pending.path);
     }
   }
 
@@ -606,6 +596,15 @@ export class StructureActions {
    * once the *whole* session actually ends, via `cancelDraft`/`destroy`). */
   private openDraft(parentPath: string, anchorEl: HTMLElement, type: string): void {
     this.teardownDraft(true);
+    this.startDraft(parentPath, anchorEl, type);
+  }
+
+  /** The actual draft-building steps `openDraft` wraps with `teardownDraft(true)` — split out so
+   * `runCommit`'s U5 immediate Enter-chain reopen (see its own doc comment) can build the next
+   * draft directly, without `teardownDraft`'s `clearPendingCreate()` wiping out the `pendingCreate`
+   * it set moments earlier for the `is-new` highlight (there is nothing to tear down there anyway:
+   * the committed draft this reopens on top of was already closed by `closeCommittedDraft`). */
+  private startDraft(parentPath: string, anchorEl: HTMLElement, type: string): void {
     const target = this.resolveAnchor(anchorEl, parentPath);
     this.lastRoot = target.closest<HTMLElement>(ROOT_SELECTOR) ?? this.lastRoot;
     target.classList.add(DRAFTING_CLASS);
@@ -732,17 +731,16 @@ export class StructureActions {
     // Set *before* closing the draft below (I6/I7): closing can itself trigger a render (a data
     // update deferred while the draft was open, now flushed by `closeCommittedDraft`) — this has
     // to already be in place for that render's own `resolveFocus`/`completePending` to have any
-    // chance of completing the highlight/chain right there, instead of leaving it stranded until
-    // some later, possibly-never-arriving `onDataUpdated`. Chaining only when this draft was still
-    // the one on screen when the commit settled (`wasCurrent`) — a superseded draft already moved
-    // the user's attention elsewhere, so nothing should reopen on their behalf; the `is-new`
-    // highlight itself still applies either way. Nothing to set when the commit failed — no note
-    // exists to highlight or chain from.
+    // chance of completing the highlight right there, instead of leaving it stranded until some
+    // later, possibly-never-arriving `onDataUpdated`. `chain` (U5) is only ever set for Tab — an
+    // Enter chain fires immediately below instead, once this draft's own render has run, since it
+    // only needs its *parent* (already present) and not the new node itself. Chaining only when
+    // this draft was still the one on screen when the commit settled (`wasCurrent`) — a superseded
+    // draft already moved the user's attention elsewhere, so nothing should reopen on their behalf;
+    // the `is-new` highlight itself still applies either way. Nothing to set when the commit
+    // failed — no note exists to highlight or chain from.
     if (applied) {
-      this.pendingCreate = {
-        path: result.focus,
-        chain: wasCurrent ? { mode, parentPath: draft.parentPath, type: draft.type } : null,
-      };
+      this.pendingCreate = { path: result.focus, chain: wasCurrent && mode === 'tab' };
     }
     // I6: skip the explicit `refresh()` below when closing the draft already rendered — that
     // render (`closeCommittedDraft`'s flush, if one was owed) used the exact same
@@ -757,25 +755,38 @@ export class StructureActions {
       return;
     }
     this.showUndoNotice(`Created "${name}"`);
+    // U5: an Enter chain (create-*sibling*, same parent) doesn't need to wait for the new note to
+    // become visible in `Structure` the way `completePending`'s Tab chain does (see
+    // `PendingCreate`'s own doc comment) — `draft.parentPath` already exists right now, in the DOM
+    // the render just above (`closeCommittedDraft`'s flush or `refresh()`) already produced.
+    if (wasCurrent && mode === 'enter') {
+      this.reopenEnterChain(draft.parentPath, draft.type);
+    }
   }
 
-  private continueChain(ctx: {
-    readonly root: HTMLElement;
-    readonly parentPath: string;
-    readonly type: string;
-    readonly mode: ChainMode;
-    readonly focusPath: string;
-  }): void {
-    if (ctx.mode === 'enter') {
-      const anchorEl = findNodeElement(ctx.root, ctx.parentPath);
-      if (anchorEl !== null) {
-        this.openDraft(ctx.parentPath, anchorEl, ctx.type);
-      }
+  /** U5: re-locates the parent by its *current* `data-path` under the last known live root —
+   * mirrors `continueTabChain`'s own `findNodeElement` lookup (not `draft.anchorEl` directly, and
+   * not `openDraft`), so: a parent that genuinely lost its DOM identity across the render this
+   * triggered correctly gets no reopen, same guarantee Tab's own chain already has; and reusing
+   * `startDraft` (not `openDraft`) means this doesn't clear the `pendingCreate` `runCommit` just
+   * set above — the `is-new` highlight still has to survive for whichever later render actually
+   * contains the new note. No-op when there's no known root, or the path isn't found there. */
+  private reopenEnterChain(parentPath: string, type: string): void {
+    if (this.lastRoot === null) {
       return;
     }
-    const anchorEl = findNodeElement(ctx.root, ctx.focusPath);
+    const anchorEl = findNodeElement(this.lastRoot, parentPath);
     if (anchorEl !== null) {
-      this.startCreate(ctx.focusPath, anchorEl);
+      this.startDraft(parentPath, anchorEl, type);
+    }
+  }
+
+  /** U5: only ever reached for a Tab chain now (see `PendingCreate.chain`'s own doc comment) —
+   * reopens a create-*child* draft on the node that just became visible. */
+  private continueTabChain(root: HTMLElement, focusPath: string): void {
+    const anchorEl = findNodeElement(root, focusPath);
+    if (anchorEl !== null) {
+      this.startCreate(focusPath, anchorEl);
     }
   }
 

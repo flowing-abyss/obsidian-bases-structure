@@ -577,7 +577,7 @@ describe('commit — Enter', () => {
     expect(h.undo.canUndo).toBe(false);
   });
 
-  it('does not reopen a draft on the refresh that runs before Bases has caught up with the new note (I7)', async () => {
+  it('reopens a sibling draft on the same parent immediately after the commit’s own render, without waiting for Bases to catch up with the new note (U5)', async () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
@@ -588,28 +588,31 @@ describe('commit — Enter', () => {
       expect(h.refresh).toHaveBeenCalledTimes(1);
     });
 
-    // The note exists in the vault, but `refresh` (the harness's stand-in for a real render) only
-    // "sees" what `simulateBasesUpdate` has told it about — nothing has yet, so no draft reopens.
+    // Enter-mode only needs its own *parent* (`leaf.md`), which already exists right now — unlike
+    // Tab-mode (which reopens ON the new node itself, and so still has to wait — see the Tab
+    // describe block's own I7 test), this must not need `simulateBasesUpdate()` at all.
     expect(h.app.vault.getFileByPath('Sibling One.md')).not.toBeNull();
-    expect(leafEl.querySelector('.bases-structure-draft-input')).toBeNull();
-  });
-
-  it('reopens a draft on the same parent with the same type once the created note becomes visible (sibling chaining)', async () => {
-    const h = makeHarness(baseFiles());
-    const leafEl = h.nodes.get('leaf.md');
-    if (leafEl === undefined) throw new Error('missing leaf element');
-    h.actions.startCreate('leaf.md', leafEl);
-    draftInput(h.root).value = 'Sibling One';
-    pressKey(draftInput(h.root), 'Enter');
-    await vi.waitFor(() => {
-      expect(h.refresh).toHaveBeenCalledTimes(1);
-    });
-
-    h.simulateBasesUpdate();
-
     const reopened = leafEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     expect(reopened).not.toBeNull();
     expect(reopened?.placeholder).toBe('Sub');
+  });
+
+  it('still applies is-new to the created note once Bases catches up, even though the sibling draft already reopened (U5)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'Sibling One';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+    expect(h.root.querySelector('.is-new')).toBeNull();
+
+    h.simulateBasesUpdate();
+
+    const newEl = h.nodes.get('Sibling One.md');
+    expect(newEl?.classList.contains('is-new')).toBe(true);
   });
 });
 
