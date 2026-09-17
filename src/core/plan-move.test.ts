@@ -251,6 +251,134 @@ describe('planAction — move: over a text-linked hierarchy (Task 8)', () => {
   });
 });
 
+describe('planAction — move: old and new edge kinds differ (review fix)', () => {
+  it('old edge property, new edge backlinks: clears the stale property, no bogus body removal, no stale extra', () => {
+    // CatA (level 0, property "up") declared before CatB (level 1, file.backlinks) — deeper level
+    // wins regardless of kind (compareCandidates), so if the old "up" property were left
+    // uncleaned, CatB would still win primary and CatA would surface as a dangling extra: the
+    // exact corruption a stale old edge produces when only the new rule's kind is consulted.
+    const schema = schemaFrom({
+      types: {
+        CatA: { tag: 'cata', children: { NodeT: 'up' } },
+        CatB: { tag: 'catb', children: { NodeT: 'file.backlinks' } },
+        NodeT: { tag: 'nodet' },
+      },
+    });
+    const notes = [
+      note('catA.md', { tags: ['cata'] }),
+      note('catB.md', { tags: ['catb'] }),
+      note('child.md', {
+        tags: ['nodet'],
+        frontmatter: { up: '[[CatA]]' },
+        propertyLinks: { up: ['catA.md'] },
+      }),
+    ];
+    const snap = snapshot(notes, { results: notes.map((entry) => entry.path) });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'child.md', parent: 'catB.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'child.md',
+        writes: [
+          { key: 'up', value: { kind: 'links', remove: ['catA.md'], add: [], list: false } },
+        ],
+      },
+    ]);
+    expect(result.plan.appends).toStrictEqual([{ path: 'catB.md', target: 'child.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([]);
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get('child.md')?.parent).toBe('catB.md');
+    expect(after.nodes.get('child.md')?.extras).toStrictEqual([]);
+  });
+
+  it('old edge backlinks, new edge property: removes the stale body mention, no stale extra (mirror case)', () => {
+    // CatA2 (level 0, file.backlinks) declared before CatB2 (level 1, property "up2") — the same
+    // deeper-wins-regardless-of-kind setup, mirrored: if the old backlinks mention were left in
+    // CatA2's body, CatB2 would still win primary and CatA2 would surface as a dangling extra.
+    const schema = schemaFrom({
+      types: {
+        CatA2: { tag: 'cata2', children: { NodeT2: 'file.backlinks' } },
+        CatB2: { tag: 'catb2', children: { NodeT2: 'up2' } },
+        NodeT2: { tag: 'nodet2' },
+      },
+    });
+    const notes = [
+      note('catA2.md', { tags: ['cata2'], links: ['child2.md'] }),
+      note('catB2.md', { tags: ['catb2'] }),
+      note('child2.md', { tags: ['nodet2'] }),
+    ];
+    const snap = snapshot(notes, { results: notes.map((entry) => entry.path) });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'child2.md', parent: 'catB2.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'child2.md',
+        writes: [
+          { key: 'up2', value: { kind: 'links', remove: [], add: ['catB2.md'], list: true } },
+        ],
+      },
+    ]);
+    expect(result.plan.appends).toStrictEqual([]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([{ path: 'catA2.md', target: 'child2.md' }]);
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get('child2.md')?.parent).toBe('catB2.md');
+    expect(after.nodes.get('child2.md')?.extras).toStrictEqual([]);
+  });
+
+  it('still rejects when an untouched higher-priority candidate survives the move', () => {
+    // K (level 1, property "k_key") is an independent, untouched "extra" that predates and
+    // outlives this move — M (level 2, the old edge) gets properly cleaned up, but K, unrelated
+    // to both the old and new edge, still outranks N (level 0, the requested new parent) once M
+    // is gone. verifyMove must still catch this, not silently accept a plan that lands the node
+    // somewhere other than requested — this is plain property-to-property, unaffected by the
+    // old/new-kind fix above; it just needs to keep working.
+    const schema = schemaFrom({
+      types: {
+        N: { tag: 'n', children: { NodeT: 'n_key' } },
+        K: { tag: 'k', children: { NodeT: 'k_key' } },
+        M: { tag: 'm', children: { NodeT: 'm_key' } },
+        NodeT: { tag: 'nodet' },
+      },
+    });
+    const notes = [
+      note('N.md', { tags: ['n'] }),
+      note('K.md', { tags: ['k'] }),
+      note('M.md', { tags: ['m'] }),
+      note('node.md', {
+        tags: ['nodet'],
+        frontmatter: { m_key: '[[M]]', k_key: '[[K]]' },
+        propertyLinks: { m_key: ['M.md'], k_key: ['K.md'] },
+      }),
+    ];
+    const snap = snapshot(notes, { results: notes.map((entry) => entry.path) });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'node.md', parent: 'N.md' },
+      noEnv,
+    );
+
+    expect(result).toStrictEqual({ ok: false, reason: '"node" would stay under "K"' });
+  });
+});
+
 describe('planAction — move: keeps extra values in the same edge property', () => {
   const schema = schemaFrom({
     types: { MetaT: { tag: 'meta', children: { Hier: 'meta' } }, Hier: { tag: 'hier' } },
@@ -869,9 +997,14 @@ describe('planAction — move: vault schema', () => {
     ]);
   });
 
-  it('rejects moving a text-edge (backlinks) node into a category, with the note-text suffix', () => {
+  it('moves a text-edge (backlinks) node onto a category: clears the old body mention, no frontmatter change needed', () => {
+    // basicVariables' old primary parent is r-lang hierarchy (file.backlinks, a deeper type than
+    // Category so it outranks basicVariables' own "category" property even though that property
+    // already holds r-lang — reattaching it directly under r-lang's category needs only the old
+    // text mention removed; the already-consistent "category" property needs no write at all.
     const snap = rLangSnapshot();
     const basicVariables = 'base/_hierarchy/basic variables types in r.md';
+    const rlangHierarchy = 'base/_hierarchy/r-lang hierarchy.md';
     const rlangCategory = 'base/categories/r-lang.md';
 
     const result = planAction(
@@ -881,10 +1014,16 @@ describe('planAction — move: vault schema', () => {
       noEnv,
     );
 
-    expect(result).toStrictEqual({
-      ok: false,
-      reason:
-        '"basic variables types in r" would stay under "r-lang hierarchy" because its link from "r-lang hierarchy" is in note text',
-    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.focus).toBe(basicVariables);
+    expect(result.plan.changes).toStrictEqual([]);
+    expect(result.plan.appends).toStrictEqual([]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([
+      { path: rlangHierarchy, target: basicVariables },
+    ]);
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get(basicVariables)?.parent).toBe(rlangCategory);
+    expect(after.nodes.get(basicVariables)?.extras).toStrictEqual([]);
   });
 });

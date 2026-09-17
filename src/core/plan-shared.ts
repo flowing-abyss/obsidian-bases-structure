@@ -34,33 +34,35 @@ export function textLinkReason(
     : `The link from "${nodeName}" to "${parentName}" lives in note text and cannot be written automatically`;
 }
 
-export interface TextEdgeWrites {
-  readonly appends: Plan['appends'];
-  readonly bodyLinkRemovals: Plan['bodyLinkRemovals'];
-}
-
-/** The append (new mention) plus removal (stale mention) pair for a text-kind move: `'backlinks'`
- * writes/removes in the *parent's* body (the parent mentions the child), `'links'` writes/removes
- * in the *node's own* body (the child mentions the parent) — mirrors `textLinkReason`'s ordering.
- * `oldParent: null` (the node had no previous primary parent) means there's nothing to remove. */
-export function textEdgeWrites(
+/** The append that establishes a text-kind (`'backlinks'`/`'links'`) edge to the *new* parent:
+ * `'backlinks'` writes to the parent's own body (the parent mentions the child), `'links'` writes
+ * to the node's own body (the child mentions the parent) — mirrors `textLinkReason`'s ordering.
+ * Keyed off the *new* rule's own kind — see `textEdgeRemoval` for the old-side counterpart, which
+ * must be keyed off the *old* edge's kind instead, since the two can differ. */
+export function textEdgeAppend(
   kind: 'links' | 'backlinks',
   node: string,
-  oldParent: string | null,
   newParent: string,
-): TextEdgeWrites {
-  const appends =
-    kind === 'backlinks'
-      ? [{ path: newParent, target: node }]
-      : [{ path: node, target: newParent }];
-  if (oldParent === null) {
-    return { appends, bodyLinkRemovals: [] };
-  }
-  const bodyLinkRemovals =
-    kind === 'backlinks'
-      ? [{ path: oldParent, target: node }]
-      : [{ path: node, target: oldParent }];
-  return { appends, bodyLinkRemovals };
+): Plan['appends'][number] {
+  return kind === 'backlinks'
+    ? { path: newParent, target: node }
+    : { path: node, target: newParent };
+}
+
+/** The removal that clears a text-kind (`'backlinks'`/`'links'`) edge from the *old* parent, same
+ * per-kind sidedness as `textEdgeAppend`. Callers must key this off the *old* edge's own kind, not
+ * the new rule's — a node's possible parent types can mix property and text-kind rules, so a move
+ * can freely cross from one kind to the other; conflating the two here would either remove nothing
+ * (old edge was actually `'property'`) or target a mention that was never written (old edge was
+ * the other text kind). */
+export function textEdgeRemoval(
+  kind: 'links' | 'backlinks',
+  node: string,
+  oldParent: string,
+): Plan['bodyLinkRemovals'][number] {
+  return kind === 'backlinks'
+    ? { path: oldParent, target: node }
+    : { path: node, target: oldParent };
 }
 
 export function recordOverride(

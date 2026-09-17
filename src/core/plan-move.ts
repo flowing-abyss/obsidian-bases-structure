@@ -1,7 +1,10 @@
 // Move planning: turns a `'move'` `Action` into a verified `Plan` that reparents a node and
 // cascades link updates to its descendants, or a rejection with a stable, user-facing reason. A
 // `'property'`-kind edge patches a frontmatter key; a `'backlinks'`/`'links'`-kind edge instead
-// appends/removes a body mention (see `textEdgeWrites` in plan-shared.ts). No Obsidian imports.
+// appends/removes a body mention (see `textEdgeAppend`/`textEdgeRemoval` in plan-shared.ts). The
+// new edge's own write is keyed off the *new* rule's kind; the old edge's cleanup is keyed off the
+// *old* edge's own kind — the two are independent, since a node's possible parent types can mix
+// property and text-kind rules. No Obsidian imports.
 
 import {
   bareContext,
@@ -13,10 +16,12 @@ import {
 } from './derive.js';
 import {
   buildEdgeWrites,
+  computeOldEdgeCleanup,
   firstChangedOtherNode,
   inheritWritesFor,
   recordAllOverrides,
-  textEdgeWrites,
+  textEdgeAppend,
+  textEdgeRemoval,
 } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanResult } from './plan-types.js';
 import type { EdgeRule, Schema } from './schema.js';
@@ -157,9 +162,9 @@ interface PropertyEdgeInputs {
   readonly oldEdge: EdgeRule | null;
 }
 
-/** The node's own edge-key write for a `'property'`-kind rule — the only part of a move that
- * depends on the edge's kind; a text-kind rule (`'backlinks'`/`'links'`, see `textEdgeWrites` in
- * plan-shared.ts) has no frontmatter property to patch here at all.
+/** The node's own edge-key write for a `'property'`-kind *new* rule — a text-kind new rule
+ * (`'backlinks'`/`'links'`, see `textEdgeAppend` in plan-shared.ts) has no frontmatter property to
+ * patch here at all; see `oldEdgeCleanupOnly` for that case's old-parent cleanup instead.
  *
  * Round 2 C1: the edge key's stale set is the old parent itself plus whatever it used to
  * contribute to this specific key (`U_old(k)`, just the *single* old parent — not the node's
@@ -201,6 +206,32 @@ function propertyEdgeWrites(ctx: SubtreeContext, inputs: PropertyEdgeInputs): re
   });
 }
 
+/** The old parent's frontmatter cleanup alone, for a move whose *new* rule isn't `'property'`-kind
+ * — there's no new-key write to bundle it with (`propertyEdgeWrites`, used when the new rule *is*
+ * `'property'`, produces both together via `buildEdgeWrites`). A no-op unless the *old* edge was
+ * itself `'property'`-kind (`computeOldEdgeCleanup` returns `null` otherwise) — delegates to it
+ * directly. Its own "same key reused" skip (`oldEdge.property === key`) never fires here: `key` is
+ * `rule.property`, which for a text-kind rule is the literal `'file.links'`/`'file.backlinks'`,
+ * never a real frontmatter property name. */
+function oldEdgeCleanupOnly(schema: Schema, inputs: PropertyEdgeInputs): readonly KeyWrite[] {
+  const { snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
+  const nLinks = snapshot.notes.get(node)?.propertyLinks ?? {};
+  const cleanup = computeOldEdgeCleanup(
+    schema,
+    {
+      snapshot,
+      node,
+      oldParent,
+      newParent,
+      oldEdge,
+      key: rule.property,
+      staleForNewKey: new Set(),
+    },
+    nLinks,
+  );
+  return cleanup === null ? [] : [cleanup];
+}
+
 export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction): PlanResult {
   const structure = buildStructure(schema, snapshot);
   const validation = validateMove(schema, snapshot, structure, action);
@@ -218,18 +249,19 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     linkOverrides: new Map(),
   };
   const oldCtx = bareContext(ctx);
+  const propertyInputs: PropertyEdgeInputs = {
+    schema,
+    snapshot,
+    node: action.node,
+    newParent: action.parent,
+    rule,
+    oldParent,
+    oldEdge,
+  };
   const edgeWrites =
     rule.kind === 'property'
-      ? propertyEdgeWrites(ctx, {
-          schema,
-          snapshot,
-          node: action.node,
-          newParent: action.parent,
-          rule,
-          oldParent,
-          oldEdge,
-        })
-      : [];
+      ? propertyEdgeWrites(ctx, propertyInputs)
+      : oldEdgeCleanupOnly(schema, propertyInputs);
   const propertyExtras = nNode.extras
     .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
     .map((extra) => extra.parent);
@@ -246,10 +278,12 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
   const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
   const changes =
     nWrites.length > 0 ? [{ path: action.node, writes: nWrites }, ...subtreeWrites] : subtreeWrites;
-  const { appends, bodyLinkRemovals } =
-    rule.kind === 'property'
-      ? { appends: [], bodyLinkRemovals: [] }
-      : textEdgeWrites(rule.kind, action.node, oldParent, action.parent);
+  const appends: Plan['appends'] =
+    rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, action.node, action.parent)];
+  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
+    oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
+      ? [textEdgeRemoval(oldEdge.kind, action.node, oldParent)]
+      : [];
   const plan: Plan = { creations: [], changes, appends, moves: [], bodyLinkRemovals };
   const failure = verifyMove({
     schema,
