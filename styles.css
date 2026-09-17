@@ -193,17 +193,18 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
      to a one-character column instead of wrapping at word boundaries. Pinning `min-width: 0`
      forces wrapping to respect the node's actual (measured) width instead. */
   min-width: 0;
+
+  /* No line-clamp/ellipsis: cutting a title short (or gluing "…" onto it) can leave it unclear
+     what the note actually is, so every node — graph or outline — always shows its full title.
+     `overflow-wrap: break-word` only kicks in as a last resort, splitting a single word that's
+     still wider than the node's own max-width on its own line; ordinary text keeps wrapping at
+     word boundaries, never mid-word. A long title now simply makes its own node taller instead of
+     clipping — `layoutTree`/`layoutTreeVertical` already measure each node's real height and space
+     siblings/edges from that (see `graph-renderer.ts`'s `measureAll`), so this needs no layout
+     changes, just room to grow. */
   overflow-wrap: break-word;
   color: var(--text-normal);
   text-decoration: none;
-
-  /* Long titles wrap up to two lines, then ellipsize — a node never grows tall enough to make one
-     branch look visually heavier than another. */
-  display: -webkit-box;
-  overflow: hidden;
-  line-clamp: 2;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
 }
 
 .bases-structure-title:hover {
