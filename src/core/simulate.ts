@@ -156,10 +156,12 @@ function applyLinksWrite(
   }
 }
 
-/** Whether `key` is one of the two frontmatter keys Obsidian reads tags from (`parseFrontMatterTags`
- * accepts either). */
+/** Whether `key` is the frontmatter key Obsidian reads tags from — matched case-insensitively
+ * (round 2 minor 2: real Obsidian's `parseFrontMatterTags` reads only `tags`, matched
+ * case-insensitively, never a singular `tag`; `tagsKeyOf` in plan-retype.ts never targets anything
+ * else). */
 function isTagsKey(key: string): boolean {
-  return key === 'tags' || key === 'tag';
+  return /^tags$/i.test(key);
 }
 
 /** Applies one `'listItem'`-kind write to `draft`: patches a plain (non-link) list-shaped value by
@@ -247,6 +249,7 @@ function applyCreations(state: SimState, creations: Plan['creations']): void {
       basename: basenameOf(creation.path),
       tags: draft.tags,
       frontmatterTags: draft.frontmatterTags,
+      bodyTags: [], // a brand-new note has no body text yet
       frontmatter: draft.frontmatter,
       propertyLinks: draft.propertyLinks,
       links: buildCreationLinks(creation.bodyLinks, draft.propertyLinks),
@@ -266,12 +269,12 @@ function draftFromNote(note: NoteData): NoteDraft {
   };
 }
 
-/** The note's inline/body-only tags — every tag it has that isn't one of its frontmatter tags —
- * captured once before any writes run for a change, since a plan never rewrites the body text
- * itself (I4). */
+/** The note's inline/body-only tags, straight off `NoteData` (round 2 minor 3: read directly from
+ * the metadata cache's own inline-tag entries, not derived as a `tags - frontmatterTags`
+ * difference — a tag present in *both* places is still body-held) — a plan never rewrites the body
+ * text itself (I4), so this is captured once before any writes run for a change. */
 function bodyTagsOf(note: NoteData): readonly string[] {
-  const frontmatterLower = new Set(note.frontmatterTags.map((tag) => tag.toLowerCase()));
-  return note.tags.filter((tag) => !frontmatterLower.has(tag.toLowerCase()));
+  return note.bodyTags;
 }
 
 /** Removes `oldTargets` no longer held by any property (checked across the *updated*
@@ -324,6 +327,7 @@ function applyChanges(state: SimState, changes: Plan['changes']): void {
       basename: existing.basename,
       tags: draft.tags,
       frontmatterTags: draft.frontmatterTags,
+      bodyTags: existing.bodyTags, // never rewritten by a plan (I4)
       frontmatter: draft.frontmatter,
       propertyLinks: draft.propertyLinks,
       links: draft.links,

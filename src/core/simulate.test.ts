@@ -28,6 +28,7 @@ describe('applyPlan — creations', () => {
       basename: 'new',
       tags: ['type/x'],
       frontmatterTags: ['type/x'],
+      bodyTags: [],
       frontmatter: {
         tags: ['#type/x'],
         status: 'done',
@@ -286,6 +287,7 @@ describe('applyPlan — changes', () => {
       note('n.md', {
         tags: ['type/alpha', 'inline-only'],
         frontmatterTags: ['type/alpha'],
+        bodyTags: ['inline-only'],
         frontmatter: { tags: ['type/alpha'] },
       }),
     ]);
@@ -404,6 +406,7 @@ describe('applyPlan — immutability', () => {
       basename: 'x',
       tags: [],
       frontmatterTags: [],
+      bodyTags: [],
       frontmatter: { meta: '[[m]]' },
       propertyLinks: { meta: ['m.md'] },
       links: ['m.md'],

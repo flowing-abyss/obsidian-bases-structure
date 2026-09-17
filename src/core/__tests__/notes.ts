@@ -19,6 +19,7 @@ export function note(path: string, partial: Partial<Omit<NoteData, 'path'>> = {}
     basename: partial.basename ?? basenameOf(path),
     tags: partial.tags ?? [],
     frontmatterTags: partial.frontmatterTags ?? partial.tags ?? [],
+    bodyTags: partial.bodyTags ?? [],
     frontmatter: partial.frontmatter ?? {},
     propertyLinks: partial.propertyLinks ?? {},
     links: partial.links ?? [],

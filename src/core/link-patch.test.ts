@@ -292,4 +292,16 @@ describe('patchListItem', () => {
 
     expect(result).toBe('task');
   });
+
+  it('matches a raw element carrying a literal "#" against a hash-less expected value (round 2 minor 2: real Obsidian tags keep their "#")', () => {
+    const result = patchListItem(['#project', 'other'], { remove: 'project', add: 'task' });
+
+    expect(result).toStrictEqual(['task', 'other']);
+  });
+
+  it('treats a hash-prefixed element as already present, so a hash-less add is a no-op', () => {
+    const result = patchListItem(['#task'], { add: 'task' });
+
+    expect(result).toStrictEqual(['#task']);
+  });
 });

@@ -47,6 +47,7 @@ describe('note() builder', () => {
       basename: 'dataview',
       tags: [],
       frontmatterTags: [],
+      bodyTags: [],
       frontmatter: {},
       propertyLinks: {},
       links: [],

@@ -421,7 +421,36 @@ describe('planAction — retype: I4 — retype only rewrites frontmatter tags, n
       note('n.md', {
         tags: ['type/alpha'],
         frontmatterTags: [],
+        bodyTags: ['type/alpha'],
         frontmatter: {},
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'Beta' },
+      envAllowing(),
+    );
+
+    expect(result).toStrictEqual({
+      ok: false,
+      reason: '"n" keeps the tag "type/alpha" in its text; remove it there first',
+    });
+  });
+
+  it('rejects when the old type’s tag is present in both frontmatter and body text (round 2 minor 3)', () => {
+    // Before round 2, body-only tags were derived as `tags - frontmatterTags`, so a tag present in
+    // *both* places was silently treated as "not body-held" and the frontmatter-only rewrite was
+    // allowed to proceed — leaving the note still inline-tagged with the old type's tag afterwards.
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: ['type/alpha'],
+        frontmatterTags: ['type/alpha'],
+        bodyTags: ['type/alpha'],
+        frontmatter: { tags: ['type/alpha'] },
         propertyLinks: { up: ['cat.md'] },
       }),
     ]);
@@ -512,6 +541,36 @@ describe('planAction — retype: I4 — retype only rewrites frontmatter tags, n
         writes: [
           { key: 'tags', value: { kind: 'literal', value: ['type/beta'] } },
           { key: 'kind', value: null },
+        ],
+      },
+    ]);
+  });
+
+  it('targets a case-different existing `Tags` key rather than creating a second one (round 2 minor 2)', () => {
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: ['type/alpha'],
+        frontmatterTags: ['type/alpha'],
+        frontmatter: { Tags: ['type/alpha'] },
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'Beta' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          { key: 'Tags', value: { kind: 'listItem', remove: 'type/alpha', add: 'type/beta' } },
         ],
       },
     ]);

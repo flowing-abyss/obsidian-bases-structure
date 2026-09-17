@@ -133,6 +133,20 @@ export function looseEqual(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
+/** Round 2 minor 2: real Obsidian's `parseFrontMatterTags` does not strip a leading `#` off a raw
+ * frontmatter tag element, so a note's actual `tags` array can hold `"#project"` rather than
+ * `"project"`. Schema tag names never carry a `#`, so matching a raw element against one needs its
+ * own `#` stripped first — matching what we do when *reading* tags (see `snapshot-reader.ts`). */
+function stripHash(value: string): string {
+  return value.startsWith('#') ? value.slice(1) : value;
+}
+
+/** `looseEqual`, tolerant of a raw item's optional leading `#` (tags only carry one; recipe
+ * property values never do, so this is a safe superset of the plain comparison). */
+function looseEqualIgnoringHash(item: string, expected: string): boolean {
+  return looseEqual(stripHash(item), expected);
+}
+
 export interface ListItemPatch {
   readonly remove?: string;
   readonly add?: string;
@@ -143,14 +157,19 @@ interface ListRemovalResult {
   readonly insertIndex: number | null;
 }
 
-/** Walks `items` in order, dropping the first one `looseEqual` to `remove` (when given) and
- * recording the position it was dropped from. */
+/** Walks `items` in order, dropping the first one `looseEqual` (ignoring a leading `#`) to
+ * `remove` (when given) and recording the position it was dropped from. */
 function removeListMatch(items: readonly unknown[], remove: string | undefined): ListRemovalResult {
   const kept: unknown[] = [];
   let insertIndex: number | null = null;
   let removed = false;
   for (const item of items) {
-    if (!removed && remove !== undefined && typeof item === 'string' && looseEqual(item, remove)) {
+    if (
+      !removed &&
+      remove !== undefined &&
+      typeof item === 'string' &&
+      looseEqualIgnoringHash(item, remove)
+    ) {
       removed = true;
       insertIndex = kept.length;
       continue;
@@ -161,12 +180,14 @@ function removeListMatch(items: readonly unknown[], remove: string | undefined):
 }
 
 /** Inserts `add` into `kept` (mutating it) at `insertIndex`, or appended when nothing was removed
- * — a no-op when `add` is absent, or already present. */
+ * — a no-op when `add` is absent, or already present (ignoring a leading `#`). */
 function insertListAdd(kept: unknown[], insertIndex: number | null, add: string | undefined): void {
   if (add === undefined) {
     return;
   }
-  const alreadyPresent = kept.some((item) => typeof item === 'string' && looseEqual(item, add));
+  const alreadyPresent = kept.some(
+    (item) => typeof item === 'string' && looseEqualIgnoringHash(item, add),
+  );
   if (alreadyPresent) {
     return;
   }

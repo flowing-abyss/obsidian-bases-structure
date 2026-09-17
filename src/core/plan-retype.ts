@@ -199,14 +199,13 @@ function validateRetype(request: RetypeRequest, action: RetypeAction): RetypeVal
 
 // -- Writes for N: tags, recipe properties ----------------------------------------------------
 
-/** The frontmatter key retype's tag writes target: whichever of `tags`/`tag` the note's
- * frontmatter already uses (Obsidian accepts either), defaulting to `tags` for a note with
- * neither — matching `parseFrontMatterTags`'s own reading of both. */
+/** The frontmatter key retype's tag writes target: whichever key already matches `tags`
+ * case-insensitively (real Obsidian's `parseFrontMatterTags` reads only that, never `tag` —
+ * round 2 minor 2), defaulting to lowercase `tags` for a note with none yet. Never creates a
+ * second `tags`-shaped key, and never writes to `tag`. */
 function tagsKeyOf(frontmatter: Readonly<Record<string, unknown>>): string {
-  if ('tags' in frontmatter) {
-    return 'tags';
-  }
-  return 'tag' in frontmatter ? 'tag' : 'tags';
+  const existing = Object.keys(frontmatter).find((key) => /^tags$/i.test(key));
+  return existing ?? 'tags';
 }
 
 /** Retype's tag writes: patches — one `'listItem'` write per old/new tag pair — over the note's
@@ -560,9 +559,12 @@ function literalRetypeWrites(
   ];
 }
 
-/** I4's rejection check: the old type's tag has to actually be rewritable. When it's only present
- * in the note's body/inline text (not its frontmatter), retype can't remove it there — better to
- * say so than to silently leave it and add the new type's tag alongside it. */
+/** I4's rejection check: the old type's tag has to actually be rewritable. When it's present in
+ * the note's body/inline text, retype can't remove it there — better to say so than to silently
+ * leave it and add the new type's tag alongside it. Round 2 minor 3: checked against `bodyTags`
+ * directly (read straight from the metadata cache's own inline-tag entries), not derived as a
+ * `tags - frontmatterTags` difference — a tag present in *both* frontmatter and body still keeps
+ * the note tagged even after a frontmatter-only rewrite, so it's rejected here too. */
 function bodyOnlyTagReason(
   snapshot: Snapshot,
   node: string,
@@ -572,11 +574,9 @@ function bodyOnlyTagReason(
   if (nNote === undefined) {
     return null;
   }
-  const frontmatterTagsLower = new Set(nNote.frontmatterTags.map((tag) => tag.toLowerCase()));
-  const allTagsLower = new Set(nNote.tags.map((tag) => tag.toLowerCase()));
+  const bodyTagsLower = new Set(nNote.bodyTags.map((tag) => tag.toLowerCase()));
   for (const tag of oldMatch.tags) {
-    const lower = tag.toLowerCase();
-    if (allTagsLower.has(lower) && !frontmatterTagsLower.has(lower)) {
+    if (bodyTagsLower.has(tag.toLowerCase())) {
       return `"${displayName(snapshot, node)}" keeps the tag "${tag}" in its text; remove it there first`;
     }
   }

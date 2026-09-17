@@ -56,17 +56,30 @@ describe('readNote', () => {
 
     expect(note.tags).toStrictEqual(['gamma', 'alpha', 'beta']);
     expect(note.frontmatterTags).toStrictEqual(['alpha', 'beta']);
+    expect(note.bodyTags).toStrictEqual(['gamma']);
   });
 
-  it('frontmatterTags reads a singular `tag:` key the same as `tags:` (I4)', () => {
+  it('bodyTags is read directly from the cache’s own inline-tag entries, holding a tag present in both places too (round 2 minor 3)', () => {
     const app = App.createConfigured__({
-      files: { 'note.md': '---\ntag: solo\n---\nBody.\n' },
+      files: {
+        'note.md': '---\ntags: [alpha]\n---\nBody with #alpha again and #only-inline.\n',
+      },
     });
 
     const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
 
-    expect(note.frontmatterTags).toStrictEqual(['solo']);
+    expect(note.frontmatterTags).toStrictEqual(['alpha']);
+    // "alpha" is body-held too — round 2 minor 3's whole point: this must not be lost by deriving
+    // bodyTags as `tags - frontmatterTags`, which would drop it since it's also a frontmatter tag.
+    expect(note.bodyTags).toStrictEqual(['alpha', 'only-inline']);
   });
+
+  // Round 2 minor 2: real Obsidian 1.13's `parseFrontMatterTags` reads only the `tags` key, never
+  // a singular `tag` — unlike the earlier (incorrect) assumption here, and unlike this test suite's
+  // own mock (which, for compatibility with older vaults, still falls back to `tag`). readNote
+  // delegates entirely to the real API, so there's nothing of ours to test in isolation here; the
+  // actual round 2 fix is on the *write* side — see plan-retype.test.ts's `tagsKeyOf` coverage,
+  // which never targets `tag` and matches `tags` case-insensitively.
 
   it('frontmatterTags is empty when every tag is inline (I4)', () => {
     const app = App.createConfigured__({ files: { 'note.md': 'Body with only #inline tag.\n' } });

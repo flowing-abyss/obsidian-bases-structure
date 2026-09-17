@@ -77,10 +77,17 @@ export function readNote(app: App, file: TFile): NoteData {
   const cache = app.metadataCache.getFileCache(file) ?? {};
   const tags = uniqueInOrder((getAllTags(cache) ?? []).map(stripHash));
   const frontmatter = copyFrontmatter(cache.frontmatter);
-  // `parseFrontMatterTags` reads both the `tags` and `tag` frontmatter keys (scalar or list) and
-  // handles neither being present — the frontmatter-only subset of `tags` retype is allowed to
-  // rewrite (see `NoteData.frontmatterTags`).
+  // Real Obsidian 1.13's `parseFrontMatterTags` reads only the `tags` frontmatter key (matched
+  // case-insensitively — never `tag`, singular) and does *not* strip a leading `#` itself; it
+  // returns each element exactly as written. We strip it here so `frontmatterTags` (the
+  // frontmatter-only subset of `tags` retype is allowed to rewrite — see `NoteData.frontmatterTags`)
+  // is always bare names, matching `tags`'s own convention.
   const frontmatterTags = uniqueInOrder((parseFrontMatterTags(frontmatter) ?? []).map(stripHash));
+  // `cache.tags` is the metadata cache's own inline-tag list — tags written in the note's body
+  // text, distinct from `cache.frontmatter`'s (round 2 minor 3): read straight from there instead
+  // of deriving it as `tags - frontmatterTags`, so a tag present in *both* places still correctly
+  // reports as body-held.
+  const bodyTags = uniqueInOrder((cache.tags ?? []).map((entry) => stripHash(entry.tag)));
   const propertyLinks = readPropertyLinks(app, file, cache.frontmatterLinks ?? []);
   const links = Object.keys(app.metadataCache.resolvedLinks[file.path] ?? {});
   return {
@@ -88,6 +95,7 @@ export function readNote(app: App, file: TFile): NoteData {
     basename: file.basename,
     tags,
     frontmatterTags,
+    bodyTags,
     frontmatter,
     propertyLinks,
     links,
