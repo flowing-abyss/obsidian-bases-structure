@@ -256,6 +256,13 @@ function arrayPropertyWrite(
   oldExpected: string | undefined,
   newValue: string | undefined,
 ): KeyWrite | null {
+  // Round 2 minor 4: the old and new recipes can share the same name *and* value (e.g. `scope:
+  // work` required by both the old and new type, stored as `[work, home]`) — nothing distinguishes
+  // old from new here, so there's nothing to change; removing it would be pure churn (and would
+  // wrongly touch a value the retype doesn't actually invalidate).
+  if (oldExpected !== undefined && newValue !== undefined && looseEqual(oldExpected, newValue)) {
+    return null;
+  }
   const hasOld =
     oldExpected !== undefined &&
     items.some((item) => typeof item === 'string' && looseEqual(item, oldExpected));

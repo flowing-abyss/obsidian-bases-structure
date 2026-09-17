@@ -404,6 +404,43 @@ describe('planAction — retype: old-type property cleanup and new-type property
       },
     ]);
   });
+
+  it('does not touch a list-property value shared by the old and new recipe (round 2 minor 4)', () => {
+    // Both Old and New require `scope: work` — nothing distinguishes them on that name, so a
+    // retype between them must leave "work" alone even though it's technically "the old value".
+    const schema = schemaFrom({
+      types: {
+        Cat: { tag: 'cat', children: { Old: 'up', New: 'up' } },
+        Old: { property: { scope: 'work', status: 'todo' } },
+        New: { property: { scope: 'work', status: 'doing' } },
+      },
+    });
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        frontmatter: { scope: ['work', 'home'], status: 'todo' },
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'New' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [{ key: 'status', value: { kind: 'literal', value: 'doing' } }],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('n.md')?.frontmatter['scope']).toStrictEqual(['work', 'home']);
+  });
 });
 
 describe('planAction — retype: I4 — retype only rewrites frontmatter tags, never body ones', () => {
