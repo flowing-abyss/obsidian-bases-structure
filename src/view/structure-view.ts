@@ -154,9 +154,27 @@ export class StructureView extends BasesView {
   /** Bases can call this at any time, including while the user has a create draft open and is
    * mid-keystroke (e.g. a metadata plugin filling in fields on the note the draft is about to
    * chain from) — both renderers rebuild every node on `update()`, which would otherwise destroy
-   * the draft's DOM, typed value and focus. While `hasOpenDraft` is true, defer: remember that a
-   * render is owed and let `flushPendingRender` run it once the draft actually closes. */
+   * the draft's DOM, typed value and focus. Routes through `deferrableRender` for exactly that
+   * reason. */
   override onDataUpdated(): void {
+    this.deferrableRender();
+  }
+
+  /** The one gate every render request other than a create commit's own close-triggered flush
+   * (`flushPendingRender`, run from inside `onDraftClosed` — see its own doc comment) must go
+   * through: while `hasOpenDraft` is true, defer — remember that a render is owed and let
+   * `flushPendingRender` run it once the draft actually closes. Rendering immediately here instead
+   * would rebuild every node's DOM (including the open draft's own wrapper/input) without going
+   * through `teardownDraft` first — the only path that detaches the input's own blur listener
+   * before removing it. Skipping that silently loses the typed name, and in a real browser the
+   * synchronous `blur` a detached-but-still-listening input fires can even re-enter
+   * `cancelDraft`/`teardownDraft` mid-removal (`removeChild` on a node "moved in a 'blur' event
+   * handler"). Wired as `ActionsDeps.refresh` (used by every action that isn't the create commit
+   * closing its own draft: `commitAndNotify` for move/retype, `undoLast`, and the notice button's
+   * own `runUndoFromNotice`) so none of them can rebuild the DOM out from under an unrelated open
+   * draft either — e.g. dragging a node while a create draft is open elsewhere, or an older
+   * notice's undo settling after a new draft opened. */
+  private deferrableRender(): void {
     if (this.actions?.hasOpenDraft === true) {
       this.pendingRender = true;
       return;
@@ -275,12 +293,15 @@ export class StructureView extends BasesView {
       getInput,
       freshInput: () => this.readFreshInput(),
       hostPath,
-      // M11: the safe path, not a bare `this.render()` — a render error after a successful commit
-      // (or undo) must show up as the render's own failure message, not get swallowed into
-      // `commitAndNotify`'s generic "could not apply the change" catch (which only wraps
-      // `commitPlan` itself throwing, not whatever `refresh()` does afterward).
+      // M11: routes through the safe path (eventually `safeRender`, not a bare `this.render()`) —
+      // a render error after a successful commit (or undo) must show up as the render's own
+      // failure message, not get swallowed into `commitAndNotify`'s generic "could not apply the
+      // change" catch (which only wraps `commitPlan` itself throwing, not whatever `refresh()`
+      // does afterward). `deferrableRender`, not `safeRender` directly, so a move/retype/undo that
+      // settles while an unrelated draft is open (elsewhere, or opened after this action started)
+      // defers the same way a Bases-driven `onDataUpdated` already does — see its own doc comment.
       refresh: () => {
-        this.safeRender();
+        this.deferrableRender();
       },
       onDraftClosed: () => this.flushPendingRender(),
     });

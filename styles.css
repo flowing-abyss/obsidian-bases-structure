@@ -11,10 +11,10 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   height: 100%;
   color: var(--text-normal);
 
-  /* Every icon in the view goes through `setSizedIcon` (`src/view/icon.ts`), which classes the
-     `<svg>` `setIcon` inserts so it can be sized below without a bare tag selector — this project's
-     CSS conventions forbid those. Local overrides (see `.bases-structure-alsoin-icon`) rescope
-     this custom property to shrink just their own icon.
+  /* Every icon in the view goes through `setSizedIcon` (`src/view/icon.ts`), a thin `setIcon`
+     wrapper — sizing itself doesn't need any class from that module (see the `.svg-icon`-targeting
+     rule below, U4). This variable is what those rules read; local overrides (see
+     `.bases-structure-alsoin-icon`) rescope it to shrink just their own icon.
      Plugin-specific name (M12), not the bare `--icon-size` a redefinition here used to shadow —
      custom properties inherit down the DOM, so a bare name risked leaking this view's own 16px
      default onto any of Obsidian's *own* icons rendered inside it (e.g. a Menu popup anchored in

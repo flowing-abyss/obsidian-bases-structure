@@ -144,6 +144,10 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
   const app = App.createConfigured__({ files });
   const schema = schemaFrom(options.schemaConfig ?? SCHEMA_CONFIG);
   const { root, nodes } = makeTree(Object.keys(files));
+  // Connected to the live document (unlike the rest of this fixture, which is otherwise a plain
+  // in-memory tree) so `HTMLElement.isConnected` — which `handleDraftBlur`'s defence-in-depth guard
+  // reads — matches production, where `.bases-structure-body` always is. Cleaned up in `afterEach`.
+  document.body.appendChild(root);
   const state = makeState();
   const rebuildTree = options.rebuildTree ?? true;
   let visiblePaths = new Set(Object.keys(files));
@@ -305,6 +309,7 @@ function attachRendererChildren(nodeEl: HTMLElement): void {
 afterEach(() => {
   NoticeMock.instances.length = 0;
   vi.restoreAllMocks();
+  document.body.innerHTML = '';
 });
 
 describe('startCreate', () => {
@@ -506,6 +511,27 @@ describe('draft cancellation', () => {
     await vi.waitFor(() => {
       expect(h.refresh).toHaveBeenCalled();
     });
+  });
+
+  it('a blur dispatched on a detached draft input does not throw and does not call teardown twice (defence in depth)', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    const inputEl = draftInput(h.root);
+    const wrapperEl = inputEl.closest('.bases-structure-draft');
+    if (wrapperEl === null) throw new Error('missing draft wrapper');
+    // Simulates the exact scenario `deferrableRender` (structure-view.ts) now prevents: a render
+    // elsewhere removed the wrapper directly, bypassing `teardownDraft` — so the input's own blur
+    // listener is still attached when the removal's blur fires. Kept as a regression guard even
+    // though jsdom (unlike a real browser) doesn't fire blur on removal by itself.
+    wrapperEl.remove();
+
+    expect(() => {
+      inputEl.dispatchEvent(new Event('blur'));
+    }).not.toThrow();
+
+    expect(h.onDraftClosed).not.toHaveBeenCalled();
   });
 
   it('ignores every other key, keeping the draft open and uncommitted', () => {

@@ -675,8 +675,17 @@ export class StructureActions {
     }
   };
 
+  /** Defence in depth against a render that rebuilt the DOM without going through `teardownDraft`
+   * first (see `structure-view.ts`'s `deferrableRender` for why that must never happen, and this
+   * guard for when it somehow still does): a real browser fires `blur` synchronously on an input
+   * the instant it's disconnected from the document, and this listener is only ever detached by
+   * `teardownDraft` itself — so a DOM removal that skips `teardownDraft` leaves it firing into a
+   * `wrapperEl` that's already mid-removal. Bailing out whenever the wrapper is no longer connected
+   * stops that blur from re-entering `cancelDraft` → `teardownDraft` → `wrapperEl.remove()` on a
+   * node the browser is already in the middle of removing (`removeChild`: "the node to be removed
+   * is no longer a child of this node ... moved in a 'blur' event handler"). */
   private readonly handleDraftBlur = (): void => {
-    if (this.draft !== null && !this.draft.committing) {
+    if (this.draft !== null && !this.draft.committing && this.draft.wrapperEl.isConnected) {
       this.cancelDraft();
     }
   };

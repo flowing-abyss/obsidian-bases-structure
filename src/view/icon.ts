@@ -1,15 +1,14 @@
-// Thin wrapper around Obsidian's `setIcon`: every icon in the view is sized/aligned by a single
-// CSS rule scoped to a class (`.bases-structure-icon`, see `styles.css`), never a bare `svg`
-// selector — the project's CSS conventions forbid tag selectors so the plugin's rules can't leak
-// onto an unrelated `<svg>` elsewhere on the page. `setIcon` itself only inserts the markup, so
-// this is where that class gets attached.
+// Thin wrapper around Obsidian's `setIcon` — the one call site every icon in the view goes
+// through, in case a future shared behavior needs it. Sizing/alignment itself needs no class from
+// here: `styles.css` (see U4) targets Obsidian's own `.svg-icon` class directly, through selectors
+// specific enough (three plugin-scoped ancestor classes deep) to beat Obsidian's global sizing rule
+// without a plugin-specific marker class or `!important` — a `.bases-structure-icon` class used to
+// be added here for exactly that purpose, but lost that specificity fight outright, so it was
+// dropped rather than left around unused.
 
 import type { IconName } from 'obsidian';
 import { setIcon } from 'obsidian';
 
-const ICON_CLASS = 'bases-structure-icon';
-
 export function setSizedIcon(el: HTMLElement, icon: IconName): void {
   setIcon(el, icon);
-  el.querySelector('svg')?.classList.add(ICON_CLASS);
 }

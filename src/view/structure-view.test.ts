@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import * as schemaModule from '../core/schema.js';
 import StructureViewPlugin from '../main.js';
+import { UndoManager } from '../obsidian/undo-manager.js';
 import { StructureActions } from './actions-ui.js';
 import * as dragModule from './drag.js';
 import { GraphRenderer } from './graph-renderer.js';
@@ -544,6 +545,148 @@ function findNode(parentEl: HTMLElement, path: string): HTMLElement {
   }
   throw new Error(`Test setup error: no node element for "${path}"`);
 }
+
+// Regression coverage for the removeChild/blur bug the C1 re-review found: `undoLast`,
+// `runUndoFromNotice` (I1) and `commitAndNotify` (move/retype) all call `ActionsDeps.refresh`
+// unconditionally once their own async work settles — before this fix, that rebuilt the whole DOM
+// via `safeRender` even while an *unrelated* draft was open elsewhere, destroying its wrapper/input
+// without going through `teardownDraft` (the only path that detaches the input's own blur
+// listener first). The typed name was silently lost, and in a real browser the synchronous `blur`
+// a detached-but-still-listening input fires re-entered `cancelDraft` → `teardownDraft` →
+// `wrapperEl.remove()` mid-removal (`removeChild`: "the node to be removed is no longer a child of
+// this node ... moved in a 'blur' event handler"). jsdom doesn't fire `blur` on removal (unlike a
+// real browser), so these tests assert the observable contract instead: a settling action doesn't
+// rebuild the DOM while a draft is open, and closing that draft afterward flushes exactly the one
+// render that was owed.
+describe('StructureView — actions defer their own refresh while an unrelated draft is open (removeChild/blur fix)', () => {
+  const typesConfig = { Cat: { tag: 'cat', children: { Leaf: 'up' } }, Leaf: { tag: 'leaf' } };
+
+  it('a settling move does not rebuild the DOM while an unrelated draft is open, and flushes exactly one render once that draft closes', async () => {
+    const app = App.createConfigured__({
+      files: {
+        'cat1.md': '---\ntags: [cat]\n---\n',
+        'cat2.md': '---\ntags: [cat]\n---\n',
+        'leaf.md': '---\ntags: [leaf]\nup: "[[cat1]]"\n---\n',
+      },
+    });
+    const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
+    const { view, parentEl } = createView(app, [
+      mustFile(app, 'cat1.md'),
+      mustFile(app, 'cat2.md'),
+      mustFile(app, 'leaf.md'),
+    ]);
+    document.body.appendChild(parentEl);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    const dragDeps = attachDragSpy.mock.calls[0]?.[0];
+    if (dragDeps === undefined) throw new Error('Test setup error: attachDrag was not called');
+
+    // Gate the move's own write so its commit stays "in flight" until the test releases it.
+    let resolveWrite: (() => void) | undefined;
+    const writeGate = new Promise<void>((resolve) => {
+      resolveWrite = resolve;
+    });
+    const originalProcessFrontMatter = app.fileManager.processFrontMatter.bind(app.fileManager);
+    vi.spyOn(app.fileManager, 'processFrontMatter').mockImplementation(async (file, fn) => {
+      await writeGate;
+      return originalProcessFrontMatter(file, fn);
+    });
+
+    // Starts the move (leaf.md -> cat2.md) via the same path a real drag-drop uses — its own
+    // `commitAndNotify` is now awaiting the gated write above.
+    dragDeps.onDrop('leaf.md', 'cat2.md');
+
+    // While that move is still in flight, the user opens an unrelated create draft and types.
+    findNode(parentEl, 'cat1.md')
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) throw new Error('Test setup error: draft input did not open');
+    input.value = 'Should Survive The Settling Move';
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    resolveWrite?.();
+    await vi.waitFor(() => {
+      const file = app.vault.getFileByPath('leaf.md');
+      expect(file).not.toBeNull();
+      if (file === null) return;
+      expect(app.metadataCache.getFileCache(file)?.frontmatter?.['up']).toBe('[[cat2]]');
+    });
+
+    // The settling move's own `refresh()` must not have rebuilt the DOM out from under the open,
+    // unrelated draft.
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBe(input);
+    expect(input.value).toBe('Should Survive The Settling Move');
+    expect(document.activeElement).toBe(input);
+
+    // Closing the draft flushes exactly the one deferred render.
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+  });
+
+  it('a settling undo (I1 — undoLast/runUndoFromNotice) does not rebuild the DOM while a draft is open, and flushes exactly one render once that draft closes', async () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    document.body.appendChild(parentEl);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+
+    // Gate `UndoManager.undo()` so the undo triggered below stays "in flight" until released.
+    let resolveUndo: ((result: { label: string | null; skipped: string[] }) => void) | undefined;
+    const undoGate = new Promise<{ label: string | null; skipped: string[] }>((resolve) => {
+      resolveUndo = resolve;
+    });
+    vi.spyOn(UndoManager.prototype, 'undo').mockReturnValue(undoGate);
+    vi.spyOn(UndoManager.prototype, 'canUndo', 'get').mockReturnValue(true);
+
+    // Mod+Z works without an active node (M7) — triggers `StructureActions.undoLast`, whose own
+    // `undo.undo()` is now awaiting the gate above.
+    const bodyEl = parentEl.querySelector<HTMLElement>('.bases-structure-body');
+    bodyEl?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+
+    // While that undo is still in flight, the user opens a create draft and types.
+    findNode(parentEl, 'cat.md')
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) throw new Error('Test setup error: draft input did not open');
+    input.value = 'Should Survive The Settling Undo';
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    resolveUndo?.({ label: 'Some earlier change', skipped: [] });
+    await vi.waitFor(() => {
+      expect(
+        NoticeMock.instances.some(
+          (notice) =>
+            typeof notice.message === 'string' && notice.message.includes('Some earlier change'),
+        ),
+      ).toBe(true);
+    });
+
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBe(input);
+    expect(input.value).toBe('Should Survive The Settling Undo');
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+  });
+});
 
 describe('StructureView — drag wiring', () => {
   const twoParentsConfig = { Cat: { tag: 'cat', children: { Leaf: 'up' } }, Leaf: { tag: 'leaf' } };
