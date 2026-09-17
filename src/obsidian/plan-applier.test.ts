@@ -1,11 +1,15 @@
 import type * as ObsidianModule from 'obsidian';
+import type { TFile as RealTFile } from 'obsidian';
 import { App, type TFile } from 'obsidian-test-mocks/obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import type { Plan } from '../core/plan-types.js';
+import { planAction } from '../core/planner.js';
+import { parseSchema } from '../core/schema.js';
 import { applyPlan as simulateApplyPlan } from '../core/simulate.js';
 import type { Snapshot } from '../core/snapshot.js';
 import { applyPlan, commitPlan } from './plan-applier.js';
+import { readSnapshot } from './snapshot-reader.js';
 import { UndoManager } from './undo-manager.js';
 
 // The real `Notice` mock wires its constructor through the library's internal `strictProxy`,
@@ -262,6 +266,59 @@ describe('applyPlan — changes', () => {
       'some text',
       '[[Ext]]',
     ]);
+  });
+
+  it('round 3: the real planner’s own output (readSnapshot → planAction → applyPlan), applied to a mock vault, keeps an untagged note, a wrong-type note, a typed "also in" category, and a user-added value', async () => {
+    const app = App.createConfigured__({
+      files: {
+        'C1.md': '---\ntags: [category]\n---\n',
+        'C2.md': '---\ntags: [category]\n---\n',
+        'ExtCat.md': '---\ntags: [category]\n---\n',
+        'UserCat.md': '',
+        'Random.md': '',
+        'WrongType.md': '---\ntags: [other]\n---\n',
+        'A.md': '---\ntags: [meta]\ncategory: "[[C1]]"\n---\n',
+        'M2.md': '---\ntags: [meta]\ncategory: "[[C2]]"\n---\n',
+        'H.md':
+          '---\ntags: [hier]\nmeta:\n  - "[[A]]"\n  - "[[Random]]"\n  - "[[WrongType]]"\ncategory:\n  - "[[C1]]"\n  - "[[ExtCat]]"\n  - "[[UserCat]]"\n---\n',
+      },
+    });
+    const schema = parseSchema(
+      (key: string) =>
+        ({
+          inherit: ['category'],
+          types: {
+            Category: { tag: 'category', children: { Meta: 'category' } },
+            Meta: { tag: 'meta', children: { Hier: 'meta' } },
+            Hier: { tag: 'hier' },
+            Other: { tag: 'other' },
+          },
+        })[key],
+    ).schema;
+    const env = { defaultFolder: '', exists: (): boolean => false };
+    const realFile = (path: string): RealTFile => mustFile(app, path).asOriginalType2__();
+    const originalApp = app.asOriginalType__();
+    const initialSnapshot = readSnapshot(
+      originalApp,
+      [realFile('A.md'), realFile('M2.md'), realFile('H.md')],
+      null,
+    );
+
+    const result = planAction(
+      schema,
+      initialSnapshot,
+      { kind: 'move', node: 'H.md', parent: 'M2.md' },
+      env,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const outcome = await applyPlan(originalApp, result.plan, 'Move', initialSnapshot);
+
+    expect(outcome.error).toBeNull();
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'H.md'));
+    expect(cache?.frontmatter?.['meta']).toStrictEqual(['[[M2]]', '[[Random]]', '[[WrongType]]']);
+    expect(cache?.frontmatter?.['category']).toStrictEqual(['[[C2]]', '[[ExtCat]]', '[[UserCat]]']);
   });
 });
 

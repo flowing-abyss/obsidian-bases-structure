@@ -391,21 +391,14 @@ describe('deriveSubtreeWrites', () => {
           },
         ],
       },
-      {
-        path: 'e.md',
-        writes: [
-          {
-            key: 'k',
-            // e.md inherits from its parent d.md, whose *resulting* k (round 2: recorded from
-            // current − remove + add, not from a "desired" value) now includes "old-value.md" —
-            // so e picks it up too, maintaining the inherit-cascade invariant.
-            value: { kind: 'links', remove: [], add: ['old-value.md'], list: true },
-          },
-        ],
-      },
     ]);
     // "missingChild.md" (a phantom entry in root's own `children`) is omitted: it's absent from
-    // `structure.nodes` entirely.
+    // `structure.nodes` entirely. "e.md" is also omitted: "old-value.md" is in *both* d.md's old
+    // and new contribution to "k" (round 3: `add` only fires for a target the action *newly*
+    // contributes, i.e. in U_new but not U_old) — nothing about this action actually changed what
+    // e.md should inherit from d.md, so e.md gets no write, even though "old-value.md" isn't yet
+    // reflected in e.md's own current value (that gap predates this action).
     expect(result.map((entry) => entry.path)).not.toContain('missingChild.md');
+    expect(result.map((entry) => entry.path)).not.toContain('e.md');
   });
 });

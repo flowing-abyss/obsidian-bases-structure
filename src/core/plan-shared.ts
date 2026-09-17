@@ -73,7 +73,7 @@ export interface EdgeWriteInputs {
   readonly newParent: string; // P
   readonly oldEdge: EdgeRule | null; // E
   readonly key: string; // k = rule.property
-  readonly staleForNewKey: ReadonlySet<string>; // round 2 C1: {O} ∪ U_old(k) for a move; ∅ when k is brand new to N (retype/child key change)
+  readonly staleForNewKey: ReadonlySet<string>; // round 2 C1: {O} for a move (plus O's own contribution to k, round 3: only when k ∈ schema.inherit); ∅ when k is brand new to N (retype/child key change)
 }
 
 /** The edge-key write itself: a patch that removes only what `staleForNewKey` says the action
@@ -151,12 +151,15 @@ export interface InheritWriteInputs {
 }
 
 /** Every `schema.inherit` key except `inputs.excludeKey`, given the node's property parents before
- * and after the action. Round 2 C1 rule: `remove = (U_old(q) − U_new(q)) ∩ current`,
- * `add = U_new(q) − current` — a value the user added that no old parent contributed (an "also in"
- * link, a value from an untracked source) is in neither `U_old` nor `U_new`'s removal side, so it's
- * never touched. Mutates `ctx.linkOverrides` for `node` as writes are found — mirrors
- * `deriveSubtreeWrites`'s per-descendant recompute, applied to the node itself with caller-supplied
- * parent lists instead of the structure's own `parent`/`extras`. */
+ * and after the action. Round 2 C1 rule: `remove = (U_old(q) − U_new(q)) ∩ current` — a value the
+ * user added that no old parent contributed (an "also in" link, a value from an untracked source)
+ * is in neither `U_old` nor `U_new`'s removal side, so it's never touched. Round 3:
+ * `add = (U_new(q) − U_old(q)) − current` — only a target the action *newly* contributes is added;
+ * one a property parent could already have contributed before the action, but `current` never
+ * happened to reflect, is left alone (a move fixes only what it changes, not pre-existing drift).
+ * Mutates `ctx.linkOverrides` for `node` as writes are found — mirrors `deriveSubtreeWrites`'s
+ * per-descendant recompute, applied to the node itself with caller-supplied parent lists instead
+ * of the structure's own `parent`/`extras`. */
 export function inheritWritesFor(
   ctx: SubtreeContext,
   oldCtx: SubtreeContext,
@@ -174,7 +177,10 @@ export function inheritWritesFor(
     const current = nLinks[key] ?? [];
     const staleSet = new Set(uOld.filter((target) => !uNew.includes(target)));
     const remove = current.filter((target) => staleSet.has(target));
-    const add = uNew.filter((target) => !current.includes(target));
+    // Round 3: only a target the action *newly* contributes (in U_new but not already in U_old) is
+    // added — see derive.ts's `writesForDescendant` for the full rationale (this is the same rule,
+    // applied to the moved/retyped node's own inherit-key recompute rather than a descendant's).
+    const add = uNew.filter((target) => !uOld.includes(target) && !current.includes(target));
     if (remove.length === 0 && add.length === 0) {
       continue;
     }

@@ -309,8 +309,10 @@ describe('planAction — retype: own edge-key change cascades to children', () =
       [
         note('cat.md', { tags: ['cat'] }),
         note('m.md', { tags: ['meta'], propertyLinks: { category: ['cat.md'] } }),
-        // "category" isn't set yet on h.md — it must be freshly cascaded down as part of the
-        // subtree recompute (not just left alone the way "meta"/"prob2" are handled explicitly).
+        // "category" isn't set on h.md, and the retype never changes what m.md itself contributes
+        // to "category" (its own value is "cat.md" both before and after) — round 3: a retype only
+        // writes what it actually changes, so this pre-existing gap is left alone rather than
+        // being "freshly cascaded down" as a side effect of an unrelated edge-key change.
         note('h.md', { tags: ['hier'], propertyLinks: { meta: ['m.md'] } }),
       ],
       { host: 'cat.md', results: ['m.md', 'h.md'] },
@@ -340,7 +342,6 @@ describe('planAction — retype: own edge-key change cascades to children', () =
         writes: [
           { key: 'prob2', value: { kind: 'links', remove: [], add: ['m.md'], list: true } },
           { key: 'meta', value: { kind: 'links', remove: ['m.md'], add: [], list: true } },
-          { key: 'category', value: { kind: 'links', remove: [], add: ['cat.md'], list: true } },
         ],
       },
     ]);

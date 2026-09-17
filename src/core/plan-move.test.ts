@@ -211,25 +211,42 @@ describe('planAction — move: keeps extra values in the same edge property', ()
 });
 
 describe('planAction — move: preserves an unresolved link, plain text, and a link outside the base', () => {
-  it("moving H from A to M2 keeps H's other meta values — an unresolved link, plain text, and Ext (typed Meta-note, but outside the base's own results) — the reviewer's exact C1 example, exercised end to end through the real planner (manual-check regression: the planner's own \"keep\" set had only ever covered structural extras, not alsoIn/external links, so this dropped Ext even after the C1 patch rewrite)", () => {
+  it("moving H from A to M2 keeps H's other meta values (an unresolved link, plain text, an untagged existing note, and Ext — a typed Meta-note outside the base's own results) and H's other category values (ExtCat — a typed Category outside the base's own results — and a plain user-added value), the reviewer's full C1 reproduction, exercised end to end through the real planner", () => {
     const schema = schemaFrom({
+      inherit: ['category'],
       types: {
+        Category: { tag: 'category', children: { 'Meta-note': 'category' } },
         'Meta-note': { tag: 'meta', children: { Hierarchy: 'meta' } },
         Hierarchy: { tag: 'hier' },
       },
     });
-    const A = note('A.md', { tags: ['meta'] });
-    const M2 = note('M2.md', { tags: ['meta'] });
+    const C1 = note('C1.md', { tags: ['category'] });
+    const C2 = note('C2.md', { tags: ['category'] });
+    // "ExtCat" is a real, typed Category, but not part of the base's own results — same "also in"
+    // shape as "Ext" below, one level up (an inherited key rather than the edge key).
+    const ExtCat = note('ExtCat.md', { tags: ['category'] });
+    const UserCat = note('UserCat.md');
+    const A = note('A.md', { tags: ['meta'], propertyLinks: { category: ['C1.md'] } });
+    const M2 = note('M2.md', { tags: ['meta'], propertyLinks: { category: ['C2.md'] } });
     // "Ext" is a real, typed Meta-note, but not part of the base's own results — reachable only as
     // an external property-link target (readSnapshot's one-level inclusion), matching the "also
-    // in" chip the view shows for it.
+    // in" chip the view shows for it. "Random" is an existing note with no type/tag at all.
     const Ext = note('Ext.md', { tags: ['meta'] });
+    const Random = note('Random.md');
     const H = note('H.md', {
       tags: ['hier'],
-      frontmatter: { meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]'] },
-      propertyLinks: { meta: ['A.md', 'Ext.md'] },
+      frontmatter: {
+        meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]', '[[Random]]'],
+        category: ['[[C1]]', '[[ExtCat]]', '[[UserCat]]'],
+      },
+      propertyLinks: {
+        meta: ['A.md', 'Ext.md', 'Random.md'],
+        category: ['C1.md', 'ExtCat.md', 'UserCat.md'],
+      },
     });
-    const snap = snapshot([A, M2, Ext, H], { results: ['A.md', 'M2.md', 'H.md'] });
+    const snap = snapshot([C1, C2, ExtCat, UserCat, A, M2, Ext, Random, H], {
+      results: ['A.md', 'M2.md', 'H.md'],
+    });
 
     const result = planAction(schema, snap, { kind: 'move', node: 'H.md', parent: 'M2.md' }, noEnv);
 
@@ -240,6 +257,10 @@ describe('planAction — move: preserves an unresolved link, plain text, and a l
         path: 'H.md',
         writes: [
           { key: 'meta', value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true } },
+          {
+            key: 'category',
+            value: { kind: 'links', remove: ['C1.md'], add: ['C2.md'], list: true },
+          },
         ],
       },
     ]);
@@ -249,7 +270,86 @@ describe('planAction — move: preserves an unresolved link, plain text, and a l
       '[[Not yet written]]',
       'some text',
       '[[Ext]]',
+      '[[Random]]',
     ]);
+    expect(after.notes.get('H.md')?.frontmatter['category']).toStrictEqual([
+      '[[C2]]',
+      '[[ExtCat]]',
+      '[[UserCat]]',
+    ]);
+  });
+});
+
+describe('planAction — move: round 3 — a move only writes what it changes', () => {
+  it('cascades to grandchildren without also copying down a sibling-chain value nothing in this move actually changed (H/A/M2, extended to K and L)', () => {
+    // K is H's child (Hierarchy -> Hierarchy via file.backlinks) and already, independently, holds
+    // "UserVal" in its own inherited "category" — nothing to do with this move. L is K's child.
+    // Neither K's nor L's own "meta"/"category" had ever been fully cascaded from H (a realistic
+    // gap, not something this move caused) — round 2's "add = U_new - current" would have both
+    // retroactively closing that gap (K/L picking up Ext/Random/ExtCat they never had) *and*
+    // leaking K's own UserVal down to L. Round 3: only the genuinely new M2/C2 contribution lands.
+    const schema = schemaFrom({
+      inherit: ['category', 'meta'],
+      types: {
+        Category: { tag: 'category', children: { 'Meta-note': 'category' } },
+        'Meta-note': { tag: 'meta', children: { Hierarchy: 'meta' } },
+        Hierarchy: { tag: 'hier', children: { Hierarchy: 'file.backlinks' } },
+      },
+    });
+    const notes = [
+      note('C1.md', { tags: ['category'] }),
+      note('C2.md', { tags: ['category'] }),
+      note('ExtCat.md', { tags: ['category'] }),
+      note('Ext.md', { tags: ['meta'] }),
+      note('Random.md'),
+      note('UserVal.md'),
+      note('A.md', { tags: ['meta'], propertyLinks: { category: ['C1.md'] } }),
+      note('M2.md', { tags: ['meta'], propertyLinks: { category: ['C2.md'] } }),
+      note('H.md', {
+        tags: ['hier'],
+        frontmatter: {
+          meta: ['[[A]]', '[[Not yet written]]', 'some text', '[[Ext]]', '[[Random]]'],
+          category: ['[[C1]]', '[[ExtCat]]'],
+        },
+        propertyLinks: { meta: ['A.md', 'Ext.md', 'Random.md'], category: ['C1.md', 'ExtCat.md'] },
+        links: ['A.md', 'Ext.md', 'Random.md', 'K.md'],
+      }),
+      note('K.md', {
+        tags: ['hier'],
+        frontmatter: { meta: ['[[A]]'], category: ['[[C1]]', '[[UserVal]]'] },
+        propertyLinks: { meta: ['A.md'], category: ['C1.md', 'UserVal.md'] },
+        links: ['L.md'],
+      }),
+      note('L.md', {
+        tags: ['hier'],
+        frontmatter: { meta: ['[[A]]'], category: ['[[C1]]'] },
+        propertyLinks: { meta: ['A.md'], category: ['C1.md'] },
+      }),
+    ];
+    const snap = snapshot(notes, { host: 'A.md', results: notes.map((n) => n.path) });
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'H.md', parent: 'M2.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byPath = (path: string): unknown =>
+      result.plan.changes.find((change) => change.path === path)?.writes;
+    expect(byPath('K.md')).toStrictEqual([
+      { key: 'category', value: { kind: 'links', remove: ['C1.md'], add: ['C2.md'], list: true } },
+      { key: 'meta', value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true } },
+    ]);
+    expect(byPath('L.md')).toStrictEqual([
+      { key: 'category', value: { kind: 'links', remove: ['C1.md'], add: ['C2.md'], list: true } },
+      { key: 'meta', value: { kind: 'links', remove: ['A.md'], add: ['M2.md'], list: true } },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('K.md')?.frontmatter['meta']).toStrictEqual(['[[M2]]']);
+    expect(after.notes.get('K.md')?.frontmatter['category']).toStrictEqual([
+      '[[C2]]',
+      '[[UserVal]]',
+    ]);
+    expect(after.notes.get('L.md')?.frontmatter['meta']).toStrictEqual(['[[M2]]']);
+    expect(after.notes.get('L.md')?.frontmatter['category']).toStrictEqual(['[[C2]]']);
   });
 });
 

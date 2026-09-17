@@ -290,10 +290,17 @@ function inheritKeysFor(schema: Schema, node: StructureNode): readonly string[] 
  * goes, so a later descendant that treats D as one of its own property parents sees D's new
  * values. `null` when D needs no writes at all (omit D from the plan entirely).
  *
- * Round 2 C1 rule: `remove = (U_old(key) − U_new(key)) ∩ current`, `add = U_new(key) − current` —
- * `U_old` evaluated through `oldCtx` (no overrides — the true pre-action state of D's property
- * parents), `U_new` through the live `ctx`. A value D holds that no property parent ever
- * contributed (a user-added value, an "also in" link) is in neither set and is never removed. */
+ * Round 2 C1 rule: `remove = (U_old(key) − U_new(key)) ∩ current`. `U_old` evaluated through
+ * `oldCtx` (no overrides — the true pre-action state of D's property parents), `U_new` through the
+ * live `ctx`. A value D holds that no property parent ever contributed (a user-added value, an
+ * "also in" link) is in neither set and is never removed.
+ *
+ * Round 3: `add = (U_new(key) − U_old(key)) − current` — only a target the action *newly*
+ * contributes is ever added. A target some property parent could already have contributed before
+ * the action (it's in `U_old` too) but that `current` never reflected is left alone: the action
+ * didn't cause that gap, so it isn't this write's job to close it (the controller's "a move only
+ * writes what it changes" decision) — see the round 3 report for the H/A/M2 regression this fixes
+ * (a descendant picking up a sibling-chain value nothing here actually changed). */
 function writesForDescendant(
   ctx: SubtreeContext,
   oldCtx: SubtreeContext,
@@ -310,7 +317,11 @@ function writesForDescendant(
     const current = ctx.snapshot.notes.get(path)?.propertyLinks[key] ?? [];
     const staleSet = new Set(uOld.filter((target) => !uNew.includes(target)));
     const remove = current.filter((target) => staleSet.has(target));
-    const add = uNew.filter((target) => !current.includes(target));
+    // Round 3: only a target the action *newly* contributes (in U_new but not already in U_old) is
+    // added — one already contributable before the action (e.g. an ancestor's own pre-existing,
+    // unrelated value) is left alone even if `current` never happened to reflect it yet. A move
+    // fixes only what it changes; it doesn't also retroactively reconcile drift nothing here caused.
+    const add = uNew.filter((target) => !uOld.includes(target) && !current.includes(target));
     if (remove.length === 0 && add.length === 0) {
       continue;
     }
