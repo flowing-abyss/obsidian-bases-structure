@@ -46,8 +46,11 @@ export function hasTag(note: NoteData, tag: string): boolean {
   });
 }
 
-/** `'a/b/c.md'` → `'c'`; a path without a `.md` suffix is returned as-is. */
-function lastSegmentBasename(path: string): string {
+/** `'a/b/c.md'` → `'c'`; a path without a `.md` suffix is returned as-is. Exported for
+ * `actions-ui.ts`'s `formatUndoResult` (I1): its skipped-note names need this same fallback in
+ * the one context with no `Snapshot` at all to resolve a real display name from (the plugin's
+ * global undo command, which has no view). */
+export function lastSegmentBasename(path: string): string {
   const lastSlash = path.lastIndexOf('/');
   const fileName = lastSlash === -1 ? path : path.slice(lastSlash + 1);
   return fileName.endsWith('.md') ? fileName.slice(0, -3) : fileName;

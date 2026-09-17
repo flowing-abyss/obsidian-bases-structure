@@ -11,7 +11,7 @@ import { parseSchema, type Schema } from '../core/schema.js';
 import { buildStructure } from '../core/structure.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
 import { UndoManager } from '../obsidian/undo-manager.js';
-import { type ActionsDeps, StructureActions } from './actions-ui.js';
+import { formatUndoResult, StructureActions, type ActionsDeps } from './actions-ui.js';
 import type { RenderInput } from './structure-view.js';
 import type { ViewUiState } from './view-state.js';
 
@@ -1941,7 +1941,7 @@ describe('undoLast', () => {
       expect(h.refresh).toHaveBeenCalled();
     });
     expect(NoticeMock.instances[0]?.message).toBe(
-      'Structure: undone "Create "New Sub"" (skipped 1 note(s))',
+      'Structure: undone "Create "New Sub"" (skipped a)',
     );
   });
 
@@ -1968,5 +1968,169 @@ describe('undoLast', () => {
       expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
     });
     expect(NoticeMock.instances[0]?.message).toBe('Structure: undo failed');
+  });
+});
+
+describe('formatUndoResult (I1)', () => {
+  it('reports "a newer change must be undone first" for a blocked result', () => {
+    expect(formatUndoResult({ blocked: true })).toBe('a newer change must be undone first');
+  });
+
+  it('reports "nothing to undo" for an empty stack', () => {
+    expect(formatUndoResult({ label: null, skipped: [] })).toBe('nothing to undo');
+  });
+
+  it('reports the label with no suffix when nothing was skipped', () => {
+    expect(formatUndoResult({ label: 'Move "leaf"', skipped: [] })).toBe('undone "Move "leaf""');
+  });
+
+  it('lists every skipped name (resolved via nameOf) when there are 3 or fewer', () => {
+    const result = formatUndoResult({ label: 'Cascade', skipped: ['a.md', 'b.md', 'c.md'] }, (p) =>
+      p.toUpperCase(),
+    );
+
+    expect(result).toBe('undone "Cascade" (skipped A.MD, B.MD, C.MD)');
+  });
+
+  it('shows the first 3 names then a "+N more" tail once there are more than 3', () => {
+    const result = formatUndoResult({
+      label: 'Cascade',
+      skipped: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md'],
+    });
+
+    // Default `nameOf` (no snapshot given) falls back to the bare path basename.
+    expect(result).toBe('undone "Cascade" (skipped a, b, c, +2 more)');
+  });
+});
+
+describe('undo notice — transaction identity and disabling (I1)', () => {
+  it('the notice button passes its own transaction — clicking an older notice after a newer change reports "a newer change must be undone first" and reverts nothing', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    const catEl = h.nodes.get('cat.md');
+    if (leafEl === undefined || catEl === undefined) throw new Error('missing elements');
+
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'First Sub';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('First Sub.md')).not.toBeNull();
+    });
+    const olderNotice = lastNotice();
+    const olderButton = (olderNotice?.message as DocumentFragment).querySelector<HTMLButtonElement>(
+      '.bases-structure-undo',
+    );
+
+    h.actions.startCreate('cat.md', catEl);
+    draftInput(h.root).value = 'Second Leaf';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('Second Leaf.md')).not.toBeNull();
+    });
+
+    olderButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(
+        NoticeMock.instances.some(
+          (notice) => notice.message === 'Structure: a newer change must be undone first',
+        ),
+      ).toBe(true);
+    });
+    // Neither note was reverted — the click was blocked, not silently redirected to the newer one.
+    expect(h.app.vault.getFileByPath('First Sub.md')).not.toBeNull();
+    expect(h.app.vault.getFileByPath('Second Leaf.md')).not.toBeNull();
+    expect(h.undo.canUndo).toBe(true);
+  });
+
+  it('the newer notice’s own button still undoes its own change normally', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    const catEl = h.nodes.get('cat.md');
+    if (leafEl === undefined || catEl === undefined) throw new Error('missing elements');
+
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'First Sub';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('First Sub.md')).not.toBeNull();
+    });
+
+    h.actions.startCreate('cat.md', catEl);
+    draftInput(h.root).value = 'Second Leaf';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('Second Leaf.md')).not.toBeNull();
+    });
+    const newerNotice = lastNotice();
+    const newerButton = (newerNotice?.message as DocumentFragment).querySelector<HTMLButtonElement>(
+      '.bases-structure-undo',
+    );
+
+    newerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('Second Leaf.md')).toBeNull();
+    });
+    expect(h.app.vault.getFileByPath('First Sub.md')).not.toBeNull();
+  });
+
+  it('disables the button after one click, so a second click does not call undo twice', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('New Sub.md')).not.toBeNull();
+    });
+    const undoSpy = vi.spyOn(h.undo, 'undo');
+    const notice = lastNotice();
+    const button = (notice?.message as DocumentFragment).querySelector<HTMLButtonElement>(
+      '.bases-structure-undo',
+    );
+
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(button?.disabled).toBe(true);
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(undoSpy).toHaveBeenCalled();
+    });
+    expect(undoSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves skipped names via the current snapshot’s display names, not just the bare path', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('New Sub.md')).not.toBeNull();
+    });
+    // 'other.md' is a real note in the harness's vault (basename "other") — reusing it as the
+    // "skipped" path proves the resolver goes through the current snapshot's displayName, not
+    // just a bare last-path-segment fallback.
+    vi.spyOn(h.undo, 'undo').mockResolvedValue({
+      label: 'Create "New Sub"',
+      skipped: ['other.md'],
+    });
+    const notice = lastNotice();
+    const button = (notice?.message as DocumentFragment).querySelector<HTMLButtonElement>(
+      '.bases-structure-undo',
+    );
+
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(
+        NoticeMock.instances.some(
+          (n) => n.message === 'Structure: undone "Create "New Sub"" (skipped other)',
+        ),
+      ).toBe(true);
+    });
   });
 });

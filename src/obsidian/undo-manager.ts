@@ -13,6 +13,14 @@ export interface UndoResult {
   readonly skipped: readonly string[];
 }
 
+/** What `undo(transaction)` returns (I1) when `transaction` is no longer on top of the stack —
+ * superseded by a newer change since, or already undone/gone entirely. Distinct from `UndoResult`
+ * rather than folded into it (e.g. a sentinel `label`) so `formatUndoResult` can tell "genuinely
+ * nothing to undo" and "something newer is in the way" apart without guessing at string content. */
+export interface UndoBlockedResult {
+  readonly blocked: true;
+}
+
 const DEFAULT_LIMIT = 50;
 
 /** First-occurrence order, duplicates dropped. */
@@ -206,7 +214,18 @@ export class UndoManager {
     return this.stack.length > 0;
   }
 
-  async undo(): Promise<UndoResult> {
+  /** `undo(requested)` (I1) — the notice/menu-item variant, whose button/item was built for one
+   * specific transaction and must never undo a *different*, newer one by accident: reverts
+   * `requested` only if it's still on top of the stack, otherwise returns `{ blocked: true }`
+   * without touching the stack at all. Plain `undo()` (the global command, `Mod+Z`, "Undo last
+   * change") always targets whatever is on top, exactly as before — `requested === undefined`
+   * short-circuits the check below and falls straight through to the same pop it always did. */
+  async undo(): Promise<UndoResult>;
+  async undo(requested: Transaction): Promise<UndoResult | UndoBlockedResult>;
+  async undo(requested?: Transaction): Promise<UndoResult | UndoBlockedResult> {
+    if (requested !== undefined && this.stack[this.stack.length - 1] !== requested) {
+      return { blocked: true };
+    }
     const transaction = this.stack.pop();
     if (transaction === undefined) {
       return { label: null, skipped: [] };

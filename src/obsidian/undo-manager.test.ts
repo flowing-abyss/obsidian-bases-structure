@@ -475,4 +475,45 @@ describe('UndoManager', () => {
     expect(await undo.undo()).toStrictEqual({ label: 'second', skipped: [] });
     expect(await undo.undo()).toStrictEqual({ label: null, skipped: [] });
   });
+
+  describe('undo(transaction) — I1', () => {
+    it('reverts and pops exactly like undo() when the given transaction is still on top', async () => {
+      const app = App.createConfigured__({});
+      const undo = new UndoManager(app.asOriginalType__());
+      const transaction: Transaction = { label: 'Only', steps: [] };
+      undo.push(transaction);
+
+      const result = await undo.undo(transaction);
+
+      expect(result).toStrictEqual({ label: 'Only', skipped: [] });
+      expect(undo.canUndo).toBe(false);
+    });
+
+    it('returns { blocked: true } and leaves the stack untouched when a newer transaction is on top', async () => {
+      const app = App.createConfigured__({});
+      const undo = new UndoManager(app.asOriginalType__());
+      const older: Transaction = { label: 'Older', steps: [] };
+      const newer: Transaction = { label: 'Newer', steps: [] };
+      undo.push(older);
+      undo.push(newer);
+
+      const result = await undo.undo(older);
+
+      expect(result).toStrictEqual({ blocked: true });
+      expect(undo.canUndo).toBe(true);
+      // The stack is untouched — the newer transaction is still the one a plain undo() reverts.
+      expect(await undo.undo()).toStrictEqual({ label: 'Newer', skipped: [] });
+      expect(await undo.undo()).toStrictEqual({ label: 'Older', skipped: [] });
+    });
+
+    it('returns { blocked: true } when the stack is empty (the transaction was already undone)', async () => {
+      const app = App.createConfigured__({});
+      const undo = new UndoManager(app.asOriginalType__());
+      const gone: Transaction = { label: 'Gone', steps: [] };
+
+      const result = await undo.undo(gone);
+
+      expect(result).toStrictEqual({ blocked: true });
+    });
+  });
 });

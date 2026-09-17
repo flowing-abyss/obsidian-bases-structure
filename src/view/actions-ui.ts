@@ -11,10 +11,11 @@ import { retypeOptions } from '../core/plan-retype.js';
 import type { Action, Plan, PlanEnv } from '../core/plan-types.js';
 import { childOptions, planAction } from '../core/planner.js';
 import type { EdgeRule, Schema } from '../core/schema.js';
-import { displayName, folderOf, type Snapshot } from '../core/snapshot.js';
+import { displayName, folderOf, lastSegmentBasename, type Snapshot } from '../core/snapshot.js';
 import type { Structure } from '../core/structure.js';
+import type { Transaction } from '../obsidian/plan-applier.js';
 import { commitPlan } from '../obsidian/plan-applier.js';
-import type { UndoManager, UndoResult } from '../obsidian/undo-manager.js';
+import type { UndoBlockedResult, UndoManager, UndoResult } from '../obsidian/undo-manager.js';
 import { reportOpenFailure } from './open-note.js';
 import type { RenderInput } from './structure-view.js';
 
@@ -133,15 +134,39 @@ function asMouseEvent(evt: MouseEvent | KeyboardEvent): MouseEvent | undefined {
   return evt instanceof MouseEvent ? evt : undefined;
 }
 
-/** `Structure: nothing to undo` / `Structure: undone "<label>" (skipped <n> note(s))` — the exact
- * wording both `StructureActions.undoLast` and the plugin's global undo command show, kept in one
- * place so the two call sites can't drift apart. */
-export function formatUndoResult(result: UndoResult): string {
+const MAX_SKIPPED_NAMES_SHOWN = 3;
+
+/** `(skipped a, b, c, +2 more)` — up to `MAX_SKIPPED_NAMES_SHOWN` display names, then a `+N more`
+ * tail; empty string when nothing was skipped. `nameOf` resolves a path to the name shown (I1). */
+function formatSkipped(skipped: readonly string[], nameOf: (path: string) => string): string {
+  if (skipped.length === 0) {
+    return '';
+  }
+  const names = skipped.map(nameOf);
+  const shown = names.slice(0, MAX_SKIPPED_NAMES_SHOWN);
+  const remaining = names.length - shown.length;
+  const list = remaining > 0 ? `${shown.join(', ')}, +${remaining} more` : shown.join(', ');
+  return ` (skipped ${list})`;
+}
+
+/** `Structure: nothing to undo` / `Structure: undone "<label>" (skipped a, b, +N more)` /
+ * `Structure: a newer change must be undone first` (I1) — the exact wording every undo surface
+ * (`StructureActions.undoLast`, the notice button's own transaction-scoped undo, and the plugin's
+ * global undo command) shows, kept in one place so they can't drift apart. `nameOf` resolves a
+ * skipped path to the display name shown — callers with a `Snapshot` pass `displayName` bound to
+ * it (real display names, aliases included); the default (`lastSegmentBasename`) is what the
+ * global undo command falls back to, since it has no view/snapshot to resolve against at all. */
+export function formatUndoResult(
+  result: UndoResult | UndoBlockedResult,
+  nameOf: (path: string) => string = lastSegmentBasename,
+): string {
+  if ('blocked' in result) {
+    return 'a newer change must be undone first';
+  }
   if (result.label === null) {
     return 'nothing to undo';
   }
-  const suffix = result.skipped.length > 0 ? ` (skipped ${result.skipped.length} note(s))` : '';
-  return `undone "${result.label}"${suffix}`;
+  return `undone "${result.label}"${formatSkipped(result.skipped, nameOf)}`;
 }
 
 /** The "Move to…" picker: a fuzzy list of `moveTargets`, each row showing the note's display name
@@ -447,11 +472,12 @@ export class StructureActions {
    * refresh, so only the wording is shared, not this method wholesale. */
   undoLast(): void {
     this.clearPendingCreate();
+    const { snapshot } = this.deps.getInput();
     this.deps.undo
       .undo()
       .then((result) => {
         this.deps.refresh();
-        notifyError(formatUndoResult(result));
+        notifyError(formatUndoResult(result, (path) => displayName(snapshot, path)));
       })
       .catch((error: unknown) => {
         logError(error);
@@ -537,11 +563,11 @@ export class StructureActions {
    * `committing`, however the commit resolves. */
   private commitAndNotify(expected: Snapshot, plan: Plan, label: string, message: string): void {
     commitPlan(this.deps.app, this.deps.undo, { plan, label, expected })
-      .then((applied) => {
+      .then((outcome) => {
         this.committing = false;
         this.deps.refresh();
-        if (applied) {
-          this.showUndoNotice(message);
+        if (outcome.applied) {
+          this.showUndoNotice(message, outcome.transaction);
         }
       })
       .catch((error: unknown) => {
@@ -718,7 +744,7 @@ export class StructureActions {
       draft.inputEl.select();
       return;
     }
-    const applied = await commitPlan(this.deps.app, this.deps.undo, {
+    const outcome = await commitPlan(this.deps.app, this.deps.undo, {
       plan: result.plan,
       label: `Create "${name}"`,
       expected: snapshot,
@@ -739,7 +765,7 @@ export class StructureActions {
     // draft already moved the user's attention elsewhere, so nothing should reopen on their behalf;
     // the `is-new` highlight itself still applies either way. Nothing to set when the commit
     // failed — no note exists to highlight or chain from.
-    if (applied) {
+    if (outcome.applied) {
       this.pendingCreate = { path: result.focus, chain: wasCurrent && mode === 'tab' };
     }
     // I6: skip the explicit `refresh()` below when closing the draft already rendered — that
@@ -751,10 +777,10 @@ export class StructureActions {
     if (!alreadyRendered) {
       this.deps.refresh();
     }
-    if (!applied) {
+    if (!outcome.applied) {
       return;
     }
-    this.showUndoNotice(`Created "${name}"`);
+    this.showUndoNotice(`Created "${name}"`, outcome.transaction);
     // U5: an Enter chain (create-*sibling*, same parent) doesn't need to wait for the new note to
     // become visible in `Structure` the way `completePending`'s Tab chain does (see
     // `PendingCreate`'s own doc comment) — `draft.parentPath` already exists right now, in the DOM
@@ -790,7 +816,12 @@ export class StructureActions {
     }
   }
 
-  private showUndoNotice(message: string): void {
+  /** `transaction` (I1) is the exact one this commit just pushed — `null` only for the
+   * (practically unreachable through this path, since a notice only shows when `commitPlan`
+   * itself reports `applied: true`) case of an apply that somehow produced zero steps. The
+   * button's own click handler passes it straight to `runUndoFromNotice`, so clicking an *older*
+   * notice after a newer change can't silently undo the wrong one. */
+  private showUndoNotice(message: string, transaction: Transaction | null): void {
     const button = createEl('button', { cls: UNDO_CLASS, text: 'Undo' });
     const fragment = createFragment((el) => {
       el.createSpan({ text: message });
@@ -798,16 +829,31 @@ export class StructureActions {
     });
     const notice = new Notice(fragment, UNDO_NOTICE_DURATION);
     button.addEventListener('click', () => {
-      this.runUndoFromNotice(notice);
+      if (button.disabled) {
+        return;
+      }
+      this.runUndoFromNotice(notice, button, transaction);
     });
   }
 
-  private runUndoFromNotice(notice: Notice): void {
-    this.deps.undo
-      .undo()
-      .then(() => {
+  /** I1: disables the button immediately (before the `await`) so a second click — real or
+   * doubled — can't fire a second undo while the first is still in flight. Reports the result via
+   * `formatUndoResult` either way: a normal undo, "a newer change must be undone first" when
+   * `transaction` is no longer on top (`UndoManager.undo`'s own identity check), or (the `null`
+   * fallback) whatever is currently on top, same as `undoLast`. */
+  private runUndoFromNotice(
+    notice: Notice,
+    button: HTMLButtonElement,
+    transaction: Transaction | null,
+  ): void {
+    button.disabled = true;
+    const { snapshot } = this.deps.getInput();
+    const result = transaction !== null ? this.deps.undo.undo(transaction) : this.deps.undo.undo();
+    result
+      .then((outcome) => {
         this.deps.refresh();
         notice.hide();
+        notifyError(formatUndoResult(outcome, (path) => displayName(snapshot, path)));
       })
       .catch((error: unknown) => {
         logError(error);

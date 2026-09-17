@@ -122,7 +122,7 @@ describe('StructureViewPlugin — undo command invocation', () => {
     expect(notifySpy).toHaveBeenCalledWith('Structure: nothing to undo');
   });
 
-  it('shows an "undone" notice with the skipped count appended when notes were skipped', async () => {
+  it('shows an "undone" notice with skipped display names appended (I1) — falls back to the path basename with no snapshot to resolve against', async () => {
     const plugin = createPlugin();
     plugin.onload();
     vi.spyOn(plugin.undo, 'canUndo', 'get').mockReturnValue(true);
@@ -138,7 +138,28 @@ describe('StructureViewPlugin — undo command invocation', () => {
       expect(notifySpy).toHaveBeenCalled();
     });
 
-    expect(notifySpy).toHaveBeenCalledWith('Structure: undone "Move note" (skipped 2 note(s))');
+    expect(notifySpy).toHaveBeenCalledWith('Structure: undone "Move note" (skipped a, b)');
+  });
+
+  it('lists up to 3 skipped names, then a "+N more" tail', async () => {
+    const plugin = createPlugin();
+    plugin.onload();
+    vi.spyOn(plugin.undo, 'canUndo', 'get').mockReturnValue(true);
+    vi.spyOn(plugin.undo, 'undo').mockResolvedValue({
+      label: 'Move note',
+      skipped: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md'],
+    });
+    const notifySpy = spyOnNotify(plugin);
+    const command = mocked(plugin).commands__.get('undo-last-change');
+
+    command?.checkCallback?.(false);
+    await vi.waitFor(() => {
+      expect(notifySpy).toHaveBeenCalled();
+    });
+
+    expect(notifySpy).toHaveBeenCalledWith(
+      'Structure: undone "Move note" (skipped a, b, c, +2 more)',
+    );
   });
 
   it('shows an "undone" notice with no suffix when nothing was skipped', async () => {

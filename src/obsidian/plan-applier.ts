@@ -321,22 +321,33 @@ export interface CommitRequest {
   readonly expected: Snapshot;
 }
 
+export interface CommitOutcome {
+  readonly applied: boolean;
+  /** The exact `Transaction` object pushed onto `undo` — the same reference `UndoManager` holds
+   * on its stack, so a caller can pass it straight to `undo.undo(transaction)` (I1) and have the
+   * identity check actually match. `null` when the plan produced no steps at all (nothing was
+   * pushed, so nothing to undo), regardless of `applied`. */
+  readonly transaction: Transaction | null;
+}
+
 /** `applyPlan`, then the outer boundary a user-triggered structure edit needs: the transaction is
  * pushed onto `undo` whenever it has at least one step — even a failed apply may have partially
  * succeeded, and that partial work still needs to be reversible. On failure, logs the error and
- * shows the user a short `Notice`; returns whether the whole plan applied cleanly. */
+ * shows the user a short `Notice`. */
 export async function commitPlan(
   app: App,
   undo: UndoManager,
   request: CommitRequest,
-): Promise<boolean> {
+): Promise<CommitOutcome> {
   const { plan, label, expected } = request;
   const outcome = await applyPlan(app, plan, label, expected);
-  if (outcome.transaction.steps.length > 0) {
+  const pushed = outcome.transaction.steps.length > 0;
+  if (pushed) {
     undo.push(outcome.transaction);
   }
+  const transaction = pushed ? outcome.transaction : null;
   if (outcome.error === null) {
-    return true;
+    return { applied: true, transaction };
   }
   console.error('[bases-structure]', outcome.error);
   const notice =
@@ -344,5 +355,5 @@ export async function commitPlan(
       ? `Structure: ${outcome.error.message}`
       : `Structure: could not apply all changes. ${errorMessage(outcome.error)}`;
   new Notice(notice);
-  return false;
+  return { applied: false, transaction };
 }

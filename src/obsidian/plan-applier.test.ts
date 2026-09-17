@@ -654,7 +654,7 @@ describe('applyPlan — missing notes', () => {
 });
 
 describe('commitPlan', () => {
-  it('applies the plan, pushes the transaction, and returns true on success', async () => {
+  it('applies the plan, pushes the transaction, and returns applied: true with that same transaction (I1)', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());
     const pushSpy = vi.spyOn(undo, 'push');
@@ -666,12 +666,15 @@ describe('commitPlan', () => {
       expected: emptySnapshot(),
     });
 
-    expect(result).toBe(true);
+    expect(result.applied).toBe(true);
     expect(pushSpy).toHaveBeenCalledTimes(1);
     expect(undo.canUndo).toBe(true);
+    // The exact reference `undo.push` received — so a caller can pass it straight to
+    // `undo.undo(transaction)`'s identity check (I1).
+    expect(result.transaction).toBe(pushSpy.mock.calls[0]?.[0]);
   });
 
-  it('pushes the partial transaction, logs, shows a Notice, and returns false on failure', async () => {
+  it('pushes the partial transaction, logs, shows a Notice, and returns applied: false with that transaction', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -690,7 +693,8 @@ describe('commitPlan', () => {
       expected: emptySnapshot(),
     });
 
-    expect(result).toBe(false);
+    expect(result.applied).toBe(false);
+    expect(result.transaction).not.toBeNull();
     expect(undo.canUndo).toBe(true);
     expect(consoleError).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
     expect(noticeMock).toHaveBeenCalledWith(
@@ -718,13 +722,13 @@ describe('commitPlan', () => {
       expected,
     });
 
-    expect(result).toBe(false);
+    expect(result.applied).toBe(false);
     expect(noticeMock).toHaveBeenCalledWith(
       'Structure: "note" changed while applying; nothing else was written',
     );
   });
 
-  it('does not push the transaction when the plan produces no steps', async () => {
+  it('does not push the transaction when the plan produces no steps, and reports transaction: null', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());
     const pushSpy = vi.spyOn(undo, 'push');
@@ -735,7 +739,7 @@ describe('commitPlan', () => {
       expected: emptySnapshot(),
     });
 
-    expect(result).toBe(true);
+    expect(result).toStrictEqual({ applied: true, transaction: null });
     expect(pushSpy).not.toHaveBeenCalled();
     expect(undo.canUndo).toBe(false);
   });
@@ -752,7 +756,7 @@ describe('commitPlan', () => {
       expected: emptySnapshot(),
     });
 
-    expect(result).toBe(false);
+    expect(result.applied).toBe(false);
     expect(noticeMock).toHaveBeenCalledWith('Structure: could not apply all changes. boom');
   });
 });
