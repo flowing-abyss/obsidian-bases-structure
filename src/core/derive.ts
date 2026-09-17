@@ -171,10 +171,15 @@ export function bareContext(ctx: SubtreeContext): SubtreeContext {
 }
 
 /** What `parentPath` currently (pre-action) contributes to `key`, straight from the *live*
- * `structure`/`snapshot` — the single old parent's own share of round 2's `U_old`, used for the
- * moved/retyped node's own edge-key write (its other old property parents, if any, never
- * contributed to *this* key in a way the action invalidates, so they're deliberately excluded —
- * see the C1 round 2 report for why folding them in here broke the "keeps a genuine extra" case). */
+ * `structure`/`snapshot` — the single old parent's own share of round 2's `U_old`, used only for
+ * a *moved* node's own edge-key write (its other old property parents, if any, never contributed
+ * to *this* key in a way the action invalidates, so they're deliberately excluded — see the C1
+ * round 2 report for why folding them in here broke the "keeps a genuine extra" case). The caller
+ * (`plan-move.ts`) only reaches this when `key` is a `schema.inherit` key *and* the old parent's
+ * edge to the node wasn't itself through `key` (round 4) — when it was, the node's own values
+ * under `key` are its own direct edge data, not something inheritance ever contributed, and this
+ * fallback (built for chain-forwarding through a *different* property than the edge) doesn't
+ * apply. */
 export function oldContribOf(
   live: Pick<SubtreeContext, 'schema' | 'structure' | 'snapshot'>,
   parentPath: string,

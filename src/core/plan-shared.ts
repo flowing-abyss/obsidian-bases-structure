@@ -73,14 +73,15 @@ export interface EdgeWriteInputs {
   readonly newParent: string; // P
   readonly oldEdge: EdgeRule | null; // E
   readonly key: string; // k = rule.property
-  readonly staleForNewKey: ReadonlySet<string>; // round 2 C1: {O} for a move (plus O's own contribution to k, round 3: only when k ∈ schema.inherit); ∅ when k is brand new to N (retype/child key change)
+  readonly staleForNewKey: ReadonlySet<string>; // round 2 C1: {O} for a move (plus O's own contribution to k, round 3: only when k ∈ schema.inherit, round 4: and only when O's old edge to N wasn't through k itself); ∅ when k is brand new to N (retype/child key change)
 }
 
 /** The edge-key write itself: a patch that removes only what `staleForNewKey` says the action
  * invalidates, and adds the new parent (see `derive.ts`'s `edgeKeyPatch`). `null` when nothing
- * actually changes. Shared by move (`staleForNewKey` = `{O} ∪ U_old(k)`) and retype/child
- * key-change writes (`staleForNewKey` = `∅`, since the key wasn't holding this relationship
- * before — nothing in it is stale, only the new parent needs adding). */
+ * actually changes. Shared by move (`staleForNewKey` = `{O}`, plus `U_old(k)` only when k is a
+ * `schema.inherit` key *and* O's old edge to N wasn't through k itself — see `EdgeWriteInputs`)
+ * and retype/child key-change writes (`staleForNewKey` = `∅`, since the key wasn't holding this
+ * relationship before — nothing in it is stale, only the new parent needs adding). */
 function computeEdgeWrite(inputs: EdgeWriteInputs, cur: readonly string[]): KeyWrite | null {
   const { remove, add } = edgeKeyPatch(cur, inputs.staleForNewKey, inputs.newParent);
   if (remove.length === 0 && add.length === 0) {
