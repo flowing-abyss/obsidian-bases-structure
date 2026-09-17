@@ -12,7 +12,7 @@ import {
   unionInheritedTargets,
   type SubtreeContext,
 } from './derive.js';
-import type { KeyWrite } from './plan-types.js';
+import type { KeyWrite, Plan } from './plan-types.js';
 import type { EdgeRule, Schema } from './schema.js';
 import { displayName, type Snapshot } from './snapshot.js';
 import type { Structure } from './structure.js';
@@ -32,6 +32,35 @@ export function textLinkReason(
   return kind === 'backlinks'
     ? `The link from "${parentName}" to "${nodeName}" lives in note text and cannot be written automatically`
     : `The link from "${nodeName}" to "${parentName}" lives in note text and cannot be written automatically`;
+}
+
+export interface TextEdgeWrites {
+  readonly appends: Plan['appends'];
+  readonly bodyLinkRemovals: Plan['bodyLinkRemovals'];
+}
+
+/** The append (new mention) plus removal (stale mention) pair for a text-kind move: `'backlinks'`
+ * writes/removes in the *parent's* body (the parent mentions the child), `'links'` writes/removes
+ * in the *node's own* body (the child mentions the parent) — mirrors `textLinkReason`'s ordering.
+ * `oldParent: null` (the node had no previous primary parent) means there's nothing to remove. */
+export function textEdgeWrites(
+  kind: 'links' | 'backlinks',
+  node: string,
+  oldParent: string | null,
+  newParent: string,
+): TextEdgeWrites {
+  const appends =
+    kind === 'backlinks'
+      ? [{ path: newParent, target: node }]
+      : [{ path: node, target: newParent }];
+  if (oldParent === null) {
+    return { appends, bodyLinkRemovals: [] };
+  }
+  const bodyLinkRemovals =
+    kind === 'backlinks'
+      ? [{ path: oldParent, target: node }]
+      : [{ path: node, target: oldParent }];
+  return { appends, bodyLinkRemovals };
 }
 
 export function recordOverride(

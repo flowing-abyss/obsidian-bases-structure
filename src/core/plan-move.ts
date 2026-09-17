@@ -1,6 +1,7 @@
 // Move planning: turns a `'move'` `Action` into a verified `Plan` that reparents a node and
-// cascades link updates to its descendants, or a rejection with a stable, user-facing reason. No
-// Obsidian imports.
+// cascades link updates to its descendants, or a rejection with a stable, user-facing reason. A
+// `'property'`-kind edge patches a frontmatter key; a `'backlinks'`/`'links'`-kind edge instead
+// appends/removes a body mention (see `textEdgeWrites` in plan-shared.ts). No Obsidian imports.
 
 import {
   bareContext,
@@ -15,9 +16,9 @@ import {
   firstChangedOtherNode,
   inheritWritesFor,
   recordAllOverrides,
-  textLinkReason,
+  textEdgeWrites,
 } from './plan-shared.js';
-import type { Action, Plan, PlanResult } from './plan-types.js';
+import type { Action, KeyWrite, Plan, PlanResult } from './plan-types.js';
 import type { EdgeRule, Schema } from './schema.js';
 import { applyPlan } from './simulate.js';
 import { displayName, type Snapshot } from './snapshot.js';
@@ -92,9 +93,6 @@ function validateMove(
       reason: `"${nNode.type}" cannot be placed under "${displayName(snapshot, action.parent)}"`,
     };
   }
-  if (rule.kind !== 'property') {
-    return { ok: false, reason: textLinkReason(rule.kind, snapshot, action.parent, action.node) };
-  }
   return { ok: true, fields: { nNode, rule } };
 }
 
@@ -149,6 +147,60 @@ function verifyMove(inputs: VerifyMoveInputs): string | null {
   return null;
 }
 
+interface PropertyEdgeInputs {
+  readonly schema: Schema;
+  readonly snapshot: Snapshot;
+  readonly node: string;
+  readonly newParent: string;
+  readonly rule: EdgeRule;
+  readonly oldParent: string | null;
+  readonly oldEdge: EdgeRule | null;
+}
+
+/** The node's own edge-key write for a `'property'`-kind rule — the only part of a move that
+ * depends on the edge's kind; a text-kind rule (`'backlinks'`/`'links'`, see `textEdgeWrites` in
+ * plan-shared.ts) has no frontmatter property to patch here at all.
+ *
+ * Round 2 C1: the edge key's stale set is the old parent itself plus whatever it used to
+ * contribute to this specific key (`U_old(k)`, just the *single* old parent — not the node's
+ * other old property parents, which never contributed to `k` in a way this move invalidates).
+ * Round 3 fix: `oldContribOf` only ever falls back to O's *own* raw values for `k` when nothing
+ * else claims it — that fallback is the `inherit`-cascade mechanism, so it only applies when `k`
+ * is actually a `schema.inherit` key. For a plain (non-inherited) edge property, O's own values
+ * for that same property name are unrelated data that happens to share a name, not something O
+ * ever contributed to N — including them here deleted a value N held for its own reasons (e.g.
+ * O and N both happening to link the same third note through a same-named, non-inherited key).
+ * Round 4 fix: that fallback also has to be skipped when `k` *is* N's old edge property itself
+ * (`oldEdge.property === k`) — the "copy O's own raw value for k" branch exists only to model
+ * chain-forwarding through a *different* property than the edge (mirrors `plan-create.ts`'s
+ * `addInheritWrites`, which skips this exact copy `when key === rule.property`, and `derive.ts`'s
+ * `inheritKeysFor`, which excludes a node's own edge property from the generic recompute). When
+ * O was N's old parent through k directly (typically an untyped host or root, whose own type
+ * never claims k as an edge property), N's own values under k are N's, not something O
+ * contributed — folding O's raw value in here silently deleted it. */
+function propertyEdgeWrites(ctx: SubtreeContext, inputs: PropertyEdgeInputs): readonly KeyWrite[] {
+  const { schema, snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
+  const staleForNewKey = new Set(
+    oldParent === null
+      ? []
+      : [
+          oldParent,
+          ...(schema.inherit.includes(rule.property) && oldEdge?.property !== rule.property
+            ? oldContribOf(ctx, oldParent, rule.property)
+            : []),
+        ],
+  );
+  return buildEdgeWrites(schema, {
+    snapshot,
+    node,
+    oldParent,
+    newParent,
+    oldEdge,
+    key: rule.property,
+    staleForNewKey,
+  });
+}
+
 export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction): PlanResult {
   const structure = buildStructure(schema, snapshot);
   const validation = validateMove(schema, snapshot, structure, action);
@@ -166,42 +218,18 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
     linkOverrides: new Map(),
   };
   const oldCtx = bareContext(ctx);
-  // Round 2 C1: the edge key's stale set is the old parent itself plus whatever it used to
-  // contribute to this specific key (`U_old(k)`, just the *single* old parent — not the node's
-  // other old property parents, which never contributed to `k` in a way this move invalidates).
-  // Round 3 fix: `oldContribOf` only ever falls back to O's *own* raw values for `k` when nothing
-  // else claims it — that fallback is the `inherit`-cascade mechanism, so it only applies when `k`
-  // is actually a `schema.inherit` key. For a plain (non-inherited) edge property, O's own values
-  // for that same property name are unrelated data that happens to share a name, not something O
-  // ever contributed to N — including them here deleted a value N held for its own reasons (e.g.
-  // O and N both happening to link the same third note through a same-named, non-inherited key).
-  // Round 4 fix: that fallback also has to be skipped when `k` *is* N's old edge property itself
-  // (`oldEdge.property === k`) — the "copy O's own raw value for k" branch exists only to model
-  // chain-forwarding through a *different* property than the edge (mirrors `plan-create.ts`'s
-  // `addInheritWrites`, which skips this exact copy `when key === rule.property`, and `derive.ts`'s
-  // `inheritKeysFor`, which excludes a node's own edge property from the generic recompute). When
-  // O was N's old parent through k directly (typically an untyped host or root, whose own type
-  // never claims k as an edge property), N's own values under k are N's, not something O
-  // contributed — folding O's raw value in here silently deleted it.
-  const staleForNewKey = new Set(
-    oldParent === null
-      ? []
-      : [
+  const edgeWrites =
+    rule.kind === 'property'
+      ? propertyEdgeWrites(ctx, {
+          schema,
+          snapshot,
+          node: action.node,
+          newParent: action.parent,
+          rule,
           oldParent,
-          ...(schema.inherit.includes(rule.property) && oldEdge?.property !== rule.property
-            ? oldContribOf(ctx, oldParent, rule.property)
-            : []),
-        ],
-  );
-  const edgeWrites = buildEdgeWrites(schema, {
-    snapshot,
-    node: action.node,
-    oldParent,
-    newParent: action.parent,
-    oldEdge,
-    key: rule.property,
-    staleForNewKey,
-  });
+          oldEdge,
+        })
+      : [];
   const propertyExtras = nNode.extras
     .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
     .map((extra) => extra.parent);
@@ -218,7 +246,11 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
   const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
   const changes =
     nWrites.length > 0 ? [{ path: action.node, writes: nWrites }, ...subtreeWrites] : subtreeWrites;
-  const plan: Plan = { creations: [], changes, appends: [], moves: [], bodyLinkRemovals: [] };
+  const { appends, bodyLinkRemovals } =
+    rule.kind === 'property'
+      ? { appends: [], bodyLinkRemovals: [] }
+      : textEdgeWrites(rule.kind, action.node, oldParent, action.parent);
+  const plan: Plan = { creations: [], changes, appends, moves: [], bodyLinkRemovals };
   const failure = verifyMove({
     schema,
     snapshot,
@@ -256,7 +288,7 @@ export function moveTargets(
       continue;
     }
     const rule = ruleBetween(schema, candidate.type, nodeType);
-    if (rule?.kind === 'property') {
+    if (rule !== null) {
       result.add(path);
     }
   }

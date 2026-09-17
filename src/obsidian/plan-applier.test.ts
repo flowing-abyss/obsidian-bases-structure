@@ -684,6 +684,24 @@ describe('applyPlan — body link removals', () => {
     expect(errorMessage(outcome.error)).toBe('No mention of "child" found in "parent"');
     expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('- [[Other]]\n');
   });
+
+  it('rejects a move whose old mention turns out to be an embed, leaving the note untouched', async () => {
+    // The planner (Task 8) has no note text to check against — it can't tell an embed from a
+    // plain link when building `bodyLinkRemovals`. Only the applier, with the real body in hand,
+    // can catch it (`removeBodyLink` treats `![[...]]` as no match at all).
+    const app = App.createConfigured__({
+      files: { 'parent.md': '![[Child]]\n', 'child.md': '' },
+    });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'parent.md', target: 'child.md' }],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Move', emptySnapshot());
+
+    expect(errorMessage(outcome.error)).toBe('No mention of "child" found in "parent"');
+    expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('![[Child]]\n');
+  });
 });
 
 describe('applyPlan — moves', () => {

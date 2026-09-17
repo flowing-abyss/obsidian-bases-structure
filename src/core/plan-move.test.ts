@@ -134,32 +134,120 @@ describe('planAction — move: rejection reasons (hand-built schema)', () => {
     });
   });
 
-  it('rejects when the required rule is file.backlinks (text, parent -> node order)', () => {
+  it('moves across a required file.backlinks rule: appends to the new parent, removes from the old', () => {
+    // backkid's only route to Category is file.backlinks (cat1's body mentions it) — Task 8's
+    // move-over-text-links: the append writes the new parent's body, the removal cuts the old.
     const result = planAction(
       schema,
       snap,
       { kind: 'move', node: 'backkid.md', parent: 'cat2.md' },
       noEnv,
     );
-    expect(result).toStrictEqual({
-      ok: false,
-      reason:
-        'The link from "cat2" to "backkid" lives in note text and cannot be written automatically',
-    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([{ path: 'cat2.md', target: 'backkid.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([{ path: 'cat1.md', target: 'backkid.md' }]);
   });
 
-  it('rejects when the required rule is file.links (text, node -> parent order)', () => {
+  it('moves across a required file.links rule: appends to the node itself, removes from the node itself', () => {
+    // linkkid's only route to Category is file.links (linkkid's own body mentions its parent) —
+    // both the new mention and the cut of the old one land on linkkid's own note, not cat1/cat2's.
     const result = planAction(
       schema,
       snap,
       { kind: 'move', node: 'linkkid.md', parent: 'cat2.md' },
       noEnv,
     );
-    expect(result).toStrictEqual({
-      ok: false,
-      reason:
-        'The link from "linkkid" to "cat2" lives in note text and cannot be written automatically',
-    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([{ path: 'linkkid.md', target: 'cat2.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([{ path: 'linkkid.md', target: 'cat1.md' }]);
+  });
+});
+
+describe('planAction — move: over a text-linked hierarchy (Task 8)', () => {
+  // h1 (root) links [[h2]] in its body; h2 in turn links [[h4]], which links [[h5]] — a
+  // three-level text-edge branch. h3 and h6 are unlinked Hierarchy tops: h3 has its own
+  // "category" (Cat3), h6 has none and no previous parent at all.
+  const schema = schemaFrom({
+    inherit: ['category'],
+    types: { Hierarchy: { tag: 'hier', children: { Hierarchy: 'file.backlinks' } } },
+  });
+  const snap = snapshot(
+    [
+      note('Cat1.md'),
+      note('Cat3.md'),
+      note('h1.md', {
+        tags: ['hier'],
+        frontmatter: { category: ['[[Cat1]]'] },
+        propertyLinks: { category: ['Cat1.md'] },
+        links: ['h2.md'],
+      }),
+      note('h2.md', {
+        tags: ['hier'],
+        frontmatter: { category: ['[[Cat1]]'] },
+        propertyLinks: { category: ['Cat1.md'] },
+        links: ['h4.md'],
+      }),
+      note('h3.md', {
+        tags: ['hier'],
+        frontmatter: { category: ['[[Cat3]]'] },
+        propertyLinks: { category: ['Cat3.md'] },
+      }),
+      note('h4.md', {
+        tags: ['hier'],
+        frontmatter: { category: ['[[Cat1]]'] },
+        propertyLinks: { category: ['Cat1.md'] },
+        links: ['h5.md'],
+      }),
+      note('h5.md', {
+        tags: ['hier'],
+        frontmatter: { category: ['[[Cat1]]'] },
+        propertyLinks: { category: ['Cat1.md'] },
+      }),
+      note('h6.md', { tags: ['hier'] }),
+    ],
+    { host: 'h1.md', results: ['h1.md', 'h2.md', 'h3.md', 'h4.md', 'h5.md', 'h6.md'] },
+  );
+  const structure = buildStructure(schema, snap);
+  const result = planAction(schema, snap, { kind: 'move', node: 'h2.md', parent: 'h3.md' }, noEnv);
+
+  it('moves a hierarchy under another hierarchy', () => {
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([{ path: 'h3.md', target: 'h2.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([{ path: 'h1.md', target: 'h2.md' }]);
+  });
+
+  it('carries the whole branch: every descendant keeps its own parent and its inherited keys rewrite at every level', () => {
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const paths = result.plan.changes.map((change) => change.path);
+    expect(paths).toEqual(expect.arrayContaining(['h2.md', 'h4.md', 'h5.md']));
+    const afterSnap = applyPlan(snap, result.plan);
+    const after = buildStructure(schema, afterSnap);
+    expect(after.nodes.get('h2.md')?.parent).toBe('h3.md');
+    expect(after.nodes.get('h4.md')?.parent).toBe('h2.md');
+    expect(after.nodes.get('h5.md')?.parent).toBe('h4.md');
+    expect(afterSnap.notes.get('h4.md')?.frontmatter['category']).toStrictEqual(['[[Cat3]]']);
+    expect(afterSnap.notes.get('h5.md')?.frontmatter['category']).toStrictEqual(['[[Cat3]]']);
+  });
+
+  it('offers text-link parents as move targets', () => {
+    expect(moveTargets(schema, structure, 'h2.md')).toContain('h3.md');
+  });
+
+  it('appends only, with nothing to remove, when the node had no previous parent', () => {
+    const orphanResult = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'h6.md', parent: 'h1.md' },
+      noEnv,
+    );
+    expect(orphanResult.ok).toBe(true);
+    if (!orphanResult.ok) return;
+    expect(orphanResult.plan.appends).toStrictEqual([{ path: 'h1.md', target: 'h6.md' }]);
+    expect(orphanResult.plan.bodyLinkRemovals).toStrictEqual([]);
   });
 });
 
@@ -680,7 +768,7 @@ describe('moveTargets', () => {
     expect(moveTargets(schema, structure, 'cat1.md')).toStrictEqual(new Set());
   });
 
-  it('excludes the node itself, its descendants, its current parent, and text-only rules', () => {
+  it('excludes the node itself, its descendants, and its current parent', () => {
     // sub1's candidates would otherwise be: cat1 (self-excluded: it's already the parent),
     // cat2 (a valid Category target), leaf2a (its own descendant, excluded), and nothing via
     // BackKid (a different type entirely, not even a candidate rule for Sub).
@@ -689,12 +777,12 @@ describe('moveTargets', () => {
     expect(targets).toStrictEqual(new Set(['cat2.md']));
   });
 
-  it('excludes a target reachable only through a text-based (backlinks) rule', () => {
-    // backkid's only possible parent type is Category, but only via file.backlinks - never a
-    // move target since that edge can't be written automatically.
+  it('includes a target reachable only through a text-based (backlinks) rule', () => {
+    // backkid's only possible parent type is Category, and only via file.backlinks — still
+    // offered as a move target (Task 8): the planner writes/removes the body mention itself.
     const targets = moveTargets(schema, structure, 'backkid.md');
 
-    expect(targets).toStrictEqual(new Set());
+    expect(targets).toStrictEqual(new Set(['cat2.md']));
   });
 });
 
