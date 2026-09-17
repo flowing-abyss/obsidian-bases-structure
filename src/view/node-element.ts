@@ -38,6 +38,10 @@ export interface NodeElementContext {
 export interface NodeElementFlags {
   readonly isRoot?: boolean;
   readonly isOrphan?: boolean;
+  /** D1 follow-up ("keep Supercharged Links icons on the title line"): the *same path's* title
+   * element from the render being replaced, if any — see `carryOverSuperchargedLinkState`'s own
+   * doc comment for why. `collectTitleElements` builds the map callers pass this from. */
+  readonly previousTitle?: HTMLElement;
 }
 
 /** A renderer's own working copy of a `NodeElementContext`: both renderers own one of these and
@@ -85,6 +89,43 @@ function appendAlsoIn(el: HTMLElement, ctx: NodeElementContext, node: StructureN
   chip.createSpan({ text: names.join(', ') });
 }
 
+/** D1 follow-up: Supercharged Links sets attributes for *non-scalar* frontmatter (e.g.
+ * `data-link-tags`, from a list) itself, asynchronously, via its own `MutationObserver` —
+ * `applySuperchargedLinkAttributes` never does (it only ever handles scalars). Both renderers
+ * rebuild every node element on every render, so without this, a value Supercharged Links had
+ * already discovered before the rebuild would vanish the instant this node's path re-renders, only
+ * to reappear whenever the observer next happens to fire — and since `.bases-structure-node` sizes
+ * itself from its own content (`width: max-content`, since 0b0d1df), an attribute that adds an
+ * `::after` icon appearing *after* this node was already measured is exactly what pushed that icon
+ * onto a second line (nowhere else for it to go once the node had already been laid out narrower).
+ * Copies every `data-link-*` attribute (and CSS variable) and every class from `previousTitle`
+ * onto `titleEl`, but only for an attribute name `titleEl` doesn't already carry — scalar
+ * frontmatter, just applied above by `applySuperchargedLinkAttributes`, always wins over a
+ * carried-over value for the same name, so an actual frontmatter edit is never shadowed by a stale
+ * one. A no-op when there is no previous title (this path is new this render). */
+function carryOverSuperchargedLinkState(
+  titleEl: HTMLElement,
+  previousTitle: HTMLElement | undefined,
+): void {
+  if (previousTitle === undefined) {
+    return;
+  }
+  for (const cls of Array.from(previousTitle.classList)) {
+    titleEl.classList.add(cls);
+  }
+  for (const attr of Array.from(previousTitle.attributes)) {
+    if (!attr.name.startsWith('data-link-') || titleEl.hasAttribute(attr.name)) {
+      continue;
+    }
+    titleEl.setAttribute(attr.name, attr.value);
+    const cssVar = `--${attr.name}`;
+    const previousCssValue = previousTitle.style.getPropertyValue(cssVar);
+    if (previousCssValue !== '') {
+      titleEl.style.setProperty(cssVar, previousCssValue);
+    }
+  }
+}
+
 /** The node card: `div.bases-structure-node` (`data-path`, `data-type`, `is-root`/`is-orphan`)
  * containing the title link and, when present, the "also in" chip. */
 export function createNodeElement(
@@ -119,6 +160,7 @@ export function createNodeElement(
   // plugin installed.
   titleEl.classList.add('data-link-icon', 'data-link-icon-after', 'data-link-text');
   applySuperchargedLinkAttributes(ctx.app, titleEl, node.path);
+  carryOverSuperchargedLinkState(titleEl, flags.previousTitle);
   appendAddButton(el);
   appendNodeMenuButton(el);
   appendAlsoIn(el, ctx, node);
@@ -136,6 +178,23 @@ export function findNodeElement(root: HTMLElement, path: string): HTMLElement | 
     }
   }
   return null;
+}
+
+/** D1 follow-up: every currently-rendered title element under `root`, keyed by its node's own
+ * `data-path` — a snapshot both renderers take right before they tear down the *previous* render's
+ * elements, so `createNodeElement`'s `previousTitle` flag has something to carry Supercharged
+ * Links' own state from (see `carryOverSuperchargedLinkState`). Must be called before the
+ * container is emptied for the next render, or there is nothing left to collect. */
+export function collectTitleElements(root: HTMLElement): Map<string, HTMLElement> {
+  const titlesByPath = new Map<string, HTMLElement>();
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
+    const path = el.getAttribute('data-path');
+    const title = el.querySelector<HTMLElement>(TITLE_SELECTOR);
+    if (path !== null && title !== null) {
+      titlesByPath.set(path, title);
+    }
+  }
+  return titlesByPath;
 }
 
 /** Roving-tabindex + `.is-active` (task 16): the node matching `activePath` gets `tabindex="0"`

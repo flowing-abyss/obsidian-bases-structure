@@ -37,6 +37,15 @@ function outlineEl(container: HTMLElement): HTMLElement {
   return el;
 }
 
+/** Unwraps a nullable query result so assertions can use plain member access instead of a
+ * non-null assertion. */
+function must<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) {
+    throw new Error('expected a value, got null/undefined');
+  }
+  return value;
+}
+
 afterEach(() => {
   clearUiState();
   vi.restoreAllMocks();
@@ -947,6 +956,71 @@ describe('OutlineRenderer', () => {
       }).not.toThrow();
       expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
       expect(container.childElementCount).toBe(0);
+    });
+  });
+
+  describe('Supercharged Links attribute carry-over (D1 follow-up)', () => {
+    it('carries a Supercharged-Links-added attribute over across a rebuild', () => {
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+      const state = getUiState('outline-sl-carry-over');
+      renderer.update({ schema, snapshot: snap, structure, state });
+      // Simulate Supercharged Links' own observer adding a non-scalar attribute asynchronously,
+      // some time after the first render.
+      const title = must(
+        container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+      );
+      title.setAttribute('data-link-tags', '#a #b');
+
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      const rebuiltTitle = container.querySelector('[data-path="root.md"] .bases-structure-title');
+      expect(rebuiltTitle).not.toBe(title);
+      expect(rebuiltTitle?.getAttribute('data-link-tags')).toBe('#a #b');
+    });
+
+    it('lets current scalar frontmatter win over a carried-over stale value for the same attribute', () => {
+      const app = App.createConfigured__();
+      app.metadataCache.setCache__('root.md', { frontmatter: { type: 'A' } });
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(
+        container,
+        makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+      );
+      const state = getUiState('outline-sl-current-wins');
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      app.metadataCache.setCache__('root.md', { frontmatter: { type: 'B' } });
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
+      expect(title?.getAttribute('data-link-type')).toBe('B');
+    });
+
+    it('does not hook again while carrying attributes over across renders (no duplicate observers)', () => {
+      const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+      const state = getUiState('outline-sl-carry-over-no-double-hook');
+      renderer.update({ schema, snapshot: snap, structure, state });
+      const title = must(
+        container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+      );
+      title.setAttribute('data-link-tags', '#a');
+      hookSpy.mockClear();
+
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      expect(hookSpy).not.toHaveBeenCalled();
     });
   });
 });

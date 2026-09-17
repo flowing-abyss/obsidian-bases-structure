@@ -863,10 +863,24 @@ describe('GraphRenderer', () => {
 
     renderer.update(makeInput());
 
-    // jsdom always reports 0 for offsetWidth/offsetHeight, so the fallback constants apply.
-    expect(container.querySelector<HTMLElement>('[data-path="root.md"]')?.style.width).toBe(
-      '180px',
-    );
+    // jsdom always reports 0 for offsetWidth/offsetHeight, so the fallback constants (180x32)
+    // apply — visible in the next column's `left` (180 + the default 48px columnGap), since a
+    // node's own rendered width is no longer pinned to the measurement directly (D1 follow-up,
+    // "keep Supercharged Links icons on the title line" — see `positionNodes`'s own doc comment).
+    expect(container.querySelector<HTMLElement>('[data-path="a.md"]')?.style.left).toBe('228px');
+  });
+
+  it('never sets an inline width on a positioned node (D1 follow-up)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(makeInput());
+
+    for (const el of Array.from(
+      container.querySelectorAll<HTMLElement>('.bases-structure-node.is-positioned'),
+    )) {
+      expect(el.style.width).toBe('');
+    }
   });
 
   it('does not loop and renders each path once when children form a cycle', () => {
@@ -1481,5 +1495,64 @@ describe('GraphRenderer — Supercharged Links (D1)', () => {
     }).not.toThrow();
     expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
     expect(container.childElementCount).toBe(0);
+  });
+});
+
+describe('GraphRenderer — Supercharged Links attribute carry-over (D1 follow-up)', () => {
+  it('carries a Supercharged-Links-added attribute over so it is already present when the rebuilt node is measured', () => {
+    const seenAtMeasureTime = new Map<string, string | null>();
+    const measure = (el: HTMLElement): Size => {
+      const path = el.getAttribute('data-path');
+      const title = el.querySelector('.bases-structure-title');
+      if (path !== null && title !== null) {
+        seenAtMeasureTime.set(path, title.getAttribute('data-link-tags'));
+      }
+      return { width: 100, height: 20 };
+    };
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure });
+    renderer.update(makeInput());
+    // Simulate Supercharged Links' own observer adding a non-scalar attribute asynchronously,
+    // some time after the first render already measured/positioned this node.
+    const title = must(
+      container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+    );
+    title.setAttribute('data-link-tags', '#a #b');
+
+    renderer.update(makeInput());
+
+    expect(seenAtMeasureTime.get('root.md')).toBe('#a #b');
+  });
+
+  it('lets current scalar frontmatter win over a carried-over stale value for the same attribute', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('root.md', { frontmatter: { type: 'A' } });
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx({ app: app.asOriginalType__() }), {
+      measure: fixedMeasure,
+    });
+    renderer.update(makeInput());
+
+    app.metadataCache.setCache__('root.md', { frontmatter: { type: 'B' } });
+    renderer.update(makeInput());
+
+    const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
+    expect(title?.getAttribute('data-link-type')).toBe('B');
+  });
+
+  it('does not hook again while carrying attributes over across renders (no duplicate observers)', () => {
+    const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const title = must(
+      container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+    );
+    title.setAttribute('data-link-tags', '#a');
+    hookSpy.mockClear();
+
+    renderer.update(makeInput());
+
+    expect(hookSpy).not.toHaveBeenCalled();
   });
 });

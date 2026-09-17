@@ -27,6 +27,7 @@ import {
   applyActiveNode,
   attachNodeInteractions,
   cloneNodeElementContext,
+  collectTitleElements,
   createNodeElement,
   findNodeElement,
   focusActiveNode,
@@ -106,11 +107,12 @@ const WHEEL_ZOOM_FACTOR = 0.002;
 const DEFAULT_NODE_WIDTH = 180;
 const DEFAULT_NODE_HEIGHT = 32;
 const EMPTY_MESSAGE = 'Nothing to show yet';
-// `offsetWidth` rounds a fractional layout width (e.g. a CSS `width: fit-content` box sized to
-// wrap its title on one line) to the nearest whole pixel. Reapplying that rounded value verbatim
-// as the node's final `width` can round *down* just enough to push the title onto an extra line —
-// changing its height after `layoutTree` already spaced siblings assuming the shorter, measured
-// one. A couple of spare pixels keeps the applied width comfortably above that boundary.
+// `offsetWidth` rounds a fractional intrinsic width (a CSS `width: max-content` box) to the
+// nearest whole pixel. `positionNodes` no longer pins a node to this measurement (D1 follow-up —
+// see its own doc comment), but `layoutTree`/`layoutTreeVertical` still size columns and space
+// siblings/edges from it; a couple of spare pixels keeps a column comfortably wider than the exact
+// rounded measurement, so the node's own (unpinned) rendered width has a little slack before it
+// would visually crowd the next column.
 const WIDTH_SAFETY_MARGIN = 2;
 // D2: how much wider the depth gap gets when edge labels are on, beyond the widest/tallest
 // measured label — a little clearance so a label's own background never touches the next
@@ -489,12 +491,18 @@ export class GraphRenderer implements StructureRenderer {
     collapsed: ReadonlySet<string>,
     focusPath: string | undefined,
   ): Map<string, HTMLElement> {
+    // D1 follow-up: snapshotted *before* `empty()` below destroys them — see
+    // `carryOverSuperchargedLinkState`'s own doc comment for why a rebuilt node needs its
+    // predecessor's title element at all.
+    const previousTitles = collectTitleElements(this.nodesEl);
     this.nodesEl.empty();
     const elements = new Map<string, HTMLElement>();
     for (const entry of entries) {
+      const previousTitle = previousTitles.get(entry.path);
       const el = createNodeElement(this.ctx, entry.node, {
         isRoot: entry.isRoot,
         isOrphan: entry.isOrphan,
+        ...(previousTitle !== undefined ? { previousTitle } : {}),
       });
       if (entry.node.children.length > 0) {
         this.addToggle(el, collapsed.has(entry.path));
@@ -589,7 +597,16 @@ export class GraphRenderer implements StructureRenderer {
       el.classList.add('is-positioned');
       el.style.left = `${box.x}px`;
       el.style.top = `${box.y}px`;
-      el.style.width = `${box.width}px`;
+      // No inline `width` (D1 follow-up, "keep Supercharged Links icons on the title line"):
+      // since 0b0d1df, `.bases-structure-node` is `width: max-content` capped by `max-width` —
+      // sized from its own content, not from `left`/`top`'s containing block — so pinning it to
+      // *this* measurement bought nothing except forcing a re-wrap the moment the node's real
+      // content grew after that measurement (Supercharged Links adds attributes for non-scalar
+      // frontmatter, e.g. `data-link-tags`, asynchronously via its own observer, *after*
+      // `measureAll` already ran; the `::after` icon that attribute's CSS adds then had nowhere to
+      // go but a second line, inside a box already pinned narrower). `box.width` still positions
+      // every column/edge/label exactly as before; only the node's own rendered width is no
+      // longer force-pinned to whatever it happened to measure as.
     }
   }
 

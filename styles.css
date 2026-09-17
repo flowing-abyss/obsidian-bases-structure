@@ -410,11 +410,11 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   display: none;
 }
 
-/* A drafting node gets a sensible typing width instead of its usual label-derived one — the
-   graph applies that as an inline pixel `style="width: …px"` right after measuring (see
-   `.is-positioned`), which only `!important` can override from a stylesheet. Nothing else in this
-   file sets `width` on `.bases-structure-node`, so this can't start a specificity war anywhere
-   else. */
+/* A drafting node gets a sensible typing width instead of its usual content-driven one
+   (`width: max-content`, capped by `max-width: 260px` — see the base `.bases-structure-node`
+   rule). Nothing in this file sets an inline `width` on `.bases-structure-node` any more (the
+   graph renderer's `positionNodes` stopped doing that — see its own doc comment, D1 follow-up), so
+   `!important` here is a defensive habit rather than a fight it strictly needs to win today. */
 .bases-structure-node.is-drafting {
   width: auto !important;
   min-width: 12rem;

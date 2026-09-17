@@ -185,6 +185,54 @@ describe('createNodeElement', () => {
     expect(title?.getAttribute('data-link-type')).toBe('book');
   });
 
+  it('carries a non-scalar Supercharged Links attribute over from the previous title (D1 follow-up)', () => {
+    // `data-link-tags` is exactly what Supercharged Links sets itself, asynchronously, for a list
+    // frontmatter value — `applySuperchargedLinkAttributes` never does (scalars only, by design),
+    // so there is no way to produce this attribute through that function at all; it's set directly
+    // here, standing in for Supercharged Links' own `MutationObserver`. The only way a rebuilt
+    // node keeps it without waiting for another observer pass is carrying it over.
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-tags', '#a #b');
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode(), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-tags')).toBe('#a #b');
+  });
+
+  it('carries over classes from the previous title (D1 follow-up)', () => {
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.classList.add('some-supercharged-links-class');
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode(), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.classList.contains('some-supercharged-links-class')).toBe(true);
+  });
+
+  it('lets current frontmatter win over a carried-over value for the same attribute (D1 follow-up)', () => {
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-type', 'stale');
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { type: 'fresh' } });
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-type')).toBe('fresh');
+  });
+
+  it('does nothing when there is no previous title (D1 follow-up)', () => {
+    const ctx = makeCtx();
+
+    expect(() => {
+      createNodeElement(ctx, makeNode());
+    }).not.toThrow();
+  });
+
   it('always includes a touch-only node-menu button, after the "+" (I10)', () => {
     const ctx = makeCtx();
 

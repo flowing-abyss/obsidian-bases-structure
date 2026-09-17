@@ -25,6 +25,7 @@ import {
   applyActiveNode,
   attachNodeInteractions,
   cloneNodeElementContext,
+  collectTitleElements,
   createNodeElement,
   findNodeElement,
   focusActiveNode,
@@ -51,6 +52,9 @@ interface RenderCtx {
   readonly input: RenderInput;
   readonly nodeCtx: MutableNodeElementContext;
   readonly seen: Set<string>;
+  /** D1 follow-up: the previous render's title elements, keyed by path — see
+   * `carryOverSuperchargedLinkState`'s own doc comment (`node-element.ts`). */
+  readonly previousTitles: ReadonlyMap<string, HTMLElement>;
 }
 
 /** Same button, same classes/attrs and same icon choice as the graph's own `addToggle` — only
@@ -121,9 +125,11 @@ function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx, isOrphanTop =
     return;
   }
   const li = ul.createEl('li', { cls: ITEM_CLASS });
+  const previousTitle = ctx.previousTitles.get(path);
   const nodeEl = createNodeElement(ctx.nodeCtx, node, {
     isRoot: path === ctx.input.structure.root,
     isOrphan: isOrphanTop,
+    ...(previousTitle !== undefined ? { previousTitle } : {}),
   });
   addTwoWayMarker(nodeEl, node);
   addExtrasChip(nodeEl, ctx.nodeCtx, node);
@@ -248,10 +254,13 @@ export class OutlineRenderer implements StructureRenderer {
     this.lastInput = input;
     this.nodeCtx.snapshot = input.snapshot;
     this.nodeCtx.sourcePath = input.snapshot.host ?? '';
+    // D1 follow-up: snapshotted *before* the old list is removed below — see
+    // `carryOverSuperchargedLinkState`'s own doc comment (`node-element.ts`).
+    const previousTitles = collectTitleElements(this.outlineEl);
     this.listEl?.remove();
     this.listEl = null;
 
-    const ctx: RenderCtx = { input, nodeCtx: this.nodeCtx, seen: new Set() };
+    const ctx: RenderCtx = { input, nodeCtx: this.nodeCtx, seen: new Set(), previousTitles };
     const listEl = this.outlineEl.createEl('ul', { cls: LIST_CLASS });
     for (const path of input.structure.tops) {
       renderNode(listEl, path, ctx);
