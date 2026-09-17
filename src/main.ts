@@ -44,6 +44,15 @@ export default class StructureViewPlugin extends Plugin {
       options: buildViewOptions,
     });
 
+    // M4: without this, hovering a node's title never shows Obsidian's "Page preview" popover —
+    // `attachNodeInteractions` (`node-element.ts`) already fires the `hover-link` workspace event
+    // with `source: 'bases-structure'` on every mouseover, but nothing had told Obsidian that
+    // source exists, so every hover was silently ignored by the preview plugin.
+    this.registerHoverLinkSource('bases-structure', {
+      display: 'Bases Structure',
+      defaultMod: true,
+    });
+
     this.addCommand({
       id: UNDO_COMMAND_ID,
       name: 'Undo last structure change',

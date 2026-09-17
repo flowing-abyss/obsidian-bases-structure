@@ -82,6 +82,15 @@ describe('StructureViewPlugin.onload', () => {
     });
   });
 
+  it('registers a hover-link-preview source matching the event attachNodeInteractions fires (M4)', () => {
+    const plugin = createPlugin();
+
+    plugin.onload();
+
+    const source = mocked(plugin).hoverLinkSources__.get('bases-structure');
+    expect(source).toStrictEqual({ display: 'Bases Structure', defaultMod: true });
+  });
+
   it('registers the undo command with a check callback reflecting undo.canUndo', () => {
     const plugin = createPlugin();
 
