@@ -185,23 +185,75 @@ describe('createNodeElement', () => {
     expect(title?.getAttribute('data-link-type')).toBe('book');
   });
 
-  it('carries a non-scalar Supercharged Links attribute over from the previous title (D1 follow-up)', () => {
-    // `data-link-tags` is exactly what Supercharged Links sets itself, asynchronously, for a list
-    // frontmatter value — `applySuperchargedLinkAttributes` never does (scalars only, by design),
-    // so there is no way to produce this attribute through that function at all; it's set directly
-    // here, standing in for Supercharged Links' own `MutationObserver`. The only way a rebuilt
-    // node keeps it without waiting for another observer pass is carrying it over.
+  it('carries a non-scalar Supercharged Links attribute over when its frontmatter key is still present (D1 follow-up)', () => {
+    // `data-link-related` stands in for what Supercharged Links itself sets, asynchronously, for
+    // a list frontmatter value — `applySuperchargedLinkAttributes` never does (scalars only, by
+    // design), so there is no way to produce it through that function at all; set directly here.
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { related: ['x', 'y'] } });
     const previousTitle = createDiv().createEl('a');
-    previousTitle.setAttribute('data-link-tags', '#a #b');
-    const ctx = makeCtx();
+    previousTitle.setAttribute('data-link-related', 'x y');
+    const ctx = makeCtx({ app: app.asOriginalType__() });
 
-    const el = createNodeElement(ctx, makeNode(), { previousTitle });
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
 
     const title = el.querySelector('.bases-structure-title');
-    expect(title?.getAttribute('data-link-tags')).toBe('#a #b');
+    expect(title?.getAttribute('data-link-related')).toBe('x y');
   });
 
-  it('carries over classes from the previous title (D1 follow-up)', () => {
+  it('drops a carried-over attribute (and its CSS variable) once its frontmatter key is gone (D1 follow-up)', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: {} }); // `related` no longer present.
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-related', 'x y');
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.hasAttribute('data-link-related')).toBe(false);
+    expect((title as HTMLElement | null)?.style.getPropertyValue('--data-link-related')).toBe('');
+  });
+
+  it('carries data-link-tags over when the note has an inline tag but no frontmatter tags key (D1 follow-up)', () => {
+    const pos = { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 0, offset: 0 } };
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { tags: [{ tag: '#inline', position: pos }] });
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-tags', '#inline');
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-tags')).toBe('#inline');
+  });
+
+  it('drops data-link-tags once the note has no tags left at all (D1 follow-up)', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: {} });
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-tags', '#gone');
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.hasAttribute('data-link-tags')).toBe(false);
+  });
+
+  it('always carries data-link-path over — a path-derived attribute, never frontmatter-sourced (D1 follow-up)', () => {
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-path', 'a.md');
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-path')).toBe('a.md');
+  });
+
+  it('does not carry an arbitrary class over from the previous title (D1 follow-up)', () => {
     const previousTitle = createDiv().createEl('a');
     previousTitle.classList.add('some-supercharged-links-class');
     const ctx = makeCtx();
@@ -209,7 +261,7 @@ describe('createNodeElement', () => {
     const el = createNodeElement(ctx, makeNode(), { previousTitle });
 
     const title = el.querySelector('.bases-structure-title');
-    expect(title?.classList.contains('some-supercharged-links-class')).toBe(true);
+    expect(title?.classList.contains('some-supercharged-links-class')).toBe(false);
   });
 
   it('lets current frontmatter win over a carried-over value for the same attribute (D1 follow-up)', () => {

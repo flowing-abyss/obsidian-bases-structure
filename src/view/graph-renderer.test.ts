@@ -1499,29 +1499,95 @@ describe('GraphRenderer — Supercharged Links (D1)', () => {
 });
 
 describe('GraphRenderer — Supercharged Links attribute carry-over (D1 follow-up)', () => {
-  it('carries a Supercharged-Links-added attribute over so it is already present when the rebuilt node is measured', () => {
+  it('carries a Supercharged-Links-added attribute over (present at measure time) while its frontmatter key is still there', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('root.md', { frontmatter: { related: ['x', 'y'] } });
     const seenAtMeasureTime = new Map<string, string | null>();
     const measure = (el: HTMLElement): Size => {
       const path = el.getAttribute('data-path');
       const title = el.querySelector('.bases-structure-title');
       if (path !== null && title !== null) {
-        seenAtMeasureTime.set(path, title.getAttribute('data-link-tags'));
+        seenAtMeasureTime.set(path, title.getAttribute('data-link-related'));
       }
       return { width: 100, height: 20 };
     };
     const container = createDiv();
-    const renderer = new GraphRenderer(container, makeCtx(), { measure });
+    const renderer = new GraphRenderer(container, makeCtx({ app: app.asOriginalType__() }), {
+      measure,
+    });
     renderer.update(makeInput());
     // Simulate Supercharged Links' own observer adding a non-scalar attribute asynchronously,
-    // some time after the first render already measured/positioned this node.
+    // some time after the first render already measured/positioned this node —
+    // `applySuperchargedLinkAttributes` never sets one itself (scalars only), by design.
     const title = must(
       container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
     );
-    title.setAttribute('data-link-tags', '#a #b');
+    title.setAttribute('data-link-related', 'x y');
 
     renderer.update(makeInput());
 
-    expect(seenAtMeasureTime.get('root.md')).toBe('#a #b');
+    expect(seenAtMeasureTime.get('root.md')).toBe('x y');
+  });
+
+  it('drops a data-link-* attribute and its CSS variable once its frontmatter key is removed', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('root.md', { frontmatter: { type: 'A' } });
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx({ app: app.asOriginalType__() }), {
+      measure: fixedMeasure,
+    });
+    renderer.update(makeInput());
+    const firstTitle = must(
+      container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+    );
+    expect(firstTitle.getAttribute('data-link-type')).toBe('A');
+    expect(firstTitle.style.getPropertyValue('--data-link-type')).toBe('A');
+
+    app.metadataCache.setCache__('root.md', { frontmatter: {} });
+    renderer.update(makeInput());
+
+    const title = container.querySelector<HTMLElement>(
+      '[data-path="root.md"] .bases-structure-title',
+    );
+    expect(title?.hasAttribute('data-link-type')).toBe(false);
+    expect(title?.style.getPropertyValue('--data-link-type')).toBe('');
+  });
+
+  it('drops data-link-tags once the note has no tags left at all (frontmatter or inline)', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('root.md', { frontmatter: { tags: ['x'] } });
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx({ app: app.asOriginalType__() }), {
+      measure: fixedMeasure,
+    });
+    renderer.update(makeInput());
+    const firstTitle = must(
+      container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+    );
+    // Simulate Supercharged Links' own observer — `data-link-tags` is never set by
+    // `applySuperchargedLinkAttributes` itself.
+    firstTitle.setAttribute('data-link-tags', '#x');
+
+    app.metadataCache.setCache__('root.md', { frontmatter: {} });
+    renderer.update(makeInput());
+
+    const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
+    expect(title?.hasAttribute('data-link-tags')).toBe(false);
+  });
+
+  it('always carries data-link-path over — a path-derived attribute, never frontmatter-sourced', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const firstTitle = must(
+      container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+    );
+    firstTitle.setAttribute('data-link-path', 'root.md');
+
+    renderer.update(makeInput());
+
+    const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
+    expect(title?.getAttribute('data-link-path')).toBe('root.md');
   });
 
   it('lets current scalar frontmatter win over a carried-over stale value for the same attribute', () => {

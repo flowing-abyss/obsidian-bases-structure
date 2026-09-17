@@ -960,26 +960,105 @@ describe('OutlineRenderer', () => {
   });
 
   describe('Supercharged Links attribute carry-over (D1 follow-up)', () => {
-    it('carries a Supercharged-Links-added attribute over across a rebuild', () => {
+    it('carries a Supercharged-Links-added attribute over while its frontmatter key is still there', () => {
+      const app = App.createConfigured__();
+      app.metadataCache.setCache__('root.md', { frontmatter: { related: ['x', 'y'] } });
       const { schema } = parseSchema(makeRead({ parent: 'up' }));
       const snap = snapshot([note('root.md')]);
       const structure = buildStructure(schema, snap);
       const container = createDiv();
-      const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+      const renderer = new OutlineRenderer(
+        container,
+        makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+      );
       const state = getUiState('outline-sl-carry-over');
       renderer.update({ schema, snapshot: snap, structure, state });
       // Simulate Supercharged Links' own observer adding a non-scalar attribute asynchronously,
-      // some time after the first render.
+      // some time after the first render — `applySuperchargedLinkAttributes` never sets one
+      // itself (scalars only), by design.
       const title = must(
         container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
       );
-      title.setAttribute('data-link-tags', '#a #b');
+      title.setAttribute('data-link-related', 'x y');
 
       renderer.update({ schema, snapshot: snap, structure, state });
 
       const rebuiltTitle = container.querySelector('[data-path="root.md"] .bases-structure-title');
       expect(rebuiltTitle).not.toBe(title);
-      expect(rebuiltTitle?.getAttribute('data-link-tags')).toBe('#a #b');
+      expect(rebuiltTitle?.getAttribute('data-link-related')).toBe('x y');
+    });
+
+    it('drops a data-link-* attribute and its CSS variable once its frontmatter key is removed', () => {
+      const app = App.createConfigured__();
+      app.metadataCache.setCache__('root.md', { frontmatter: { type: 'A' } });
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(
+        container,
+        makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+      );
+      const state = getUiState('outline-sl-key-removed');
+      renderer.update({ schema, snapshot: snap, structure, state });
+      const firstTitle = must(
+        container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+      );
+      expect(firstTitle.getAttribute('data-link-type')).toBe('A');
+      expect(firstTitle.style.getPropertyValue('--data-link-type')).toBe('A');
+
+      app.metadataCache.setCache__('root.md', { frontmatter: {} });
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      const title = container.querySelector<HTMLElement>(
+        '[data-path="root.md"] .bases-structure-title',
+      );
+      expect(title?.hasAttribute('data-link-type')).toBe(false);
+      expect(title?.style.getPropertyValue('--data-link-type')).toBe('');
+    });
+
+    it('drops data-link-tags once the note has no tags left at all', () => {
+      const app = App.createConfigured__();
+      app.metadataCache.setCache__('root.md', { frontmatter: { tags: ['x'] } });
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(
+        container,
+        makeCtx({ app: app.asOriginalType__(), snapshot: snap }),
+      );
+      const state = getUiState('outline-sl-tags-removed');
+      renderer.update({ schema, snapshot: snap, structure, state });
+      const firstTitle = must(
+        container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+      );
+      firstTitle.setAttribute('data-link-tags', '#x');
+
+      app.metadataCache.setCache__('root.md', { frontmatter: {} });
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
+      expect(title?.hasAttribute('data-link-tags')).toBe(false);
+    });
+
+    it('always carries data-link-path over — a path-derived attribute, never frontmatter-sourced', () => {
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+      const state = getUiState('outline-sl-path-carried');
+      renderer.update({ schema, snapshot: snap, structure, state });
+      const firstTitle = must(
+        container.querySelector<HTMLElement>('[data-path="root.md"] .bases-structure-title'),
+      );
+      firstTitle.setAttribute('data-link-path', 'root.md');
+
+      renderer.update({ schema, snapshot: snap, structure, state });
+
+      const title = container.querySelector('[data-path="root.md"] .bases-structure-title');
+      expect(title?.getAttribute('data-link-path')).toBe('root.md');
     });
 
     it('lets current scalar frontmatter win over a carried-over stale value for the same attribute', () => {

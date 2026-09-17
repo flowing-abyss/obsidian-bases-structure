@@ -632,10 +632,11 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   transform: translate(-50%, -50%);
 }
 
-/* Added by the graph renderer (as a class, alongside inline `left`/`top`/`width`) only once a
-   node has been measured and positioned — an unsized node that is *already* absolutely positioned
-   at measurement time collapses to a shrink-to-fit width that can be a single character wide,
-   which then wraps its whole title one letter per line. */
+/* Added by the graph renderer (as a class, alongside inline `left`/`top` — no inline `width` any
+   more, see `positionNodes`'s own doc comment) only once a node has been measured and positioned —
+   an unsized node that is *already* absolutely positioned at measurement time collapses to a
+   shrink-to-fit width that can be a single character wide, which then wraps its whole title one
+   letter per line. */
 .bases-structure-node.is-positioned {
   position: absolute;
 }
