@@ -309,6 +309,27 @@ describe('GraphRenderer', () => {
     expect(document.activeElement).toBe(outside);
   });
 
+  // I11 regression: unlike "focus elsewhere" above, a create draft's own input can be nested
+  // *inside* the active node's own element (a Tab-created child draft, anchored on it) — `hadFocus`
+  // is then true even though focus belongs to the draft, not the node. `suppressFocus` is
+  // `showOptimistic`'s own signal (see `structure-view.ts`) that this render must not move focus.
+  it('does not move focus onto the active node when suppressFocus is set, even with focus nested inside it (I11)', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'a.md' });
+    renderer.update(makeInput({ state }));
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    const draftInput = createEl('input');
+    aEl.appendChild(draftInput);
+    draftInput.focus();
+    expect(document.activeElement).toBe(draftInput);
+
+    renderer.update(makeInput({ state, suppressFocus: true }));
+
+    expect(document.activeElement).toBe(draftInput);
+  });
+
   it('draws one tree edge per parent-child relationship, with no markers and no group frames', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
@@ -857,6 +878,27 @@ describe('GraphRenderer', () => {
     renderer.update(makeInput({ schema: verticalSchema(), state })); // down: floored at 0.85 too.
 
     // Reset for the new axis, and recomputed (not merely left over from the right-direction fit).
+    expect(state.scrollTop).toBe(0);
+    expect(state.scrollLeft).toBeCloseTo(32.7);
+  });
+
+  // Reviewer regression (important): `a.md`'s box means something different in each direction's
+  // layout (different axes entirely) — an active node present under both must not let scroll
+  // anchoring diff a "before" box captured under the old direction against an "after" box from the
+  // new one and add that bogus delta on top of auto-fit's own freshly computed centring.
+  it('does not let scroll anchoring fight auto-fit’s own re-centring across a direction switch, with an active node present in both', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 204, 22);
+    const state = makeState({ active: 'a.md' });
+    renderer.update(makeInput({ state })); // right: floored at 0.85, vertical overflow.
+    expect(state.scrollTop).toBeCloseTo(7.7);
+
+    fakeGraphViewport(container, 40, 40);
+    renderer.update(makeInput({ schema: verticalSchema(), state })); // down: floored at 0.85 too.
+
+    // Same numbers as the direction-switch test above (which has no active node) — an active node
+    // surviving the switch must not change them.
     expect(state.scrollTop).toBe(0);
     expect(state.scrollLeft).toBeCloseTo(32.7);
   });

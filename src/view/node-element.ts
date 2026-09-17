@@ -357,6 +357,19 @@ export function focusActiveNode(el: HTMLElement): void {
   }
 }
 
+/** I11: re-focuses `el` (without scrolling) if it's still a connected `HTMLElement` — for a
+ * renderer whose own DOM strategy can blur something nested inside a reused node as a side effect
+ * of an unrelated rebuild (`outline-renderer.ts`'s full skeleton teardown/rebuild momentarily
+ * detaches every node, including whatever's nested inside one — e.g. an open create draft's own
+ * input). Used when `RenderInput.suppressFocus` says this render must not disturb where real
+ * focus currently is; a no-op when `el` is `null`, isn't an `HTMLElement`, or didn't survive
+ * whatever the rebuild did. */
+export function restoreSuppressedFocus(el: Element | null): void {
+  if (el instanceof HTMLElement && el.isConnected) {
+    el.focus({ preventScroll: true });
+  }
+}
+
 /** The "+" affordance: always in the DOM (shown on hover/focus via CSS), so it's the delegated
  * click listener below — not conditional rendering — that decides whether it's reachable. */
 function appendAddButton(el: HTMLElement): void {

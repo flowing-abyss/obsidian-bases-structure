@@ -103,6 +103,7 @@ interface Harness {
   readonly refresh: ReturnType<typeof vi.fn>;
   readonly onDraftClosed: ReturnType<typeof vi.fn>;
   readonly showOptimistic: ReturnType<typeof vi.fn>;
+  readonly clearOptimistic: ReturnType<typeof vi.fn>;
   readonly root: HTMLElement;
   readonly nodes: Map<string, HTMLElement>;
   getInput(): RenderInput;
@@ -205,6 +206,7 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
   const undo = new UndoManager(app.asOriginalType__());
   const onDraftClosed = vi.fn();
   const showOptimistic = vi.fn();
+  const clearOptimistic = vi.fn();
   const deps: ActionsDeps = {
     app: app.asOriginalType__(),
     undo,
@@ -213,6 +215,7 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
     hostPath: options.hostPath ?? '',
     refresh,
     showOptimistic,
+    clearOptimistic,
     onDraftClosed,
   };
   const actions = new StructureActions(deps);
@@ -225,6 +228,7 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
     refresh,
     onDraftClosed,
     showOptimistic,
+    clearOptimistic,
     root,
     nodes,
     getInput,
@@ -1061,6 +1065,29 @@ describe('undo notice', () => {
       expect(h.refresh).toHaveBeenCalledTimes(2);
     });
     expect(notice?.hide).toHaveBeenCalledTimes(1);
+  });
+
+  // I11 regression: same fix as `undoLast`'s own — the notice's own undo button is the other real
+  // entry point that mutates the vault directly, not through `showOptimistic`.
+  it('clears the optimistic prediction once the notice’s own undo actually reverts something', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.app.vault.getFileByPath('New Sub.md')).not.toBeNull();
+    });
+    h.clearOptimistic.mockClear();
+    const fragment = lastNotice()?.message as DocumentFragment;
+    const button = fragment.querySelector<HTMLButtonElement>('.bases-structure-undo');
+
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(h.clearOptimistic).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('does not show an undo notice when the plan is rejected', async () => {
@@ -2072,6 +2099,44 @@ describe('undoLast', () => {
       expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
     });
     expect(NoticeMock.instances[0]?.message).toBe('Structure: undo failed');
+  });
+
+  // I11 regression: an undo is a real vault mutation, not a planned+simulated action — leaving a
+  // prior `showOptimistic` prediction on screen after undoing the very change it predicted would
+  // show something the vault no longer has.
+  it('clears the optimistic prediction once the undo actually reverts something', async () => {
+    const h = makeHarness(baseFiles());
+    vi.spyOn(h.undo, 'undo').mockResolvedValue({ label: 'Move "leaf"', skipped: [] });
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    expect(h.clearOptimistic).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the optimistic prediction alone when there is nothing to undo', async () => {
+    const h = makeHarness(baseFiles());
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    expect(h.clearOptimistic).not.toHaveBeenCalled();
+  });
+
+  it('leaves the optimistic prediction alone when the undo is blocked', async () => {
+    const h = makeHarness(baseFiles());
+    vi.spyOn(h.undo, 'undo').mockResolvedValue({ blocked: true });
+
+    h.actions.undoLast();
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    expect(h.clearOptimistic).not.toHaveBeenCalled();
   });
 });
 

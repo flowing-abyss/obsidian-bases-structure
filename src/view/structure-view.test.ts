@@ -406,6 +406,57 @@ describe('StructureView — optimistic rendering (I11)', () => {
 
     expect(parentEl.querySelector('[data-path="New Leaf.md"]')).toBeNull();
   });
+
+  // Reviewer regression (critical): undo is a real vault mutation, not a planned+simulated
+  // action — `undoLast`/`runUndoFromNotice` never went through `showOptimistic`, so a stale
+  // pre-undo prediction was left on screen indefinitely (until the next real `onDataUpdated`,
+  // an unbounded wait). The normal flow this covers: commit, then undo, before Bases ever
+  // reports the new note.
+  it('undo clears the optimistic prediction — the rendered structure no longer shows the change that was just undone', async () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    document.body.appendChild(parentEl);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+    // Still showing the optimistic prediction — Bases hasn't reported the new note yet.
+    expect(parentEl.querySelector('[data-path="New Leaf.md"]')).not.toBeNull();
+
+    // The Enter chain (U5) reopens a sibling draft immediately after commit — close it so Mod+Z
+    // below reaches the container's own keydown handler instead of the draft input's typing guard.
+    parentEl
+      .querySelector<HTMLInputElement>('.bases-structure-draft-input')
+      ?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+
+    // The normal flow: undo right after the commit (Mod+Z — same `undoLast` a notice's own
+    // button reaches), still before any real `onDataUpdated`.
+    const bodyEl = parentEl.querySelector<HTMLElement>('.bases-structure-body');
+    bodyEl?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).toBeNull();
+    });
+    // Not the stale, already-undone prediction — the rendered structure must reflect the revert.
+    expect(parentEl.querySelector('[data-path="New Leaf.md"]')).toBeNull();
+  });
 });
 
 // Carried-over fix (task 14): `onDataUpdated` can fire while a create draft is open — e.g. the
@@ -1378,6 +1429,50 @@ describe('StructureView — keyboard wiring', () => {
       expect(findNode(parentEl, 'cat.md').classList.contains('is-active')).toBe(true);
     },
   );
+
+  // Reviewer regression (important): pressing Tab on the active node opens a create-child draft
+  // anchored *on that same node* — `commitWithOptimism`'s own open-draft-gate bypass render (I11)
+  // then runs while `state.active` still names it, and the renderer's usual "focus follows the
+  // active node" logic (`applyActiveState`) steals real DOM focus from the draft's own input to
+  // the node div. Masked on a successful commit (the chain reopen's own `.focus()` overwrites it
+  // right after) — a failed commit leaves the draft open with nothing to refocus it.
+  it('a failed commit from a Tab-opened child draft does not steal focus from the draft input (I11)', async () => {
+    const { view, parentEl } = catLeafView();
+    document.body.appendChild(parentEl);
+    view.onDataUpdated();
+    findNode(parentEl, 'cat.md').dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    );
+    expect(document.activeElement).toBe(findNode(parentEl, 'cat.md'));
+
+    document.activeElement?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    );
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    // Forces a genuine throw (not `commitPlan`'s own graceful `applied: false`) so the draft is
+    // left open, uncleared, with nothing to refocus it afterward.
+    vi.spyOn(UndoManager.prototype, 'push').mockImplementation(() => {
+      throw new Error('push boom');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+    });
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBe(input);
+    expect(document.activeElement).toBe(input);
+  });
 });
 
 // A minimal concrete `FileView` standing in for the built-in, non-`MarkdownView` `FileView`

@@ -68,6 +68,12 @@ export interface RenderInput {
   /** The path to flag `is-new` in this render only — set for the one render right after a
    * successful create, then cleared (see `StructureActions.consumeFocus`). */
   readonly focusPath?: string;
+  /** I11: set for the one render `showOptimistic` triggers while a draft is open (its own bypass
+   * of `deferrableRender`'s gate — see `resolveActions`) — tells a renderer not to move real DOM
+   * focus onto the active node this render, since focus may currently be on the open draft's own
+   * input (e.g. a Tab-created child draft, anchored on the active node itself). Node
+   * classes/tabindex bookkeeping still runs normally; only the real `.focus()` call is skipped. */
+  readonly suppressFocus?: boolean;
 }
 
 export interface StructureRenderer {
@@ -284,13 +290,34 @@ export class StructureView extends BasesView {
     };
     const renderer = this.resolveRenderer(schema.layout, ctx);
     const focusPath = actions.resolveFocus(structure);
-    renderer.update(focusPath === null ? input : { ...input, focusPath });
+    renderer.update(this.finalizeRenderInput(input, focusPath, actions.hasOpenDraft));
     // Must run on *every* render (I7), not just the one right after a commit: the render right
     // after `commitPlan` resolves almost never has Bases' own data caught up with the note it just
     // wrote (see `StructureActions.runCommit`), so the pending create's path usually isn't in
     // `structure` yet on that first pass — this only actually completes it once a later render
     // (from `onDataUpdated`) does contain it.
     actions.completePending(structure, this.bodyEl);
+  }
+
+  /** Merges the two render-only flags `render()` computes just before handing input to the
+   * renderer — `focusPath` (I7's `is-new` highlight) and `suppressFocus` (I11's open-draft focus
+   * guard — a `showOptimistic` render can run while a draft is open, e.g. a Tab-created child
+   * draft anchored on the active node itself; see `RenderInput`'s own doc comment for why the
+   * renderer must not move real focus that render). Neither belongs in `this.lastInput`: both
+   * describe only this one call, not the view's ongoing state. */
+  private finalizeRenderInput(
+    input: RenderInput,
+    focusPath: string | null,
+    suppressFocus: boolean,
+  ): RenderInput {
+    if (focusPath === null && !suppressFocus) {
+      return input;
+    }
+    return {
+      ...input,
+      ...(focusPath === null ? {} : { focusPath }),
+      ...(suppressFocus ? { suppressFocus: true } : {}),
+    };
   }
 
   /** I11: `render()`'s own snapshot/structure — the plan's simulated result while `optimistic` is
@@ -347,6 +374,13 @@ export class StructureView extends BasesView {
       showOptimistic: (snapshot) => {
         this.optimistic = snapshot;
         this.safeRender();
+      },
+      // I11: undo is a real vault mutation, not a planned+simulated one — it never goes through
+      // `showOptimistic`, so this is the only way a prior prediction (from an earlier, unrelated
+      // create/move/retype) gets cleared once the very change it predicted is undone. Doesn't
+      // render itself — `undoLast`/`runUndoFromNotice` always call `refresh()` right after.
+      clearOptimistic: () => {
+        this.optimistic = null;
       },
       onDraftClosed: () => this.flushPendingRender(),
     });

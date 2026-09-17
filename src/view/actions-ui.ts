@@ -50,6 +50,13 @@ export interface ActionsDeps {
    * never predicted at all. `StructureView` renders from the shown snapshot until the next real
    * `onDataUpdated` clears it — real data always wins once Bases reports it. */
   readonly showOptimistic: (snapshot: Snapshot) => void;
+  /** I11: clears `StructureView.optimistic` without itself forcing a render — call right before
+   * `refresh()` once an undo has actually reverted something (`undoLast`/`runUndoFromNotice`),
+   * so the render `refresh()` triggers reads real data instead of a stale, already-reverted
+   * prediction from an earlier, unrelated create/move/retype. Undo never goes through
+   * `showOptimistic` itself (it's a real vault mutation, not a planned+simulated one), so this is
+   * the only way that prior prediction ever gets cleared outside of a real `onDataUpdated`. */
+  readonly clearOptimistic: () => void;
   /** Called whenever an open draft closes for good — cancel (Escape/blur), a successful or failed
    * commit, or `destroy()` — see `cancelDraft`. Superseding one draft with another (a new "+"
    * while one is already open) does *not* fire this: it's a single continuous draft session from
@@ -82,11 +89,13 @@ interface DraftState {
 }
 
 /** A just-committed create's path, kept until a render's `Structure` actually contains it (I7):
- * `refresh()` right after `commitPlan` resolves runs against whatever Bases last handed the view,
- * which usually does *not* include the brand new note yet (Bases updates asynchronously) — so the
- * `is-new` highlight can't complete on that first render, regardless of chain mode. Resolved by
- * `resolveFocus`/`completePending` on whichever later render (from `onDataUpdated`, once Bases
- * catches up) first has `path` in its `Structure`.
+ * originally waited for Bases' own re-query, since `refresh()` right after `commitPlan` resolves
+ * ran against whatever Bases last handed the view, which usually didn't include the brand new note
+ * yet. I11's optimistic rendering changed that in practice for a create specifically — `refresh()`
+ * now typically renders while `StructureView.optimistic` is still showing the plan's own simulated
+ * result, which already contains the new note — but the mechanism itself is unchanged:
+ * `resolveFocus`/`completePending` still just resolve on whichever render's `Structure` first has
+ * `path`, whatever produced that render (the optimistic one, or a later real `onDataUpdated`).
  *
  * `chain` (U5): only ever `true` for a Tab chain — it reopens a create-child draft *on* the new
  * node itself, which by definition doesn't exist until this same render does, so it has to wait
@@ -156,6 +165,14 @@ function formatSkipped(skipped: readonly string[], nameOf: (path: string) => str
   const remaining = names.length - shown.length;
   const list = remaining > 0 ? `${shown.join(', ')}, +${remaining} more` : shown.join(', ');
   return ` (skipped ${list})`;
+}
+
+/** I11: whether an `UndoManager.undo()` result actually reverted something — `false` for both
+ * "nothing to undo" (`label === null`) and a blocked result, the two cases `formatUndoResult`
+ * itself already distinguishes from a real revert. `undoLast`/`runUndoFromNotice` use this to
+ * decide whether `clearOptimistic` has anything to actually clear. */
+function didUndoSomething(result: UndoResult | UndoBlockedResult): boolean {
+  return !('blocked' in result) && result.label !== null;
 }
 
 /** `Structure: nothing to undo` / `Structure: undone "<label>" (skipped a, b, +N more)` /
@@ -269,8 +286,10 @@ export class StructureActions {
    * only (does *not* consume `pendingCreate`; see `completePending` for that), so `structure-view.ts`
    * can compute this render's `focusPath` before the DOM is rebuilt, then finish the pending create
    * afterward once the DOM reflects it. Returns `null` on every render before the created path
-   * actually shows up (Bases usually hasn't caught up yet on the render right after commit — the
-   * whole point of I7 — so this correctly returns `null` there, not the path). */
+   * actually shows up — for a create, that's typically the very first render now (I11's optimistic
+   * prediction already contains it), not a later one; still correctly `null` for whatever render
+   * genuinely doesn't have it yet (e.g. this same check running against real data once
+   * `onDataUpdated` clears the prediction, before Bases itself has caught up). */
   resolveFocus(structure: Structure): string | null {
     if (this.pendingCreate !== null && structure.nodes.has(this.pendingCreate.path)) {
       return this.pendingCreate.path;
@@ -283,7 +302,10 @@ export class StructureActions {
    * the now-current DOM under `root`. Called by `structure-view.ts`'s `render()` right after the
    * renderer has drawn `structure` (so `root` already contains an element for the created path when
    * this fires), and must be called on *every* render — including the one immediately after commit,
-   * which usually won't contain the path yet and so is correctly a no-op here. */
+   * which for a create typically *does* already contain the path now (I11's optimistic prediction)
+   * and so completes right there; a render whose `structure` genuinely doesn't have it yet
+   * (unaffected by optimism — a move/retype, or a create once `onDataUpdated` has cleared the
+   * prediction) is correctly a no-op here instead. */
   completePending(structure: Structure, root: HTMLElement): void {
     const pending = this.pendingCreate;
     if (pending === null || !structure.nodes.has(pending.path)) {
@@ -478,13 +500,19 @@ export class StructureActions {
 
   /** Awaits the shared undo stack, refreshes the view, then shows exactly the notice the plugin's
    * global undo command shows (see `formatUndoResult`) — the command itself has no view to
-   * refresh, so only the wording is shared, not this method wholesale. */
+   * refresh, so only the wording is shared, not this method wholesale. I11: clears any showing
+   * optimistic prediction first when this actually reverted something (see `clearOptimistic`'s own
+   * doc comment) — a "nothing to undo"/blocked result changes nothing, so there's nothing to
+   * clear. */
   undoLast(): void {
     this.clearPendingCreate();
     const { snapshot } = this.deps.getInput();
     this.deps.undo
       .undo()
       .then((result) => {
+        if (didUndoSomething(result)) {
+          this.deps.clearOptimistic();
+        }
         this.deps.refresh();
         notifyError(formatUndoResult(result, (path) => displayName(snapshot, path)));
       })
@@ -884,6 +912,9 @@ export class StructureActions {
     const result = transaction !== null ? this.deps.undo.undo(transaction) : this.deps.undo.undo();
     result
       .then((outcome) => {
+        if (didUndoSomething(outcome)) {
+          this.deps.clearOptimistic();
+        }
         this.deps.refresh();
         notice.hide();
         notifyError(formatUndoResult(outcome, (path) => displayName(snapshot, path)));

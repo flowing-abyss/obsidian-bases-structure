@@ -798,6 +798,34 @@ describe('OutlineRenderer', () => {
     expect(document.activeElement).toBe(outside);
   });
 
+  // I11 regression: mirrors the graph renderer's identical test — a create draft's own input can
+  // be nested inside the active node's own element (a Tab-created child draft, anchored on it),
+  // so `hadFocus` is true even though focus belongs to the draft, not the node. `suppressFocus` is
+  // `showOptimistic`'s own signal (see `structure-view.ts`) that this render must not move focus.
+  it('does not move focus onto the active node when suppressFocus is set, even with focus nested inside it (I11)', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-active-suppress-focus');
+    state.active = 'child.md';
+    renderer.update({ schema, snapshot: snap, structure, state });
+    const childEl = must(container.querySelector<HTMLElement>('[data-path="child.md"]'));
+    const draftInput = createEl('input');
+    childEl.appendChild(draftInput);
+    draftInput.focus();
+    expect(document.activeElement).toBe(draftInput);
+
+    renderer.update({ schema, snapshot: snap, structure, state, suppressFocus: true });
+
+    expect(document.activeElement).toBe(draftInput);
+  });
+
   it('restores scrollTop across updates, on the element that actually scrolls (M5)', () => {
     // `container` (what the constructor is given) is `.bases-structure-body` in production — the
     // element with `overflow: auto` — not `.bases-structure-outline` (`outlineEl`), which is a

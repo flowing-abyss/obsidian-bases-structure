@@ -355,9 +355,17 @@ export class GraphRenderer implements StructureRenderer {
   private lastActivePath: string | null = null;
   private hasRenderedOnce = false;
   // Task 3 (scroll anchoring): the previous `update()`/`relayout()` call's own `layoutResult.boxes`
-  // — read by `anchorScrollToActive` to find the active node's box *before* this render's layout,
-  // so its delta from the box *after* can be folded into scroll. `null` before the first layout.
-  private lastBoxes: ReadonlyMap<string, Box> | null = null;
+  // plus the direction they were laid out under — read by `anchorScrollToActive` to find the
+  // active node's box *before* this render's layout, so its delta from the box *after* can be
+  // folded into scroll. The direction is kept alongside the boxes, not read off `lastDirection`
+  // (already overwritten with the *new* direction by the time `anchorScrollToActive` runs): a
+  // node's box means something different in each direction's own layout (different axes
+  // entirely), so a direction switch must never diff across them — see `anchorScrollToActive`'s
+  // own guard. `null` before the first layout.
+  private lastLayout: {
+    readonly boxes: ReadonlyMap<string, Box>;
+    readonly direction: Direction;
+  } | null = null;
   // Persists across `update()` calls (perf task): a node that stays reuses its element — same
   // title instance, so Supercharged Links state on it survives — instead of every render
   // destroying and rebuilding all of them. `getNodeElement` reads straight from this map, which
@@ -511,26 +519,33 @@ export class GraphRenderer implements StructureRenderer {
     this.positionLabels(labels, labelElementsByChild, layoutResult, direction);
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
     this.applyAutoFit(input.state, layoutResult.boxes.get(forestTops[0] ?? ''));
-    this.anchorScrollToActive(input.state, layoutResult);
+    this.anchorScrollToActive(input.state, layoutResult, direction);
     this.applyZoom(input.state.zoom);
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
-    this.applyActiveState(input.state.active, hadFocus);
-    this.lastBoxes = layoutResult.boxes;
+    this.applyActiveState(input.state.active, hadFocus, input.suppressFocus === true);
+    this.lastLayout = { boxes: layoutResult.boxes, direction };
   }
 
   /** Task 3: keeps the active node visually still when its own layout position shifts for a
    * reason that has nothing to do with the user's own scrolling — e.g. a sibling created above it
    * pushes its row down. Folds the box delta into both the persisted `state` and the DOM (the
    * final `graphEl.scrollLeft`/`scrollTop` assignment right after this reads the updated `state`).
-   * Skipped when nothing is active, or the active node wasn't part of `lastBoxes` — the layout
-   * this renderer already had before this call — since there is then nothing to anchor against
-   * (first render, or a node that only just appeared). */
-  private anchorScrollToActive(state: ViewUiState, layoutResult: LayoutResult): void {
-    if (state.active === null) {
+   * Skipped when nothing is active, `direction` doesn't match `lastLayout`'s own (a direction
+   * switch — see `lastLayout`'s doc comment for why that box pair can never be diffed), or the
+   * active node wasn't part of `lastLayout` at all — the layout this renderer already had before
+   * this call — since there is then nothing to anchor against (first render, or a node that only
+   * just appeared). */
+  private anchorScrollToActive(
+    state: ViewUiState,
+    layoutResult: LayoutResult,
+    direction: Direction,
+  ): void {
+    const lastLayout = this.lastLayout;
+    if (state.active === null || lastLayout?.direction !== direction) {
       return;
     }
-    const before = this.lastBoxes?.get(state.active);
+    const before = lastLayout.boxes.get(state.active);
     const after = layoutResult.boxes.get(state.active);
     if (before === undefined || after === undefined) {
       return;
@@ -549,10 +564,15 @@ export class GraphRenderer implements StructureRenderer {
    * active node's own element *is* replaced (it was inside the collapsed/expanded subtree).
    * Without `hadFocus`, an unrelated re-render (e.g. a create commit while the user's focus is on
    * some other element entirely, like a draft input) still won't steal focus back, since
-   * `hadFocus` is only true when focus genuinely was here. */
-  private applyActiveState(active: string | null, hadFocus: boolean): void {
+   * `hadFocus` is only true when focus genuinely was here. `suppressFocus` (I11) is the one
+   * deliberate exception to that: a create draft's own input can be nested *inside* the active
+   * node's own element (a Tab-created child draft, anchored on it), so `hadFocus` is true even
+   * though focus actually belongs to the draft, not the node — `showOptimistic`'s bypass render
+   * (see `structure-view.ts`) sets this so the draft keeps real focus instead of losing it to the
+   * node it happens to sit in. */
+  private applyActiveState(active: string | null, hadFocus: boolean, suppressFocus: boolean): void {
     const activeEl = applyActiveNode(this.nodesEl, active);
-    if (activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
+    if (!suppressFocus && activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
       focusActiveNode(activeEl);
     }
     this.lastActivePath = active;
@@ -769,10 +789,11 @@ export class GraphRenderer implements StructureRenderer {
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
     this.applyZoom(this.currentZoom());
     this.positioning = false;
-    // Keeps `lastBoxes` current so the next `update()`'s own scroll anchoring (task 3) diffs
+    // Keeps `lastLayout` current so the next `update()`'s own scroll anchoring (task 3) diffs
     // against this relayout's positions, not stale ones from before Supercharged Links resized a
-    // node — `relayout` itself doesn't anchor scroll; only `update()` does.
-    this.lastBoxes = layoutResult.boxes;
+    // node — `relayout` itself doesn't anchor scroll; only `update()` does. `direction` is
+    // `this.lastDirection`, unchanged by a relayout (only a real `update()` can switch it).
+    this.lastLayout = { boxes: layoutResult.boxes, direction };
   }
 
   /** `nodesObserver`'s callback (D3): reacts only to a `data-link-*` attribute changing somewhere

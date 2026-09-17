@@ -33,6 +33,7 @@ import {
   createNodeElement,
   focusActiveNode,
   refreshSuperchargedLinkAttributes,
+  restoreSuppressedFocus,
   updateNodeElement,
 } from './node-element.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
@@ -348,7 +349,8 @@ export class OutlineRenderer implements StructureRenderer {
     // `this.containerEl.doc` (its own owner document — a pop-out window's, when the view is open
     // in one), not the global `document`, which would never match focus genuinely inside a
     // pop-out and so never re-focus a rebuilt node there.
-    const hadFocus = this.outlineEl.contains(this.containerEl.doc.activeElement);
+    const activeElementBefore = this.containerEl.doc.activeElement;
+    const hadFocus = this.outlineEl.contains(activeElementBefore);
     if (!this.hasRenderedOnce) {
       this.lastActivePath = input.state.active;
       this.hasRenderedOnce = true;
@@ -385,7 +387,15 @@ export class OutlineRenderer implements StructureRenderer {
       this.emptyEl.addClass('is-hidden');
     }
     this.containerEl.scrollTop = input.state.scrollTop;
-    this.applyActiveState(input.state.active, hadFocus);
+    this.applyActiveState(input.state.active, hadFocus, input.suppressFocus === true);
+    // I11: `suppressFocus` says this render must not disturb focus, but the full skeleton
+    // teardown/rebuild above always momentarily detaches every node regardless — including
+    // whatever was nested inside the reused one that had it (e.g. an open create draft's own
+    // input). `applyActiveState` skipping its own steal isn't enough here; this actively restores
+    // it (a no-op unless it was actually blurred, i.e. `hadFocus` was true).
+    if (input.suppressFocus === true && hadFocus) {
+      restoreSuppressedFocus(activeElementBefore);
+    }
   }
 
   /** Drops whatever `elementsByPath` still holds for a path `renderNode` didn't visit this render
@@ -409,10 +419,12 @@ export class OutlineRenderer implements StructureRenderer {
    * focus/scroll follow either an actual change *or* `hadFocus` (captured in `update()` before
    * anything else runs) — the latter is what keeps a collapse/expand refresh from silently
    * dropping real focus to `document.body` on the rare render where the active node's own element
-   * *is* replaced (it was inside the collapsed/expanded subtree). */
-  private applyActiveState(active: string | null, hadFocus: boolean): void {
+   * *is* replaced (it was inside the collapsed/expanded subtree). `suppressFocus` (I11) is the one
+   * deliberate exception — see the graph renderer's identical parameter for why (a create draft's
+   * own input can be nested inside the active node's own element). */
+  private applyActiveState(active: string | null, hadFocus: boolean, suppressFocus: boolean): void {
     const activeEl = applyActiveNode(this.outlineEl, active);
-    if (activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
+    if (!suppressFocus && activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
       focusActiveNode(activeEl);
     }
     this.lastActivePath = active;
