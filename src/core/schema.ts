@@ -4,6 +4,11 @@
 
 export type EdgeKind = 'property' | 'links' | 'backlinks';
 
+/** Which axis the graph layout grows along — `'right'` (the default, depth spreads left to
+ * right) or `'down'` (depth spreads top to bottom, siblings spread horizontally). The outline
+ * layout ignores this entirely; it only ever affects `layoutTree`/the graph renderer. */
+export type Direction = 'right' | 'down';
+
 export interface EdgeRule {
   readonly kind: EdgeKind;
   readonly property: string;
@@ -28,6 +33,7 @@ export interface Schema {
   readonly typeByName: ReadonlyMap<string, TypeDef>;
   readonly inherit: readonly string[];
   readonly layout: 'graph' | 'outline';
+  readonly direction: Direction;
 }
 
 export interface SchemaIssue {
@@ -439,6 +445,13 @@ function parseLayout(raw: unknown): 'graph' | 'outline' {
   return raw === 'outline' ? 'outline' : 'graph';
 }
 
+/** Anything other than the literal `'down'` is `'right'` — unlike every other config key, an
+ * invalid `direction` is never worth a `SchemaIssue`: it's a purely cosmetic option with an
+ * obviously safe fallback, not something that changes what the tree contains. */
+function parseDirection(raw: unknown): Direction {
+  return raw === 'down' ? 'down' : 'right';
+}
+
 export function parseSchema(read: ConfigReader): { schema: Schema; issues: SchemaIssue[] } {
   const issues: SchemaIssue[] = [];
   const types = resolveTypes(read, issues);
@@ -451,6 +464,7 @@ export function parseSchema(read: ConfigReader): { schema: Schema; issues: Schem
     typeByName,
     inherit: parseInherit(read('inherit'), issues),
     layout: parseLayout(read('layout')),
+    direction: parseDirection(read('direction')),
   };
   return { schema, issues };
 }

@@ -449,3 +449,23 @@ describe('parseSchema — layout', () => {
     expect(schema.layout).toBe(expected);
   });
 });
+
+describe('parseSchema — direction', () => {
+  it.each([
+    ['down', 'down'],
+    ['right', 'right'],
+    [undefined, 'right'],
+    ['bogus', 'right'],
+    [42, 'right'],
+  ] as const)('normalises direction=%s to %s', (raw, expected) => {
+    const { schema } = parseSchema(makeRead({ parent: 'up', direction: raw }));
+
+    expect(schema.direction).toBe(expected);
+  });
+
+  it('never reports an issue for direction, however it is set', () => {
+    const { issues } = parseSchema(makeRead({ parent: 'up', direction: 'sideways' }));
+
+    expect(issues).toStrictEqual([]);
+  });
+});

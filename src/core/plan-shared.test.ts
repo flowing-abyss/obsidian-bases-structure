@@ -11,7 +11,13 @@ import {
 import type { Schema } from './schema.js';
 import type { Structure, StructureNode } from './structure.js';
 
-const emptySchema: Schema = { types: [], typeByName: new Map(), inherit: [], layout: 'graph' };
+const emptySchema: Schema = {
+  types: [],
+  typeByName: new Map(),
+  inherit: [],
+  layout: 'graph',
+  direction: 'right',
+};
 
 /** A minimal, self-contained `StructureNode`; callers override only what the scenario needs. */
 function node(overrides: Partial<StructureNode> & { readonly path: string }): StructureNode {

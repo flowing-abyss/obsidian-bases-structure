@@ -29,6 +29,7 @@ function schemaOf(types: readonly TypeDef[]): Schema {
     typeByName: new Map(types.map((type) => [type.name, type])),
     inherit: [],
     layout: 'graph',
+    direction: 'right',
   };
 }
 
