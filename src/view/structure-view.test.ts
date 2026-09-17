@@ -1,8 +1,9 @@
 import type * as ObsidianModule from 'obsidian';
 import type { BasesQueryResult, PluginManifest, TFile } from 'obsidian';
-import { App, FileView, QueryController } from 'obsidian-test-mocks/obsidian';
+import { App, FileView, MarkdownView, QueryController } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
+import * as schemaModule from '../core/schema.js';
 import StructureViewPlugin from '../main.js';
 import { StructureActions } from './actions-ui.js';
 import * as dragModule from './drag.js';
@@ -835,32 +836,39 @@ describe('StructureView — keyboard wiring', () => {
     ).toBe('leaf.md');
   });
 
-  it('a real Space on the rendered body collapses the active branch through a full refresh', () => {
-    // Unlike pure navigation, collapse/expand still goes through `keyboard.ts`'s `deps.refresh`
-    // (there's no "already-rendered node" to just patch in place — a collapse changes *which*
-    // nodes are rendered at all), so this exercises `attachStructureKeyboard`'s real `refresh:
-    // () => { this.render(); }` closure end to end, not a mock.
+  it('a real Space on the rendered body collapses the active branch through the renderer’s own cheap update, not a full render (I6)', () => {
+    // Unlike pure navigation, collapse/expand does re-draw (there's no "already-rendered node" to
+    // just patch in place — a collapse changes *which* nodes are rendered at all), so this
+    // exercises `attachStructureKeyboard`'s real `renderCollapse` closure end to end, not a mock —
+    // but (I6) that closure calls `renderer.update(this.lastInput)` directly, not `this.render()`:
+    // `parseSchema` (called exactly once per full render, by `computeCurrentData`, and nowhere
+    // else in production code — see the grep this assertion stands in for) must not run again for
+    // a pure collapse/expand.
     const { view, parentEl } = catLeafView();
     view.onDataUpdated();
+    const parseSchemaSpy = vi.spyOn(schemaModule, 'parseSchema');
     const bodyEl = parentEl.querySelector('.bases-structure-body');
     if (bodyEl === null) throw new Error('missing body');
     const catEl = findNode(parentEl, 'cat.md');
     catEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(parentEl.querySelector('[data-path="leaf.md"]')).not.toBeNull();
+    parseSchemaSpy.mockClear();
 
     bodyEl.dispatchEvent(
       new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }),
     );
 
+    expect(parseSchemaSpy).not.toHaveBeenCalled();
     expect(parentEl.querySelector('[data-path="leaf.md"]')).toBeNull();
     expect(
       parentEl.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
     ).toBe('cat.md');
   });
 
-  // Regression: a collapse/expand always goes through a full `refresh()`, which rebuilds every
-  // node element — including the active node's own, even though `state.active` itself doesn't
-  // change. Before this fix, real DOM focus silently fell back to `document.body` afterward (the
+  // Regression: a collapse/expand always re-draws through `renderCollapse` (the renderer's own
+  // `update()`, since I6 — see the test above), which rebuilds every node element — including the
+  // active node's own, even though `state.active` itself doesn't change. Before this fix, real DOM
+  // focus silently fell back to `document.body` afterward (the
   // renderer only re-focused when the *active path* changed), so the very next keydown — dispatched
   // on `document.activeElement`, as a real keypress would be, not on `bodyEl` directly — no longer
   // reached the container's delegated listener at all. Drives every step through
@@ -977,12 +985,57 @@ function attachAsDirectBaseLeaf(app: App, parentEl: HTMLElement, basePath: strin
   view.containerEl.appendChild(parentEl);
 }
 
-describe('StructureView — UI state key includes the .base file path when opened directly (I9)', () => {
+/** Attaches `parentEl` inside a real `MarkdownView` leaf backed by `hostPath` — simulates the
+ * ordinary embedded case (`findHostFile` resolves non-null), the state-key path I9 left
+ * unchanged. */
+function attachAsHostedMarkdownLeaf(app: App, parentEl: HTMLElement, hostPath: string): void {
+  const leaf = app.workspace.getLeaf(true);
+  const view = MarkdownView.create2__(leaf);
+  const file = app.vault.getFileByPath(hostPath);
+  if (file === null) {
+    throw new Error(`Test setup error: missing file "${hostPath}"`);
+  }
+  view.file = file;
+  leaf.view = view.asOriginalType7__();
+  view.containerEl.appendChild(parentEl);
+}
+
+function zoomLabelOf(parentEl: HTMLElement): string | null {
+  return parentEl.querySelector('.bases-structure-zoom-label')?.textContent ?? null;
+}
+
+describe('StructureView — UI state key includes the host note path when embedded (I9 baseline, unchanged)', () => {
   const catConfig = { Cat: { tag: 'cat' } };
 
-  function zoomLabelOf(parentEl: HTMLElement): string | null {
-    return parentEl.querySelector('.bases-structure-zoom-label')?.textContent ?? null;
-  }
+  it('does not share zoom state between two different embedding host notes with the same (default, empty) view name', () => {
+    const app = App.createConfigured__({
+      files: {
+        'cat.md': '---\ntags: [cat]\n---\n',
+        'first-host.md': '',
+        'second-host.md': '',
+      },
+    });
+
+    const { view: viewA, parentEl: parentElA } = createView(app, [mustFile(app, 'cat.md')]);
+    attachAsHostedMarkdownLeaf(app, parentElA, 'first-host.md');
+    viewA.config.set('types', catConfig);
+    viewA.onDataUpdated();
+    const zoomInA = parentElA.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]');
+    if (zoomInA === null) throw new Error('Test setup error: missing zoom-in button');
+    zoomInA.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(zoomLabelOf(parentElA)).not.toBe('100%');
+
+    const { view: viewB, parentEl: parentElB } = createView(app, [mustFile(app, 'cat.md')]);
+    attachAsHostedMarkdownLeaf(app, parentElB, 'second-host.md');
+    viewB.config.set('types', catConfig);
+    viewB.onDataUpdated();
+
+    expect(zoomLabelOf(parentElB)).toBe('100%');
+  });
+});
+
+describe('StructureView — UI state key includes the .base file path when opened directly (I9)', () => {
+  const catConfig = { Cat: { tag: 'cat' } };
 
   it('does not share zoom state between two different directly-opened .base files with the same (default, empty) view name', () => {
     const app = App.createConfigured__({

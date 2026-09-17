@@ -87,7 +87,7 @@ function makeHarness(structure: Structure, active: string | null): Harness {
     container,
     getStructure: vi.fn(() => structure),
     getState: vi.fn(() => state),
-    refresh: vi.fn(),
+    renderCollapse: vi.fn(),
     open: vi.fn(),
     addChild: vi.fn(),
     addSibling: vi.fn(),
@@ -121,7 +121,7 @@ describe('attachKeyboard — arrow navigation', () => {
       // running one here would double up with a renderer's own re-render for a click that also
       // landed on e.g. a collapse toggle (see the toggle-click regression coverage in
       // `structure-view.test.ts`).
-      expect(h.deps.refresh).not.toHaveBeenCalled();
+      expect(h.deps.renderCollapse).not.toHaveBeenCalled();
       expect(
         h.container.querySelector('.bases-structure-node.is-active')?.getAttribute('data-path'),
       ).toBe(expected);
@@ -139,7 +139,7 @@ describe('attachKeyboard — arrow navigation', () => {
 
     expect(h.state.active).toBe(start);
     expect(event.defaultPrevented).toBe(true);
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 
   it('ArrowRight on an expanded branch moves into the first child', () => {
@@ -166,7 +166,7 @@ describe('attachKeyboard — arrow navigation', () => {
 
     expect(h.state.active).toBe('orphan.md');
     expect(event.defaultPrevented).toBe(true);
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 
   it('ArrowRight on a leaf does nothing', () => {
@@ -175,7 +175,7 @@ describe('attachKeyboard — arrow navigation', () => {
     h.container.dispatchEvent(keyEvent('ArrowRight'));
 
     expect(h.state.active).toBe('b.md');
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 
   it('Home moves to the first sibling, End to the last', () => {
@@ -205,7 +205,7 @@ describe('attachKeyboard — arrow navigation', () => {
     h.container.dispatchEvent(keyEvent('ArrowDown'));
 
     expect(h.state.active).toBe('orphaned.md');
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 
   it('treats a node with a dangling parent reference as its own only sibling', () => {
@@ -225,7 +225,7 @@ describe('attachKeyboard — arrow navigation', () => {
     h.container.dispatchEvent(keyEvent('Home'));
 
     expect(h.state.active).toBe('lonely.md');
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 });
 
@@ -237,7 +237,7 @@ describe('attachKeyboard — collapse/expand', () => {
 
     expect(h.state.collapsed.has('a.md')).toBe(true);
     expect(h.state.active).toBe('a.md');
-    expect(h.deps.refresh).toHaveBeenCalledTimes(1);
+    expect(h.deps.renderCollapse).toHaveBeenCalledTimes(1);
   });
 
   it('ArrowRight expands a collapsed branch instead of moving to the first child', () => {
@@ -268,7 +268,7 @@ describe('attachKeyboard — collapse/expand', () => {
 
     expect(h.state.collapsed.size).toBe(0);
     expect(event.defaultPrevented).toBe(true);
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 });
 
@@ -392,7 +392,7 @@ describe('attachKeyboard — m / t / Mod+Z', () => {
     editable.dispatchEvent(keyEvent('ArrowDown'));
 
     expect(h.state.active).toBe('a.md');
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 
   it('an inner contenteditable="false" island wins over an outer contenteditable="true" editor root', () => {
@@ -426,7 +426,7 @@ describe('attachKeyboard — Escape', () => {
     h.container.dispatchEvent(keyEvent('Escape'));
 
     expect(h.state.active).toBeNull();
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
     expect(h.container.tabIndex).toBe(0);
     expect(h.container.querySelector('.bases-structure-node.is-active')).toBeNull();
   });
@@ -469,7 +469,7 @@ describe('attachKeyboard — no active node / unhandled keys', () => {
 
     h.container.dispatchEvent(event);
 
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 
@@ -483,7 +483,7 @@ describe('attachKeyboard — no active node / unhandled keys', () => {
 
     h.container.dispatchEvent(keyEvent('ArrowDown'));
 
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
     expect(h.state.active).toBeNull();
     expect(h.container.tabIndex).toBe(0);
   });
@@ -584,7 +584,7 @@ describe('attachKeyboard — entering via focus', () => {
     h.container.dispatchEvent(new FocusEvent('focus'));
 
     expect(h.state.active).toBeNull();
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 
   it('does not change the active node when the container is focused while one is already active', () => {
@@ -593,7 +593,7 @@ describe('attachKeyboard — entering via focus', () => {
     h.container.dispatchEvent(new FocusEvent('focus'));
 
     expect(h.state.active).toBe('a.md');
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 });
 
@@ -686,6 +686,6 @@ describe('attachKeyboard — disposer', () => {
     h.dispose();
     h.container.dispatchEvent(keyEvent('ArrowDown'));
 
-    expect(h.deps.refresh).not.toHaveBeenCalled();
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
   });
 });

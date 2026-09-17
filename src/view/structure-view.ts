@@ -293,7 +293,7 @@ export class StructureView extends BasesView {
           : new GraphRenderer(this.bodyEl, ctx);
       this.rendererLayout = layout;
       this.dragDispose = this.attachNodeDrag();
-      this.keyboardDispose = this.attachStructureKeyboard();
+      this.keyboardDispose = this.attachStructureKeyboard(this.renderer);
     }
     return this.renderer;
   }
@@ -320,14 +320,24 @@ export class StructureView extends BasesView {
   /** Wires `keyboard.ts`'s roving-focus control (task 16) to the same `bodyEl` container the drag
    * gesture uses, attached/disposed alongside it in `resolveRenderer`. Every dep here either reads
    * the latest render (`this.lastInput`, same fallback pattern as `attachNodeDrag`'s `targetsFor`)
-   * or forwards straight to `this.actions` — `addSibling` is the one exception, resolved below. */
-  private attachStructureKeyboard(): () => void {
+   * or forwards straight to `this.actions` — `addSibling` is the one exception, resolved below.
+   * `renderer` is `resolveRenderer`'s own freshly-assigned `this.renderer`, passed in (rather than
+   * read back off `this.renderer` inside the closure) purely so `renderCollapse` only has to guard
+   * one nullable (`this.lastInput`), not two that are always either both set or both unset. */
+  private attachStructureKeyboard(renderer: StructureRenderer): () => void {
     return attachKeyboard({
       container: this.bodyEl,
       getStructure: () => this.lastInput?.structure ?? EMPTY_STRUCTURE,
       getState: () => this.lastInput?.state ?? emptyViewState(),
-      refresh: () => {
-        this.render();
+      // I6: collapse/expand only ever change `state.collapsed`, already reflected by mutating the
+      // same `ViewUiState` object the last render's `RenderInput` still holds — re-drawing from it
+      // is a renderer's own cheap `update()`, with no schema re-parse/snapshot re-read/
+      // `buildStructure` (a full `render()`, as this used to call, was one of I6's several
+      // multipliers: every keyboard collapse/expand rebuilt the whole structure from scratch).
+      renderCollapse: () => {
+        if (this.lastInput !== null) {
+          renderer.update(this.lastInput);
+        }
       },
       open: (path, newTab) => {
         this.actions?.openNode(path, newTab);

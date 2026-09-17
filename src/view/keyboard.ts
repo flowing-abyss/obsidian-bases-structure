@@ -22,7 +22,13 @@ export interface KeyboardDeps {
   readonly container: HTMLElement;
   readonly getStructure: () => Structure;
   readonly getState: () => ViewUiState;
-  readonly refresh: () => void;
+  /** Collapse/expand (Space, ArrowLeft/ArrowRight) only ever change `state.collapsed`, which the
+   * schema/snapshot/structure the last render already produced can still answer against — so this
+   * re-draws from that same, already-computed `RenderInput` (a renderer's own cheap `update()`,
+   * not a full re-render: no schema re-parse, no snapshot re-read, no `buildStructure` — see I6,
+   * which measured a full `render()` here as one of `buildStructure`'s several multipliers per
+   * user interaction). */
+  readonly renderCollapse: () => void;
   readonly open: (path: string, newTab: boolean) => void;
   readonly addChild: (path: string, anchorEl: HTMLElement) => void;
   readonly addSibling: (path: string, anchorEl: HTMLElement) => void;
@@ -164,16 +170,15 @@ function edgeOf(ctx: ActiveCtx, edge: 'first' | 'last'): string | null {
 /** The one place that changes `state.active`: updates the roving container tabindex (0 when
  * nothing is active so it can be tabbed into, -1 once a node owns focus) and applies
  * `.is-active`/per-node tabindex/focus/scroll straight to the *current* DOM via
- * `node-element.ts`'s `applyActiveNode`/`focusActiveNode` — deliberately not a `deps.refresh()`.
- * A full `refresh()` re-runs the whole `StructureView.render()` pipeline (parse schema, read
- * snapshot, rebuild structure, re-render), which is both unnecessary for a pure "move focus among
- * already-rendered nodes" change and actively wrong when the click that triggered it also landed
- * on a collapse toggle or the "+" button: those already re-render themselves (a cheap
- * `renderer.update()`, not a full `render()`) before this handler runs (their listener is on a
- * nearer ancestor, so it fires first during bubbling) — a second, full `refresh()` on top would
- * be redundant work and once made `GraphRenderer.update`/`OutlineRenderer.update` run twice for a
- * single toggle click. Handlers that actually change *which nodes are rendered* (collapse/expand)
- * still call `deps.refresh()` themselves, separately from `setActive`.
+ * `node-element.ts`'s `applyActiveNode`/`focusActiveNode` — deliberately not a `deps.renderCollapse()`.
+ * A render (even the cheap `renderCollapse()` path) rebuilds every node element wholesale, which is
+ * both unnecessary for a pure "move focus among already-rendered nodes" change and actively wrong
+ * when the click that triggered it also landed on a collapse toggle or the "+" button: those
+ * already re-render themselves before this handler runs (their listener is on a nearer ancestor,
+ * so it fires first during bubbling) — a second one on top would be redundant work and once made
+ * `GraphRenderer.update`/`OutlineRenderer.update` run twice for a single toggle click. Handlers
+ * that actually change *which nodes are rendered* (collapse/expand) still call
+ * `deps.renderCollapse()` themselves, separately from `setActive`.
  *
  * `path === null` (Escape) is the one case `applyActiveNode` never returns an element for — left
  * alone, real DOM focus would stay on the *previous* active node, which now has `tabindex="-1"`:
@@ -216,7 +221,7 @@ function handleArrowDown(deps: KeyboardDeps, ctx: ActiveCtx): void {
 function handleArrowLeft(deps: KeyboardDeps, ctx: ActiveCtx): void {
   if (ctx.node.children.length > 0 && !ctx.state.collapsed.has(ctx.path)) {
     ctx.state.collapsed.add(ctx.path);
-    deps.refresh();
+    deps.renderCollapse();
     return;
   }
   if (ctx.node.parent !== null) {
@@ -230,7 +235,7 @@ function handleArrowRight(deps: KeyboardDeps, ctx: ActiveCtx): void {
   }
   if (ctx.state.collapsed.has(ctx.path)) {
     ctx.state.collapsed.delete(ctx.path);
-    deps.refresh();
+    deps.renderCollapse();
     return;
   }
   moveActive(deps, ctx.node.children[0] ?? null);
@@ -253,7 +258,7 @@ function handleSpace(deps: KeyboardDeps, ctx: ActiveCtx): void {
   } else {
     ctx.state.collapsed.add(ctx.path);
   }
-  deps.refresh();
+  deps.renderCollapse();
 }
 
 function handleEnter(deps: KeyboardDeps, ctx: ActiveCtx): void {
