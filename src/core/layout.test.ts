@@ -300,7 +300,7 @@ describe('layoutTree — repeated paths', () => {
 describe('DEFAULT_LAYOUT_OPTIONS', () => {
   it('matches the documented defaults', () => {
     expect(DEFAULT_LAYOUT_OPTIONS).toStrictEqual({
-      columnGap: 72,
+      columnGap: 48,
       rowGap: 12,
       groupPadding: 12,
       topGap: 32,

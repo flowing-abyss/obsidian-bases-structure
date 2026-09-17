@@ -45,8 +45,12 @@ export interface LayoutResult {
   readonly height: number; // max (y + height) over boxes and groups, 0 when empty
 }
 
+// `columnGap: 48` (was 72): a tighter horizontal rhythm reads just as clearly — the bezier edges
+// between depth columns (see `edges.ts`'s `MIN_CONTROL_OFFSET`, floored at 24px regardless of this
+// gap) stayed legible and distinct in live screenshots even at the min-gap case — while packing
+// more of a wide tree into the viewport before auto-fit (`AUTO_FIT_MIN_ZOOM`) has to shrink it.
 export const DEFAULT_LAYOUT_OPTIONS: LayoutOptions = {
-  columnGap: 72,
+  columnGap: 48,
   rowGap: 12,
   groupPadding: 12,
   topGap: 32,
@@ -56,10 +60,11 @@ export const DEFAULT_LAYOUT_OPTIONS: LayoutOptions = {
  * and `rowGap` keep the same *roles* they have in `layoutTree` — `columnGap` spaces depth,
  * `rowGap` spaces siblings — but under the swap-then-transpose trick those roles end up applying
  * to the opposite screen axis: `columnGap` becomes the vertical depth gap (~40px reads better
- * downward than the horizontal default's 72px), `rowGap` becomes the horizontal sibling gap
- * (~16px, a bit more breathing room than 12px now that it separates side-by-side columns rather
- * than stacked rows). `groupPadding`/`topGap` aren't called out by the growth axis the same way,
- * so they keep the horizontal defaults. */
+ * downward than the horizontal default's 48px — direction: down wasn't cramped at its existing
+ * gap, so it was left as-is when the horizontal default was tightened), `rowGap` becomes the
+ * horizontal sibling gap (~16px, a bit more breathing room than 12px now that it separates
+ * side-by-side columns rather than stacked rows). `groupPadding`/`topGap` aren't called out by the
+ * growth axis the same way, so they keep the horizontal defaults. */
 export const DEFAULT_VERTICAL_LAYOUT_OPTIONS: LayoutOptions = {
   columnGap: 40,
   rowGap: 16,

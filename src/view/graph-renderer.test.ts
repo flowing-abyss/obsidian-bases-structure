@@ -178,9 +178,9 @@ describe('GraphRenderer', () => {
     expect(rootEl.style.top).toBe('12px');
     expect(rootEl.classList.contains('is-root')).toBe(true);
     expect(must(rootEl.querySelector('.bases-structure-title')).textContent).toBe('root');
-    expect(aEl.style.left).toBe('172px');
+    expect(aEl.style.left).toBe('148px');
     expect(aEl.style.top).toBe('12px');
-    expect(bEl.style.left).toBe('344px');
+    expect(bEl.style.left).toBe('296px');
     expect(bEl.style.top).toBe('12px');
   });
 
@@ -317,8 +317,8 @@ describe('GraphRenderer', () => {
       container.querySelectorAll<SVGPathElement>('.bases-structure-edge:not(.is-extra)'),
     );
     expect(edges.map((edge) => edge.getAttribute('d'))).toStrictEqual([
-      'M 100 22 C 136 22, 136 22, 172 22',
-      'M 272 22 C 308 22, 308 22, 344 22',
+      'M 100 22 C 124 22, 124 22, 148 22',
+      'M 248 22 C 272 22, 272 22, 296 22',
     ]);
     expect(edges.every((edge) => edge.getAttribute('marker-end') === null)).toBe(true);
     expect(edges.every((edge) => edge.getAttribute('marker-start') === null)).toBe(true);
@@ -327,7 +327,7 @@ describe('GraphRenderer', () => {
     expect(container.querySelector('.bases-structure-group')).toBeNull();
 
     const svg = must(container.querySelector('svg.bases-structure-edges'));
-    expect(svg.getAttribute('width')).toBe('456');
+    expect(svg.getAttribute('width')).toBe('408');
     expect(svg.getAttribute('height')).toBe('44');
   });
 
@@ -341,7 +341,7 @@ describe('GraphRenderer', () => {
       container.querySelectorAll<SVGPathElement>('.bases-structure-edge:not(.is-extra)'),
     );
     const abEdge = treeEdges.find(
-      (edge) => edge.getAttribute('d') === 'M 272 22 C 308 22, 308 22, 344 22',
+      (edge) => edge.getAttribute('d') === 'M 248 22 C 272 22, 272 22, 296 22',
     );
     expect(abEdge?.classList.contains('is-two-way')).toBe(true);
     expect(abEdge?.getAttribute('marker-start')).toBe('url(#bases-structure-arrow-tree)');
@@ -351,7 +351,7 @@ describe('GraphRenderer', () => {
       container.querySelectorAll<SVGPathElement>('.bases-structure-edge.is-extra'),
     );
     expect(extraEdges).toHaveLength(1);
-    expect(extraEdges[0]?.getAttribute('d')).toBe('M 100 86 C 222 86, 222 22, 344 22');
+    expect(extraEdges[0]?.getAttribute('d')).toBe('M 100 86 C 198 86, 198 22, 296 22');
     expect(extraEdges[0]?.getAttribute('marker-start')).toBeNull();
     expect(extraEdges[0]?.getAttribute('marker-end')).toBe('url(#bases-structure-arrow-extra)');
 
@@ -367,10 +367,10 @@ describe('GraphRenderer', () => {
     const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
     const edges = Array.from(container.querySelectorAll<SVGPathElement>('.bases-structure-edge'));
     const rootToA = must(
-      edges.find((edge) => edge.getAttribute('d') === 'M 100 22 C 136 22, 136 22, 172 22'),
+      edges.find((edge) => edge.getAttribute('d') === 'M 100 22 C 124 22, 124 22, 148 22'),
     );
     const aToB = must(
-      edges.find((edge) => edge.getAttribute('d') === 'M 272 22 C 308 22, 308 22, 344 22'),
+      edges.find((edge) => edge.getAttribute('d') === 'M 248 22 C 272 22, 272 22, 296 22'),
     );
 
     aEl.dispatchEvent(
@@ -397,7 +397,7 @@ describe('GraphRenderer', () => {
     const aAdd = must(aEl.querySelector<HTMLElement>('.bases-structure-add'));
     const edges = Array.from(container.querySelectorAll<SVGPathElement>('.bases-structure-edge'));
     const aToB = must(
-      edges.find((edge) => edge.getAttribute('d') === 'M 272 22 C 308 22, 308 22, 344 22'),
+      edges.find((edge) => edge.getAttribute('d') === 'M 248 22 C 272 22, 272 22, 296 22'),
     );
     aEl.dispatchEvent(
       new MouseEvent('mouseover', { bubbles: true, relatedTarget: container.parentElement }),
@@ -546,9 +546,9 @@ describe('GraphRenderer', () => {
     fitBtn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(canvas?.style.transform).toBe('scale(1)');
 
-    // Layout is 456x44 (see the geometry test above); a 228x22 viewport fits at 0.5.
+    // Layout is 408x44 (see the geometry test above); a 204x22 viewport fits at 0.5.
     if (graphEl !== null) {
-      Object.defineProperty(graphEl, 'clientWidth', { value: 228, configurable: true });
+      Object.defineProperty(graphEl, 'clientWidth', { value: 204, configurable: true });
       Object.defineProperty(graphEl, 'clientHeight', { value: 22, configurable: true });
     }
     fitBtn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -557,7 +557,7 @@ describe('GraphRenderer', () => {
   });
 
   it('fits by width alone for direction: right, ignoring a tiny container height (U2)', () => {
-    // Layout is 456x44 (see the geometry test above). A 228x5 viewport has a generous width
+    // Layout is 408x44 (see the geometry test above). A 204x5 viewport has a generous width
     // ratio (0.5) but a tiny height ratio (5/44 ≈ 0.11) — the tree grows left to right and its
     // breadth is meant to scroll vertically, so "Fit" must land on the width ratio alone.
     const container = createDiv();
@@ -567,7 +567,7 @@ describe('GraphRenderer', () => {
     const canvas = container.querySelector<HTMLElement>('.bases-structure-canvas');
     const fitBtn = container.querySelector<HTMLButtonElement>('[aria-label="Fit to view"]');
     if (graphEl !== null) {
-      Object.defineProperty(graphEl, 'clientWidth', { value: 228, configurable: true });
+      Object.defineProperty(graphEl, 'clientWidth', { value: 204, configurable: true });
       Object.defineProperty(graphEl, 'clientHeight', { value: 5, configurable: true });
     }
 
@@ -608,12 +608,12 @@ describe('GraphRenderer', () => {
   it('auto-fits on the first render when zoom is untouched', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    fakeGraphViewport(container, 228, 22);
+    fakeGraphViewport(container, 204, 22);
     const state = makeState();
 
     renderer.update(makeInput({ state }));
 
-    // Layout is 456x44 (see the geometry test above); a 228x22 viewport fits at 0.5.
+    // Layout is 408x44 (see the geometry test above); a 204x22 viewport fits at 0.5.
     expect(state.zoom).toBeCloseTo(0.5);
     expect(container.querySelector<HTMLElement>('.bases-structure-canvas')?.style.transform).toBe(
       'scale(0.5)',
@@ -634,12 +634,12 @@ describe('GraphRenderer', () => {
   it('only auto-fits once: a later untouched render keeps the first fit zoom', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    fakeGraphViewport(container, 228, 22);
+    fakeGraphViewport(container, 204, 22);
     const state = makeState();
     renderer.update(makeInput({ state }));
     expect(state.zoom).toBeCloseTo(0.5);
 
-    fakeGraphViewport(container, 456, 44);
+    fakeGraphViewport(container, 408, 44);
     renderer.update(makeInput({ state }));
 
     expect(state.zoom).toBeCloseTo(0.5);
@@ -651,7 +651,7 @@ describe('GraphRenderer', () => {
     // its own fresh auto-fit, same as the very first render did.
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    fakeGraphViewport(container, 228, 22);
+    fakeGraphViewport(container, 204, 22);
     const state = makeState();
     renderer.update(makeInput({ state }));
     expect(state.zoom).toBeCloseTo(0.5);
@@ -689,7 +689,7 @@ describe('GraphRenderer', () => {
     expect(state.zoom).toBe(1);
     expect(state.zoomTouched).toBe(false);
 
-    fakeGraphViewport(container, 228, 22);
+    fakeGraphViewport(container, 204, 22);
     renderer.update(makeInput({ state }));
 
     expect(state.zoom).toBeCloseTo(0.5);
