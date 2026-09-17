@@ -222,7 +222,13 @@ function computeTagsWrites(
 ): readonly KeyWrite[] {
   const key = tagsKeyOf(frontmatter);
   const currentLower = new Set(frontmatterTags.map((tag) => tag.toLowerCase()));
-  const removeTags = oldMatch.tags.filter((tag) => currentLower.has(tag.toLowerCase()));
+  const newLower = new Set(newType.match.tags.map((tag) => tag.toLowerCase()));
+  // Round 3: a tag both the old and new type require (shared) is left untouched — nothing
+  // distinguishes old from new for it, so removing it would just break the new type's own match
+  // requirement (the same idea as round 2 minor 4 for shared list-property values).
+  const removeTags = oldMatch.tags.filter(
+    (tag) => currentLower.has(tag.toLowerCase()) && !newLower.has(tag.toLowerCase()),
+  );
   const addTags = newType.match.tags.filter((tag) => !currentLower.has(tag.toLowerCase()));
   if (removeTags.length === 0 && addTags.length === 0) {
     return [];

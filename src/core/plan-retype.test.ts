@@ -613,6 +613,46 @@ describe('planAction — retype: I4 — retype only rewrites frontmatter tags, n
       },
     ]);
   });
+
+  it('does not remove a tag shared by the old and new type (round 3)', () => {
+    // D requires [work, type/d]; E requires [work, type/e] — "work" is common to both, so
+    // retyping between them must never remove it (removing it would immediately break E's own
+    // match requirement, the same idea as round 2 minor 4 for shared list-property values).
+    const sharedTagSchema = schemaFrom({
+      types: {
+        Cat: { tag: 'cat', children: { D: 'up', E: 'up' } },
+        D: { tag: ['work', 'type/d'] },
+        E: { tag: ['work', 'type/e'] },
+      },
+    });
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: ['work', 'type/d'],
+        frontmatterTags: ['work', 'type/d'],
+        frontmatter: { tags: ['work', 'type/d'] },
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      sharedTagSchema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'E' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [{ key: 'tags', value: { kind: 'listItem', remove: 'type/d', add: 'type/e' } }],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('n.md')?.frontmatter['tags']).toStrictEqual(['work', 'type/e']);
+  });
 });
 
 describe('planAction — retype: verification failure (resolves to a different type)', () => {
