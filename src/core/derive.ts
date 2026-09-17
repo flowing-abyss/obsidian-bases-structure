@@ -153,7 +153,7 @@ export interface SubtreeContext {
   readonly snapshot: Snapshot;
   readonly structure: Structure;
   readonly typeOverrides: ReadonlyMap<string, string>; // path → type name after the action
-  readonly linkOverrides: Map<string, Record<string, readonly string[]>>; // path → key → desired targets
+  readonly linkOverrides: Map<string, Record<string, readonly string[]>>; // path → key → resulting targets (current − remove + add, not a "desired" value computed independently)
 }
 
 /** `ctx` with every override cleared — the "before the action" view of every node's type/links,

@@ -78,10 +78,11 @@ export function readNote(app: App, file: TFile): NoteData {
   const tags = uniqueInOrder((getAllTags(cache) ?? []).map(stripHash));
   const frontmatter = copyFrontmatter(cache.frontmatter);
   // Real Obsidian 1.13's `parseFrontMatterTags` reads only the `tags` frontmatter key (matched
-  // case-insensitively — never `tag`, singular) and does *not* strip a leading `#` itself; it
-  // returns each element exactly as written. We strip it here so `frontmatterTags` (the
-  // frontmatter-only subset of `tags` retype is allowed to rewrite — see `NoteData.frontmatterTags`)
-  // is always bare names, matching `tags`'s own convention.
+  // case-insensitively — never `tag`, singular), adds a leading `#` to any element missing one
+  // (rather than returning it exactly as written), and drops any element containing a space
+  // (never a valid tag). We strip the `#` back off here so `frontmatterTags` (the frontmatter-only
+  // subset of `tags` retype is allowed to rewrite — see `NoteData.frontmatterTags`) is always bare
+  // names, matching `tags`'s own convention.
   const frontmatterTags = uniqueInOrder((parseFrontMatterTags(frontmatter) ?? []).map(stripHash));
   // `cache.tags` is the metadata cache's own inline-tag list — tags written in the note's body
   // text, distinct from `cache.frontmatter`'s (round 2 minor 3): read straight from there instead
