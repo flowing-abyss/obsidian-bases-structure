@@ -605,7 +605,7 @@ describe('GraphRenderer', () => {
     expect(canvas.style.transform).toBe('scale(0.5)');
   });
 
-  it('auto-fits on the first render when zoom is untouched', () => {
+  it('auto-fits on the first render when zoom is untouched, floored at 0.85 so text stays readable', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
     fakeGraphViewport(container, 204, 22);
@@ -613,17 +613,63 @@ describe('GraphRenderer', () => {
 
     renderer.update(makeInput({ state }));
 
-    // Layout is 408x44 (see the geometry test above); a 204x22 viewport fits at 0.5.
-    expect(state.zoom).toBeCloseTo(0.5);
+    // Layout is 408x44 (see the geometry test above); a 204x22 viewport's natural fit is 0.5 —
+    // below AUTO_FIT_MIN_ZOOM (0.85), so auto-fit floors it there instead of shrinking further
+    // (a wide graph in a narrow embed must not open with unreadably small text).
+    expect(state.zoom).toBeCloseTo(0.85);
     expect(container.querySelector<HTMLElement>('.bases-structure-canvas')?.style.transform).toBe(
-      'scale(0.5)',
+      'scale(0.85)',
     );
+  });
+
+  it('clamps auto-fit at 0.85 for direction: down too', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    // Vertical layout is 124x152 (see the "direction: down" describe block below); a 40x40
+    // viewport's natural fit is min(1, 40/124, 40/152) ≈ 0.263 — the floor must engage on this
+    // direction's own (both-axes) fit computation too, not just direction: right's width-only one.
+    fakeGraphViewport(container, 40, 40);
+    const state = makeState();
+
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    expect(state.zoom).toBeCloseTo(0.85);
+  });
+
+  it('leaves auto-fit unclamped once the natural fit ratio is already above 0.85', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    // 357 / 408 = 0.875 — already above the floor, so auto-fit must land on the real ratio, not
+    // snap up to a fixed 0.85 regardless of what the container actually fits.
+    fakeGraphViewport(container, 357, 100);
+    const state = makeState();
+
+    renderer.update(makeInput({ state }));
+
+    expect(state.zoom).toBeCloseTo(0.875);
+  });
+
+  it('lets the manual "Fit to view" button go below the 0.85 auto-fit floor', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 204, 22);
+    const state = makeState();
+    renderer.update(makeInput({ state }));
+    expect(state.zoom).toBeCloseTo(0.85); // auto-fit floored, as above
+
+    const fitBtn = must(container.querySelector<HTMLButtonElement>('[aria-label="Fit to view"]'));
+    fitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    // The floor is specific to `applyAutoFit`'s own choice — a user explicitly asking to fit the
+    // whole graph still gets the real 0.5 ratio (only ZOOM_MIN, 0.3, bounds the manual button).
+    expect(state.zoom).toBeCloseTo(0.5);
+    expect(state.zoomTouched).toBe(true);
   });
 
   it('does not auto-fit when the zoom was already touched', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    fakeGraphViewport(container, 228, 22);
+    fakeGraphViewport(container, 204, 22);
     const state = makeState({ zoomTouched: true });
 
     renderer.update(makeInput({ state }));
@@ -637,12 +683,12 @@ describe('GraphRenderer', () => {
     fakeGraphViewport(container, 204, 22);
     const state = makeState();
     renderer.update(makeInput({ state }));
-    expect(state.zoom).toBeCloseTo(0.5);
+    expect(state.zoom).toBeCloseTo(0.85); // floored, as above
 
     fakeGraphViewport(container, 408, 44);
     renderer.update(makeInput({ state }));
 
-    expect(state.zoom).toBeCloseTo(0.5);
+    expect(state.zoom).toBeCloseTo(0.85);
   });
 
   it('re-fits when direction changes and zoom was never touched (U3)', () => {
@@ -654,19 +700,22 @@ describe('GraphRenderer', () => {
     fakeGraphViewport(container, 204, 22);
     const state = makeState();
     renderer.update(makeInput({ state }));
-    expect(state.zoom).toBeCloseTo(0.5);
+    expect(state.zoom).toBeCloseTo(0.85); // floored, as above
 
-    fakeGraphViewport(container, 100, 5);
+    // Vertical layout is exactly 124x152 (see the "direction: down" describe block below) — a
+    // same-size viewport fits at 1, unclamped. Landing on 1 (not the previous 0.85) proves the
+    // switch actually recomputed a fresh fit rather than just reusing the old direction's value.
+    fakeGraphViewport(container, 124, 152);
     renderer.update(makeInput({ schema: verticalSchema(), state }));
 
-    expect(state.zoom).not.toBeCloseTo(0.5);
+    expect(state.zoom).toBeCloseTo(1);
     expect(state.zoomTouched).toBe(false);
   });
 
   it('does not re-fit on a direction change once the zoom was touched', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    fakeGraphViewport(container, 228, 22);
+    fakeGraphViewport(container, 204, 22);
     const state = makeState({ zoom: 0.8, zoomTouched: true });
     renderer.update(makeInput({ state }));
     expect(state.zoom).toBeCloseTo(0.8);
@@ -692,7 +741,7 @@ describe('GraphRenderer', () => {
     fakeGraphViewport(container, 204, 22);
     renderer.update(makeInput({ state }));
 
-    expect(state.zoom).toBeCloseTo(0.5);
+    expect(state.zoom).toBeCloseTo(0.85); // floored, as above
   });
 
   it('computes a sane auto-fit zoom even when the container shrink-wraps to the canvas wrapper (real-browser CSS quirk)', () => {
@@ -723,7 +772,7 @@ describe('GraphRenderer', () => {
 
     renderer.update(makeInput({ schema: verticalSchema(), state }));
 
-    // Layout is 124x140 unscaled (see the "direction: down" describe block below): a 200-wide,
+    // Layout is 124x152 unscaled (see the "direction: down" describe block below): a 200-wide,
     // "container that grows with its own content" box comfortably fits both axes at 100% once
     // the wrapper is measured at its real, unscaled size — not clamped down to ZOOM_MIN (0.3),
     // which is exactly what the unfixed chicken-and-egg read produced.

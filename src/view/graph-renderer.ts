@@ -75,6 +75,13 @@ const EXTRA_ARROW_MARKER_ID = 'bases-structure-arrow-extra';
 const EXTRA_ARROW_MARKER_URL = `url(#${EXTRA_ARROW_MARKER_ID})`;
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 2;
+// A floor for *auto*-fit only (`applyAutoFit`) — below this, node text renders too small to read
+// (a wide graph in a narrow embed was measured auto-fitting to 66%, ~8.6px text). The manual "Fit
+// to view" button (`handleFit`) intentionally keeps going down to `ZOOM_MIN`: a user who clicks it
+// is choosing to see the whole tree even if that means squinting, but a graph nobody asked to zoom
+// should never open unreadable. When even 0.85 doesn't fit the container, the graph simply
+// overflows into the scroll area instead of shrinking further.
+const AUTO_FIT_MIN_ZOOM = 0.85;
 const ZOOM_STEP = 0.1;
 const WHEEL_ZOOM_FACTOR = 0.002;
 const DEFAULT_NODE_WIDTH = 180;
@@ -643,7 +650,9 @@ export class GraphRenderer implements StructureRenderer {
    * `lastAutoFitDirection` once the container actually has a measured size — an embed whose first
    * render lands before the surrounding layout settles (`clientWidth`/`clientHeight` still 0)
    * would otherwise fit against a bogus 0×0 box, lock in that no-op "fit", and never get another
-   * chance once the container is really laid out. */
+   * chance once the container is really laid out. Never lands below `AUTO_FIT_MIN_ZOOM`: a graph
+   * nobody explicitly asked to shrink should never open with unreadable text, even a very wide one
+   * in a narrow embed — it just overflows into the scroll area past that floor instead. */
   private applyAutoFit(state: ViewUiState): void {
     if (state.zoomTouched || this.lastAutoFitDirection === this.lastDirection) {
       return;
@@ -652,7 +661,7 @@ export class GraphRenderer implements StructureRenderer {
       return;
     }
     this.lastAutoFitDirection = this.lastDirection;
-    state.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.computeFitZoom()));
+    state.zoom = Math.min(ZOOM_MAX, Math.max(AUTO_FIT_MIN_ZOOM, this.computeFitZoom()));
   }
 
   /** U2: "Fit" follows the axis the tree actually grows along. `direction: 'right'` trees grow
