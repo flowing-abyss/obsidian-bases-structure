@@ -687,3 +687,16 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
    .bases-structure-title` / `.is-orphan .bases-structure-title` rules above the "Graph renderer"
    section — they apply here too since specificity is the same and there's nothing outline-only
    about them. */
+
+/* A leaf row has no toggle, so without this its title would sit one whole toggle-box narrower
+   than a sibling's that has one, at the same depth — this reserves that exact box (same width
+   and left/right margins as `.bases-structure-toggle`, declared with the "+" earlier in this
+   file) with an empty placeholder instead, so a title's x position only ever depends on depth.
+   Outline only: the graph positions nodes individually and has no depth-based indentation for a
+   missing toggle to throw off. */
+.bases-structure-toggle-spacer {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 20px;
+  margin: 0 var(--size-2-1) 0 calc(-1 * var(--size-2-1));
+}

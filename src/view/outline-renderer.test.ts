@@ -287,6 +287,39 @@ describe('OutlineRenderer', () => {
     expect(state.collapsed.has('root.md')).toBe(true);
   });
 
+  it('reserves the toggle gutter on a leaf row with an inert spacer in the same slot', () => {
+    // Regression: a leaf row used to have no toggle at all, so its title started 20px+margin
+    // to the left of a sibling row that does have children — depth stopped being the only thing
+    // that decided a title's x position. The fix reserves the same box on every row.
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+
+    renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-gutter') });
+
+    const rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+    const childEl = must(container.querySelector<HTMLElement>('[data-path="child.md"]'));
+    const rootTitle = must(rootEl.querySelector('.bases-structure-title'));
+    const childTitle = must(childEl.querySelector('.bases-structure-title'));
+
+    // Parent row: the toggle itself sits first, ahead of the title.
+    expect(rootEl.firstElementChild?.classList.contains('bases-structure-toggle')).toBe(true);
+    expect(rootEl.firstElementChild).not.toBe(rootTitle);
+
+    // Leaf row: an inert spacer occupies the exact same slot, also ahead of the title.
+    const spacer = childEl.firstElementChild;
+    expect(spacer?.classList.contains('bases-structure-toggle-spacer')).toBe(true);
+    expect(spacer).not.toBe(childTitle);
+    expect(spacer?.tagName).not.toBe('BUTTON');
+    expect(spacer?.getAttribute('aria-hidden')).toBe('true');
+    expect(spacer?.hasAttribute('tabindex')).toBe(false);
+  });
+
   it('collapsing a node via its toggle omits its child list, and survives a later update', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot(

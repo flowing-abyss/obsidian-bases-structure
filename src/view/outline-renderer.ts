@@ -72,6 +72,18 @@ function addToggle(el: HTMLElement, collapsed: boolean): void {
   el.prepend(toggle);
 }
 
+/** A leaf row has no toggle, but its title still has to line up with a sibling that does — this
+ * reserves the toggle's own box (styles.css) with an inert, unfocusable spacer in the same slot
+ * instead. Outline only: the graph has no depth-based indentation for a missing toggle to throw
+ * off. */
+function addToggleSpacer(el: HTMLElement): void {
+  const spacer = createSpan({
+    cls: 'bases-structure-toggle-spacer',
+    attr: { 'aria-hidden': 'true' },
+  });
+  el.prepend(spacer);
+}
+
 /** I8: only the outline marks a two-way edge on the node itself — the graph already draws it as
  * an arrowed-both-ways SVG edge (see `graph-renderer.ts`'s `TREE_ARROW_MARKER_URL`), which the
  * outline has no equivalent of (no edges at all). A small icon right before the title, not
@@ -136,6 +148,8 @@ function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx, isOrphanTop =
   const collapsed = ctx.input.state.collapsed.has(path);
   if (node.children.length > 0) {
     addToggle(nodeEl, collapsed);
+  } else {
+    addToggleSpacer(nodeEl);
   }
   if (path === ctx.input.focusPath) {
     nodeEl.classList.add('is-new');
