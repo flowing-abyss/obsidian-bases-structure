@@ -556,6 +556,55 @@ describe('GraphRenderer', () => {
     expect(canvas?.style.transform).toBe('scale(0.5)');
   });
 
+  it('fits by width alone for direction: right, ignoring a tiny container height (U2)', () => {
+    // Layout is 456x44 (see the geometry test above). A 228x5 viewport has a generous width
+    // ratio (0.5) but a tiny height ratio (5/44 ≈ 0.11) — the tree grows left to right and its
+    // breadth is meant to scroll vertically, so "Fit" must land on the width ratio alone.
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const graphEl = container.querySelector<HTMLElement>('.bases-structure-graph');
+    const canvas = container.querySelector<HTMLElement>('.bases-structure-canvas');
+    const fitBtn = container.querySelector<HTMLButtonElement>('[aria-label="Fit to view"]');
+    if (graphEl !== null) {
+      Object.defineProperty(graphEl, 'clientWidth', { value: 228, configurable: true });
+      Object.defineProperty(graphEl, 'clientHeight', { value: 5, configurable: true });
+    }
+
+    fitBtn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(canvas?.style.transform).toBe('scale(0.5)');
+  });
+
+  it('fits by width and height for direction: down, same as today (U2)', () => {
+    // Since depth grows downward and siblings spread horizontally for direction: down, both
+    // dimensions are equally "the tree" (unlike 'right', where only the width should bind) — a
+    // viewport with a generous width ratio but a constraining height ratio must still fit by
+    // height. The viewport is derived from the layout's own measured size (rather than a
+    // hardcoded guess) so this doesn't depend on hand-computing the vertical layout's geometry;
+    // it only asserts the *shape* of U2's decision (both axes bind, not just the width).
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput({ schema: verticalSchema() }));
+    const canvas = must(container.querySelector<HTMLElement>('.bases-structure-canvas'));
+    const layoutWidth = parseFloat(canvas.style.width);
+    const layoutHeight = parseFloat(canvas.style.height);
+    const graphEl = container.querySelector<HTMLElement>('.bases-structure-graph');
+    const fitBtn = container.querySelector<HTMLButtonElement>('[aria-label="Fit to view"]');
+    if (graphEl !== null) {
+      Object.defineProperty(graphEl, 'clientWidth', { value: layoutWidth * 2, configurable: true });
+      Object.defineProperty(graphEl, 'clientHeight', {
+        value: layoutHeight * 0.5,
+        configurable: true,
+      });
+    }
+
+    fitBtn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    // Width ratio alone would be min(1, 2) = 1; the height ratio (0.5) is what must win.
+    expect(canvas.style.transform).toBe('scale(0.5)');
+  });
+
   it('auto-fits on the first render when zoom is untouched', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
@@ -594,6 +643,38 @@ describe('GraphRenderer', () => {
     renderer.update(makeInput({ state }));
 
     expect(state.zoom).toBeCloseTo(0.5);
+  });
+
+  it('re-fits when direction changes and zoom was never touched (U3)', () => {
+    // "Fit" follows a different axis per direction (U2), so the *old* direction's fit zoom is
+    // usually the wrong number once the layout's own shape changes — switching direction must get
+    // its own fresh auto-fit, same as the very first render did.
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 228, 22);
+    const state = makeState();
+    renderer.update(makeInput({ state }));
+    expect(state.zoom).toBeCloseTo(0.5);
+
+    fakeGraphViewport(container, 100, 5);
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    expect(state.zoom).not.toBeCloseTo(0.5);
+    expect(state.zoomTouched).toBe(false);
+  });
+
+  it('does not re-fit on a direction change once the zoom was touched', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 228, 22);
+    const state = makeState({ zoom: 0.8, zoomTouched: true });
+    renderer.update(makeInput({ state }));
+    expect(state.zoom).toBeCloseTo(0.8);
+
+    fakeGraphViewport(container, 100, 5);
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    expect(state.zoom).toBeCloseTo(0.8);
   });
 
   it('does not latch auto-fit against a zero-size container, and fits once a real size appears', () => {

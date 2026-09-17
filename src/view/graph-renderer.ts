@@ -237,10 +237,16 @@ export class GraphRenderer implements StructureRenderer {
   private state: ViewUiState | null = null;
   private lastInput: RenderInput | null = null;
   private lastLayoutSize: Size = { width: 0, height: 0 };
-  // Gates the auto-fit computation to the graph's first successful (non-empty) layout — separate
-  // from `state.zoomTouched`, which tracks the user's own intent and can outlive this renderer
-  // instance (the same `ViewUiState` is reused across remounts via `getUiState`).
-  private hasAutoFitted = false;
+  // The direction of the layout just drawn (U3) — read by `computeFitZoom` (fit follows the
+  // growth axis) and `applyAutoFit` (a direction switch gets its own re-fit chance, see
+  // `lastAutoFitDirection`) from button/wheel handlers that don't receive `RenderInput` directly.
+  private lastDirection: Direction = 'right';
+  // Gates the auto-fit computation to the graph's first successful (non-empty) layout *for the
+  // current direction* — separate from `state.zoomTouched`, which tracks the user's own intent
+  // and can outlive this renderer instance (the same `ViewUiState` is reused across remounts via
+  // `getUiState`). `null` (never fitted yet) can't equal either real `Direction`, so this alone —
+  // without a separate boolean — also covers the first render.
+  private lastAutoFitDirection: Direction | null = null;
   private edgesByPath = new Map<string, SVGPathElement[]>();
   // Tracks the active path applied by the *previous* `update()` so a re-render triggered for an
   // unrelated reason (a collapse toggle elsewhere, a refresh from an action) doesn't re-focus or
@@ -312,6 +318,7 @@ export class GraphRenderer implements StructureRenderer {
     }
     this.lastInput = input;
     this.state = input.state;
+    this.lastDirection = input.schema.direction;
     this.ctx.snapshot = input.snapshot;
     this.ctx.sourcePath = input.snapshot.host ?? '';
 
@@ -326,7 +333,7 @@ export class GraphRenderer implements StructureRenderer {
 
     const elementsByPath = this.buildNodeElements(entries, input.state.collapsed, input.focusPath);
     const sizesByPath = this.measureAll(entries, elementsByPath);
-    const direction = input.schema.direction;
+    const direction = this.lastDirection;
     const layoutInput = {
       tops: forestTops,
       childrenOf: (path: string) => input.structure.nodes.get(path)?.children ?? [],
@@ -613,29 +620,45 @@ export class GraphRenderer implements StructureRenderer {
     this.wrapEl.style.height = `${this.lastLayoutSize.height * zoom}px`;
   }
 
-  /** Fits the whole graph into the viewport exactly once, the first time a layout with content
-   * succeeds while the user hasn't zoomed by hand — an embed opens showing the full tree instead
-   * of a corner of it. Mutates `state.zoom` directly (not through `setZoom`) so this never marks
-   * the zoom as user-touched. Only latches `hasAutoFitted` once the container actually has a
-   * measured size — an embed whose first render lands before the surrounding layout settles
-   * (`clientWidth`/`clientHeight` still 0) would otherwise fit against a bogus 0×0 box, lock in
-   * that no-op "fit", and never get another chance once the container is really laid out. */
+  /** Fits the whole graph into the viewport the first time a layout with content succeeds for the
+   * *current* direction while the user hasn't zoomed by hand — an embed opens showing the full
+   * tree instead of a corner of it. Mutates `state.zoom` directly (not through `setZoom`) so this
+   * never marks the zoom as user-touched. Re-fitting is keyed on direction, not a plain one-shot
+   * flag: switching `direction` on an open view (U3) must get its own fresh fit — the axis "fit"
+   * follows is different for each direction (see `computeFitZoom`), so the *old* direction's fit
+   * zoom is usually the wrong number for the new layout's shape. Only latches
+   * `lastAutoFitDirection` once the container actually has a measured size — an embed whose first
+   * render lands before the surrounding layout settles (`clientWidth`/`clientHeight` still 0)
+   * would otherwise fit against a bogus 0×0 box, lock in that no-op "fit", and never get another
+   * chance once the container is really laid out. */
   private applyAutoFit(state: ViewUiState): void {
-    if (state.zoomTouched || this.hasAutoFitted) {
+    if (state.zoomTouched || this.lastAutoFitDirection === this.lastDirection) {
       return;
     }
     if (this.graphEl.clientWidth === 0 || this.graphEl.clientHeight === 0) {
       return;
     }
-    this.hasAutoFitted = true;
+    this.lastAutoFitDirection = this.lastDirection;
     state.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.computeFitZoom()));
   }
 
+  /** U2: "Fit" follows the axis the tree actually grows along. `direction: 'right'` trees grow
+   * arbitrarily deep sideways but their *breadth* (siblings) is meant to scroll vertically, so
+   * fitting to height too would shrink the graph far more than necessary — only the width has to
+   * fit the viewport. `direction: 'down'` keeps today's both-axes fit (its own breadth spreads
+   * horizontally and its depth grows vertically, so both dimensions are equally "the tree", not
+   * one scrollable direction and one fitted one). */
   private computeFitZoom(): number {
     const containerWidth = this.graphEl.clientWidth;
-    const containerHeight = this.graphEl.clientHeight;
     const { width, height } = this.lastLayoutSize;
-    if (containerWidth === 0 || containerHeight === 0 || width === 0 || height === 0) {
+    if (containerWidth === 0 || width === 0) {
+      return 1;
+    }
+    if (this.lastDirection !== 'down') {
+      return Math.min(1, containerWidth / width);
+    }
+    const containerHeight = this.graphEl.clientHeight;
+    if (containerHeight === 0 || height === 0) {
       return 1;
     }
     return Math.min(1, containerWidth / width, containerHeight / height);
