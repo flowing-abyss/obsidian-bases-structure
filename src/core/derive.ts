@@ -284,8 +284,11 @@ export function propertyParentsOf(node: StructureNode): readonly string[] {
 
 /** `schema.inherit`, minus D's own edge property when D sits under its primary parent via a
  * `'property'` rule — that key is owned by the edge write itself, never by the generic inherit
- * recompute. */
-function inheritKeysFor(schema: Schema, node: StructureNode): readonly string[] {
+ * recompute. Exported: `diagnostics.ts`'s `inherit-mismatch` check reuses this exact exclusion so
+ * it agrees with what a move/retype would actually write — without it, a node whose primary
+ * parent is untyped reads as a spurious mismatch on its own edge key, since `inheritedTargets`'s
+ * "value is the parent" shortcut only applies when the parent's own type is non-`null`. */
+export function inheritKeysFor(schema: Schema, node: StructureNode): readonly string[] {
   const edgeProperty = node.edge?.kind === 'property' ? node.edge.property : null;
   return schema.inherit.filter((key) => key !== edgeProperty);
 }

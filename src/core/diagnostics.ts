@@ -5,6 +5,7 @@
 
 import {
   edgeProperties,
+  inheritKeysFor,
   propertyParentsOf,
   ruleBetween,
   unionInheritedTargets,
@@ -123,15 +124,6 @@ function untypedDiagnostic(ctx: DiagCtx, node: StructureNode): Diagnostic {
     node: node.path,
     message: `"${name(ctx, node.path)}" does not match any of the schema's types.`,
   };
-}
-
-/** `schema.inherit`, minus `node`'s own edge property when it links to its parent through one of
- * those keys — that key is written by the edge itself, never by the generic inherit comparison
- * (matches `deriveSubtreeWrites`'s own exclusion, so this diagnostic agrees with what a move
- * would write). */
-function inheritKeysFor(schema: Schema, node: StructureNode): readonly string[] {
-  const edgeProperty = node.edge?.kind === 'property' ? node.edge.property : null;
-  return schema.inherit.filter((key) => key !== edgeProperty);
 }
 
 function targetsDiffer(expected: readonly string[], actual: readonly string[]): boolean {

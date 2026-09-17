@@ -6,8 +6,10 @@ import {
   edgeKeyPatch,
   edgeProperties,
   inheritedTargets,
+  inheritKeysFor,
   listShape,
   ruleBetween,
+  unionInheritedTargets,
   type SubtreeContext,
 } from './derive.js';
 import type { EdgeRule, Schema, TypeDef, TypeMatch } from './schema.js';
@@ -27,6 +29,21 @@ function schemaOf(types: readonly TypeDef[]): Schema {
     layout: 'graph',
     direction: 'right',
     edgeLabels: false,
+  };
+}
+
+/** A minimal, self-contained `StructureNode`; callers override only what the scenario needs.
+ * Shared by every describe block below that needs a node fixture. */
+function node(overrides: Partial<StructureNode> & { readonly path: string }): StructureNode {
+  return {
+    type: null,
+    parent: null,
+    edge: null,
+    children: [],
+    extras: [],
+    alsoIn: [],
+    twoWay: false,
+    ...overrides,
   };
 }
 
@@ -285,21 +302,74 @@ describe('ruleBetween', () => {
   });
 });
 
-describe('deriveSubtreeWrites', () => {
-  /** A minimal, self-contained `StructureNode`; callers override only what the scenario needs. */
-  function node(overrides: Partial<StructureNode> & { readonly path: string }): StructureNode {
-    return {
-      type: null,
-      parent: null,
-      edge: null,
-      children: [],
-      extras: [],
-      alsoIn: [],
-      twoWay: false,
-      ...overrides,
-    };
-  }
+describe('inheritKeysFor', () => {
+  it('keeps every inherit key when the node has no edge at all', () => {
+    const schema = { ...schemaOf([]), inherit: ['category', 'meta'] };
 
+    const keys = inheritKeysFor(schema, node({ path: 'n.md', edge: null }));
+
+    expect(keys).toStrictEqual(['category', 'meta']);
+  });
+
+  it('keeps every inherit key when the edge is not a property rule (e.g. backlinks)', () => {
+    const schema = { ...schemaOf([]), inherit: ['category'] };
+    const n = node({ path: 'n.md', edge: { kind: 'backlinks', property: 'file.backlinks' } });
+
+    expect(inheritKeysFor(schema, n)).toStrictEqual(['category']);
+  });
+
+  it("excludes the node's own edge property from schema.inherit", () => {
+    const schema = { ...schemaOf([]), inherit: ['category', 'meta'] };
+    const n = node({ path: 'n.md', edge: { kind: 'property', property: 'category' } });
+
+    expect(inheritKeysFor(schema, n)).toStrictEqual(['meta']);
+  });
+
+  // Reviewer-named case (Task 4 fix-up): this exclusion isn't decorative. `inheritedTargets`'s
+  // "value is the parent" shortcut (see the `inheritedTargets` suite above) only fires when the
+  // parent's own *type* is non-null — an untyped parent (a host that matched no type but still
+  // qualified as root) always falls through to the parent's own `links[key]` instead, which is
+  // empty unless the parent happens to hold that key directly. Without excluding the node's own
+  // edge key here, a node parented by an untyped host would read as a spurious inherit-mismatch
+  // on its own edge value: `unionInheritedTargets` says "expected: []" while the node's actual
+  // value (the edge itself) is non-empty.
+  it('is required to avoid a spurious mismatch when the edge parent is untyped', () => {
+    const schema = { ...schemaOf([]), inherit: ['category'] };
+    const host = node({ path: 'host.md' }); // type: null — matched no schema type
+    const child = node({
+      path: 'child.md',
+      parent: 'host.md',
+      edge: { kind: 'property', property: 'category' },
+    });
+    const ctx: SubtreeContext = {
+      schema,
+      snapshot: snapshot([
+        note('host.md'),
+        note('child.md', { propertyLinks: { category: ['host.md'] } }),
+      ]),
+      structure: {
+        root: 'host.md',
+        tops: ['host.md'],
+        orphans: [],
+        nodes: new Map([
+          [host.path, host],
+          [child.path, child],
+        ]),
+        issues: [],
+      },
+      typeOverrides: new Map(),
+      linkOverrides: new Map(),
+    };
+
+    // Left unfiltered, comparing "category" directly would see this — a false positive, since
+    // "child.md"'s own category value of `['host.md']` *is* the edge, not drift from it.
+    expect(unionInheritedTargets(ctx, ['host.md'], 'category')).toStrictEqual([]);
+    // `inheritKeysFor` excludes it before any such comparison happens.
+    expect(inheritKeysFor(schema, child)).toStrictEqual([]);
+  });
+});
+
+describe('deriveSubtreeWrites', () => {
   function structureOf(nodes: readonly StructureNode[]): Structure {
     return {
       root: null,
