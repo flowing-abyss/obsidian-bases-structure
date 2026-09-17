@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
+import type { Schema } from './schema.js';
 import { parseSchema } from './schema.js';
+import type { Snapshot } from './snapshot.js';
 import { buildStructure } from './structure.js';
 
 function makeRead(config: Record<string, unknown>): (key: string) => unknown {
@@ -490,61 +492,124 @@ describe('buildStructure — type conflicts', () => {
 // Hierarchy notes, each cross-linking 10 pseudo-random others — dense enough to also force many
 // cycles through `breakCycles`, not just stress `collectBacklinks` alone.
 //
-// Measured on the machine this test was written on (Node, `tsx`, no test framework overhead):
-// before this optimization, `buildStructure` took ~630ms at N=4,000 (and the reviewer's own
-// separate mutual-links repro took ~2.1s at N=8,000, scaling roughly quadratically); after, this
-// exact scenario takes ~35-40ms. The bound below (200ms) is a generous ~5x the optimized time,
-// leaving headroom for slower CI machines while still failing hard if either bottleneck regresses
-// back to quadratic (which would blow well past it long before N reaches 4,000).
-describe('buildStructure — I6 perf regression (4,000 notes, file.backlinks + dense cross-links)', () => {
-  it('builds a 4,000-note spec-shaped structure in well under 200ms', () => {
-    const cfg: Record<string, unknown> = {
-      inherit: ['category', 'meta', 'problem'],
-      types: {
-        Category: {
-          tag: 'system/category',
-          children: { 'Meta-note': 'category', Hierarchy: 'category' },
-        },
-        'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
-        Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
-        Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+// U7: this used to assert a wall-clock bound (`elapsed < 200ms` at N=4,000). That caught a real
+// 632ms -> ~35ms quadratic regression, but an absolute bound flakes on slower/shared CI runners —
+// especially under v8 coverage instrumentation, which this project's `verify` always runs with.
+// A scaling check is insensitive to machine speed instead: build the same shape at N and 4N —
+// linear work should come out around 4x, quadratic around 16x — and assert the ratio stays well
+// under quadratic. Only a very loose absolute bound remains, to catch a catastrophic hang rather
+// than to measure performance.
+interface Scenario {
+  readonly schema: Schema;
+  readonly snap: Snapshot;
+}
+
+function buildScenario(hierarchyCount: number): Scenario {
+  const cfg: Record<string, unknown> = {
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
       },
-    };
-    const { schema } = parseSchema(makeRead(cfg));
-    const N = 4000;
-    const metas = 20;
-    const notes = [note('C.md', { tags: ['system/category'] })];
-    for (let m = 0; m < metas; m++) {
-      notes.push(
-        note(`M${m}.md`, {
-          tags: ['system/high/meta'],
-          frontmatter: { category: ['[[C]]'] },
-          propertyLinks: { category: ['C.md'] },
-        }),
-      );
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  };
+  const { schema } = parseSchema(makeRead(cfg));
+  const metas = 20;
+  const notes = [note('C.md', { tags: ['system/category'] })];
+  for (let m = 0; m < metas; m++) {
+    notes.push(
+      note(`M${m}.md`, {
+        tags: ['system/high/meta'],
+        frontmatter: { category: ['[[C]]'] },
+        propertyLinks: { category: ['C.md'] },
+      }),
+    );
+  }
+  for (let i = 0; i < hierarchyCount; i++) {
+    const links: string[] = [];
+    for (let k = 1; k <= 10; k++) {
+      links.push(`H${(i * 7 + k * 13) % hierarchyCount}.md`);
     }
-    for (let i = 0; i < N; i++) {
-      const links: string[] = [];
-      for (let k = 1; k <= 10; k++) {
-        links.push(`H${(i * 7 + k * 13) % N}.md`);
-      }
-      const m = i % metas;
-      notes.push(
-        note(`H${i}.md`, {
-          tags: ['system/high/hierarchy'],
-          frontmatter: { meta: [`[[M${m}]]`], category: ['[[C]]'] },
-          propertyLinks: { meta: [`M${m}.md`], category: ['C.md'] },
-          links,
-        }),
-      );
-    }
-    const snap = snapshot(notes, { host: 'C.md', results: notes.slice(1).map((n) => n.path) });
+    const m = i % metas;
+    notes.push(
+      note(`H${i}.md`, {
+        tags: ['system/high/hierarchy'],
+        frontmatter: { meta: [`[[M${m}]]`], category: ['[[C]]'] },
+        propertyLinks: { meta: [`M${m}.md`], category: ['C.md'] },
+        links,
+      }),
+    );
+  }
+  const snap = snapshot(notes, { host: 'C.md', results: notes.slice(1).map((n) => n.path) });
+  return { schema, snap };
+}
 
-    const start = performance.now();
-    const structure = buildStructure(schema, snap);
-    const elapsed = performance.now() - start;
+function timeBuild(scenario: Scenario): number {
+  const start = performance.now();
+  buildStructure(scenario.schema, scenario.snap);
+  return performance.now() - start;
+}
 
-    expect(structure.nodes.size).toBe(1 + metas + N);
-    expect(elapsed).toBeLessThan(200);
-  });
+interface ScalingMeasurement {
+  /** The lowest small/large timing ratio seen across the measured rounds. */
+  readonly ratio: number;
+  /** The lowest `large` timing seen — only for the loose absolute sanity bound. */
+  readonly timeLarge: number;
+}
+
+/** Times `small` then `large`, back-to-back, `runs` times, and returns the *best (lowest)
+ * per-round ratio* — not the fastest `small` timing divided by the fastest `large` timing taken
+ * independently. Those two fastest timings can come from *different* rounds measured under
+ * *different* momentary contention (GC, a scheduler blip, a noisy neighbour on a shared CI
+ * runner, another test file's worker thread) — comparing across rounds like that is exactly what
+ * made an earlier version of this comparison occasionally flaky at a ~9-11x ratio even though the
+ * algorithm itself scales close to linearly. Computing the ratio *within* each matched pair
+ * cancels out contention that hits both timings in that round, and taking the best ratio across
+ * rounds discards whichever round(s) got hit asymmetrically. */
+function measureScaling(small: Scenario, large: Scenario, runs: number): ScalingMeasurement {
+  let bestRatio = Infinity;
+  let bestTimeLarge = Infinity;
+  for (let i = 0; i < runs; i++) {
+    const timeSmall = timeBuild(small);
+    const timeLarge = timeBuild(large);
+    // A floor under the denominator guards against a near-zero `timeSmall` (a sub-millisecond
+    // `performance.now()` reading on an unrealistically fast machine) turning a perfectly fine
+    // absolute time into a flaky, meaninglessly huge ratio.
+    bestRatio = Math.min(bestRatio, timeLarge / Math.max(timeSmall, 1));
+    bestTimeLarge = Math.min(bestTimeLarge, timeLarge);
+  }
+  return { ratio: bestRatio, timeLarge: bestTimeLarge };
+}
+
+describe('buildStructure — I6 perf regression (scaling, not wall-clock)', () => {
+  // 15s, not the file's default 5s (see `vitest.config.ts`): this test does real work on purpose
+  // (10 rounds x 2 scenarios, one at N=8,000) — under a busy CI runner that makes a
+  // ratio-assertion failure *more* likely, not less, so the extra budget only ever matters when
+  // the machine is genuinely under load, not when the algorithm has actually regressed.
+  it('builds a 4N-note structure in well under 16x the time of an N-note one (linear ~4x, quadratic ~16x)', () => {
+    const small = buildScenario(2000);
+    const large = buildScenario(8000);
+    // Warm up the JIT for both scenarios before the timed rounds, discarding the result — the
+    // first call into a cold path is reliably the slowest one, for either size.
+    measureScaling(small, large, 2);
+
+    // Measured on the machine this test was written on (Node, vitest, `--coverage` on, matching
+    // `verify`'s `test:coverage`; best-of-8 paired rounds; repeated across dozens of trials,
+    // including deliberately under CPU contention from the rest of the suite running in
+    // parallel worker threads): the ratio stayed in the 6-9x range — comfortably under the 12x
+    // asserted below (itself still clearly under the ~16x a quadratic algorithm would produce)
+    // but never near the ~4x a purely linear one predicts, since `buildStructure` does real
+    // superlinear-but-not-quadratic work (e.g. sorting).
+    const { ratio, timeLarge } = measureScaling(small, large, 8);
+
+    expect(small.snap.notes.size).toBe(2000 + 20 + 1);
+    expect(large.snap.notes.size).toBe(8000 + 20 + 1);
+    expect(ratio).toBeLessThan(12);
+    // Loose sanity bound only — not a performance assertion, just a catastrophic-hang guard.
+    expect(timeLarge).toBeLessThan(2000);
+  }, 15_000);
 });
