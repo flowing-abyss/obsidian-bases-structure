@@ -123,7 +123,7 @@ export function collectDiagnostics(
 Правила читаются из схемы в обе стороны: если `A` можно превратить в `B` и перенести под цель, то и
 обратная операция допустима ровно при тех же условиях (существует рецепт типа и связь, поддерево
 валидно). Отдельных исключений в коде нет — допустимость всегда считается одной функцией
-`operationTargets(structure, schema, snapshot, node, mode)`, где `mode` = `'move' | 'convert'`.
+`operationTargets(schema, structure, node, mode)`, где `mode` = `'move' | 'convert'`.
 
 ### 2.6 Ветка следует за узлом
 
