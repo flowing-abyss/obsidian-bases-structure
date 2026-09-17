@@ -80,7 +80,7 @@ function retypeParentCompat(
 /** Rejection step 6: every primary child of N that couldn't stay a child once N becomes
  * `targetType` — a null rule, or a non-`'property'` rule that doesn't match the child's current
  * edge kind. */
-function failingChildren(
+export function failingChildren(
   schema: Schema,
   structure: Structure,
   nNode: StructureNode,
@@ -489,11 +489,13 @@ function childRewriteWrites(
   return writes;
 }
 
-function retypedChildWrites(
+/** `action` only needs `node`/`type` — accepts a `'retype'` action or the equivalent slice of a
+ * `'convert'` one (plan-convert.ts reuses this for its own child-edge-key cascade). */
+export function retypedChildWrites(
   schema: Schema,
   ctx: SubtreeContext,
   nNode: StructureNode,
-  action: RetypeAction,
+  action: { readonly node: string; readonly type: string },
 ): readonly ChildWriteEntry[] {
   const entries: ChildWriteEntry[] = [];
   for (const childPath of nNode.children) {
@@ -558,8 +560,9 @@ function verifyRetype(inputs: VerifyRetypeInputs): string | null {
 }
 
 /** N's `tags`/old-property-cleanup/new-property writes, comparing `oldMatch` (N's current type's
- * recipe) against `newType`'s. */
-function literalRetypeWrites(
+ * recipe) against `newType`'s. Exported: plan-convert.ts reuses this exact recipe-write recipe for
+ * its own retype half, rather than re-deriving the tag/property patch rules. */
+export function literalRetypeWrites(
   nNote: NoteData | undefined,
   oldMatch: TypeMatch,
   newType: TypeDef,
@@ -572,7 +575,7 @@ function literalRetypeWrites(
   ];
 }
 
-interface BodyOnlyTagInputs {
+export interface BodyOnlyTagInputs {
   readonly snapshot: Snapshot;
   readonly node: string;
   readonly nNote: NoteData | undefined;
@@ -589,8 +592,9 @@ interface BodyOnlyTagInputs {
  * the new type's own recipe also requires is excluded from this check, mirroring
  * `computeTagsWrites`'s round 3 fix for the same reason — nothing distinguishes old from new for
  * a shared tag, so it's never actually removed, and rejecting a retype over a value that was never
- * going to be touched only blocks a legitimate change. */
-function bodyOnlyTagReason(inputs: BodyOnlyTagInputs): string | null {
+ * going to be touched only blocks a legitimate change. Exported: plan-convert.ts's retype half
+ * needs the same I4 guarantee. */
+export function bodyOnlyTagReason(inputs: BodyOnlyTagInputs): string | null {
   const { snapshot, node, nNote, oldMatch, newType } = inputs;
   if (nNote === undefined) {
     return null;

@@ -11,6 +11,12 @@ export type Action =
     }
   | { readonly kind: 'move'; readonly node: string; readonly parent: string }
   | { readonly kind: 'retype'; readonly node: string; readonly type: string }
+  | {
+      readonly kind: 'convert';
+      readonly node: string;
+      readonly parent: string;
+      readonly type: string;
+    }
   | { readonly kind: 'fix-inherit'; readonly node: string };
 
 export type WriteValue =
