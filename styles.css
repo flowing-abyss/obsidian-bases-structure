@@ -14,13 +14,17 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   /* Every icon in the view goes through `setSizedIcon` (`src/view/icon.ts`), which classes the
      `<svg>` `setIcon` inserts so it can be sized below without a bare tag selector — this project's
      CSS conventions forbid those. Local overrides (see `.bases-structure-alsoin-icon`) rescope
-     this custom property to shrink just their own icon. */
-  --icon-size: 16px;
+     this custom property to shrink just their own icon.
+     Plugin-specific name (M12), not the bare `--icon-size` a redefinition here used to shadow —
+     custom properties inherit down the DOM, so a bare name risked leaking this view's own 16px
+     default onto any of Obsidian's *own* icons rendered inside it (e.g. a Menu popup anchored in
+     the view), overriding whatever size Obsidian itself expected there. */
+  --bases-structure-icon-size: 16px;
 }
 
 .bases-structure-icon {
-  width: var(--icon-size);
-  height: var(--icon-size);
+  width: var(--bases-structure-icon-size);
+  height: var(--bases-structure-icon-size);
 }
 
 .bases-structure .is-hidden {
@@ -220,11 +224,12 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   align-items: center;
   justify-content: center;
 
-  --icon-size: 10px;
+  --bases-structure-icon-size: 10px;
 }
 
-/* Toggle and "+" share the same 20x20 icon box (see the `.bases-structure` `--icon-size` rule
-   above) and the same "invisible until the node is hovered/focused" behaviour: always in the DOM
+/* Toggle and "+" share the same 20x20 icon box (see the `.bases-structure`
+   `--bases-structure-icon-size` rule above) and the same "invisible until the node is hovered/
+   focused" behaviour: always in the DOM
    (so revealing them never shifts layout), `opacity: 0` at rest, `.55` once the node is
    hovered/contains focus, and `1` on their own hover/focus-visible. Keyboard focus always shows
    them, per task 15's decisions. */
@@ -293,9 +298,9 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 
 /* The inline "name this note" input the "+" flow opens inside the node it was clicked on.
    `StructureActions.openDraft` marks the node itself `.is-drafting` for the draft's whole
-   lifetime (removed in `cancelDraft`, its one teardown path) — that drives the node's own layout
-   here, rather than the input trying to squeeze in alongside a still-visible title, "+", toggle
-   and alsoIn chip. */
+   lifetime (removed in `teardownDraft`, its one teardown path) — that drives the node's own
+   layout here, rather than the input trying to squeeze in alongside a still-visible title, "+",
+   toggle and alsoIn chip. */
 .bases-structure-node.is-drafting > .bases-structure-title,
 .bases-structure-node.is-drafting > .bases-structure-add,
 .bases-structure-node.is-drafting > .bases-structure-toggle,
