@@ -241,6 +241,9 @@ export class StructureView extends BasesView {
       onAdd: (path, anchorEl, buttonEl) => {
         actions.startCreate(path, anchorEl, buttonEl);
       },
+      onMenu: (path, nodeEl, buttonEl) => {
+        actions.openNodeMenuFromButton(path, nodeEl, buttonEl);
+      },
     };
     const renderer = this.resolveRenderer(schema.layout, ctx);
     const focusPath = actions.resolveFocus(structure);

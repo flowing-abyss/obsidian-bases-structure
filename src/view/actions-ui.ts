@@ -424,6 +424,19 @@ export class StructureActions {
   openNodeMenu(node: string, event: MouseEvent): void {
     const anchorEl =
       event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(NODE_SELECTOR) : null;
+    const menu = this.buildNodeMenu(node, anchorEl);
+    menu.showAtMouseEvent(event);
+  }
+
+  /** I10: the touch-only node-menu button's click — the identical menu `openNodeMenu`
+   * (`contextmenu`) builds, but positioned from the button itself (U1), not a mouse event (a
+   * touch device has no right-click to anchor one to). */
+  openNodeMenuFromButton(node: string, nodeEl: HTMLElement, buttonEl: HTMLElement): void {
+    const menu = this.buildNodeMenu(node, nodeEl);
+    this.showMenuAt(menu, buttonEl);
+  }
+
+  private buildNodeMenu(node: string, anchorEl: HTMLElement | null): Menu {
     const menu = new Menu();
     this.buildOpenItems(menu, node);
     menu.addSeparator();
@@ -436,7 +449,7 @@ export class StructureActions {
         });
       });
     }
-    menu.showAtMouseEvent(event);
+    return menu;
   }
 
   /** Awaits the shared undo stack, refreshes the view, then shows exactly the notice the plugin's

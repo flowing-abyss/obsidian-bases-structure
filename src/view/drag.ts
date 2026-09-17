@@ -46,6 +46,13 @@ function isIgnoredTarget(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(IGNORE_SELECTOR) !== null;
 }
 
+/** I10: a touch drag would fight the container's native scrolling (the same one-finger gesture
+ * means both "scroll the tree" and "start a drag" on touch) — mouse/pen only. Moving a node on a
+ * touch device goes through the node menu's "Move to…" instead. */
+function shouldStartDrag(event: PointerEvent): boolean {
+  return event.button === 0 && event.pointerType !== 'touch' && !isIgnoredTarget(event.target);
+}
+
 function allNodeElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(NODE_SELECTOR));
 }
@@ -159,7 +166,7 @@ export function attachDrag(deps: DragDeps): () => void {
   const box: SessionBox = { current: null };
 
   const handlePointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0 || box.current !== null || isIgnoredTarget(event.target)) {
+    if (!shouldStartDrag(event) || box.current !== null) {
       return;
     }
     const sourceEl = nodeAncestor(event.target);

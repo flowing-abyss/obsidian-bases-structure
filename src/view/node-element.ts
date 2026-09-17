@@ -24,6 +24,12 @@ export interface NodeElementContext {
    * button, so anchoring the menu to the node instead used to open it away from where the user
    * actually clicked. */
   readonly onAdd: (path: string, anchorEl: HTMLElement, buttonEl: HTMLElement) => void;
+  /** I10: invoked with a node's own path, its element, and the touch-only node-menu button
+   * clicked — wired to `StructureActions.openNodeMenuFromButton` by `structure-view.ts`. Opens
+   * the identical menu a `contextmenu` right-click does; a touch device has no right-click, so
+   * this button (visible only under `(hover: none)` — see `styles.css`) is the only way to reach
+   * it there. */
+  readonly onMenu: (path: string, nodeEl: HTMLElement, buttonEl: HTMLElement) => void;
 }
 
 /** Flags that depend on where a node sits in the forest rather than on the node itself (a
@@ -43,6 +49,7 @@ export interface MutableNodeElementContext {
   hoverParent: Component;
   snapshot: Snapshot;
   onAdd: (path: string, anchorEl: HTMLElement, buttonEl: HTMLElement) => void;
+  onMenu: (path: string, nodeEl: HTMLElement, buttonEl: HTMLElement) => void;
 }
 
 export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeElementContext {
@@ -52,12 +59,14 @@ export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeEle
     hoverParent: ctx.hoverParent,
     snapshot: ctx.snapshot,
     onAdd: ctx.onAdd,
+    onMenu: ctx.onMenu,
   };
 }
 
 const HOVER_SOURCE = 'bases-structure';
 const TITLE_SELECTOR = '.bases-structure-title';
 const ADD_SELECTOR = '[data-action="add"]';
+const MENU_SELECTOR = '[data-action="menu"]';
 const NODE_SELECTOR = '.bases-structure-node';
 
 /** Muted, icon-led chip: an `arrow-up-right` SVG followed by the extra parents' display names —
@@ -104,6 +113,7 @@ export function createNodeElement(
     attr: { 'data-href': node.path, tabindex: '-1' },
   });
   appendAddButton(el);
+  appendNodeMenuButton(el);
   appendAlsoIn(el, ctx, node);
   return el;
 }
@@ -166,6 +176,17 @@ function appendAddButton(el: HTMLElement): void {
   setSizedIcon(button, 'plus');
 }
 
+/** I10: touch-only stand-in for the `contextmenu` right-click — always in the DOM (mirrors the
+ * "+"/toggle) but only ever visible under `(hover: none)` in `styles.css`, so a mouse/pen user
+ * (who already has the right-click menu) never sees it take up space. */
+function appendNodeMenuButton(el: HTMLElement): void {
+  const button = el.createEl('button', {
+    cls: 'bases-structure-node-menu',
+    attr: { type: 'button', 'aria-label': 'Node menu', 'data-action': 'menu' },
+  });
+  setSizedIcon(button, 'more-horizontal');
+}
+
 function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } | null {
   if (!(event.target instanceof HTMLElement)) {
     return null;
@@ -181,16 +202,22 @@ function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } 
   return { title, path };
 }
 
-/** The node whose "+" button was clicked, its own path, and the button itself (U1: the menu that
- * follows positions from the button's own rect, not the whole node's) — `null` when the click
- * didn't land on an add button at all. */
-function readAddHit(
-  event: MouseEvent,
-): { nodeEl: HTMLElement; buttonEl: HTMLElement; path: string } | null {
+interface ButtonHit {
+  readonly nodeEl: HTMLElement;
+  readonly buttonEl: HTMLElement;
+  readonly path: string;
+}
+
+/** The node whose button (matching `selector`) was clicked, its own path, and the button itself
+ * (U1: a menu that follows positions from the button's own rect, not the whole node's) — `null`
+ * when the click didn't land on a button matching `selector` at all. Shared by `readAddHit` (the
+ * "+") and `readMenuHit` (I10's touch-only node-menu button) — both resolve identically, only the
+ * selector differs. */
+function readButtonHit(event: MouseEvent, selector: string): ButtonHit | null {
   if (!(event.target instanceof HTMLElement)) {
     return null;
   }
-  const buttonEl = event.target.closest<HTMLElement>(ADD_SELECTOR);
+  const buttonEl = event.target.closest<HTMLElement>(selector);
   if (buttonEl === null) {
     return null;
   }
@@ -205,6 +232,14 @@ function readAddHit(
   return { nodeEl, buttonEl, path };
 }
 
+function readAddHit(event: MouseEvent): ButtonHit | null {
+  return readButtonHit(event, ADD_SELECTOR);
+}
+
+function readMenuHit(event: MouseEvent): ButtonHit | null {
+  return readButtonHit(event, MENU_SELECTOR);
+}
+
 /** One delegated `click` and one delegated `mouseover` listener on `container`, matching the
  * design spec's "Представления" node behaviour: click opens the link (Mod+click into a new
  * pane), mouseover previews it. Returns a disposer that removes both listeners. */
@@ -217,6 +252,12 @@ export function attachNodeInteractions(
     if (addHit !== null) {
       event.stopPropagation();
       ctx.onAdd(addHit.path, addHit.nodeEl, addHit.buttonEl);
+      return;
+    }
+    const menuHit = readMenuHit(event);
+    if (menuHit !== null) {
+      event.stopPropagation();
+      ctx.onMenu(menuHit.path, menuHit.nodeEl, menuHit.buttonEl);
       return;
     }
     const hit = readTitlePath(event);

@@ -56,6 +56,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     hoverParent: Component.create__().asOriginalType__(),
     snapshot: snapshot([note('a.md')]),
     onAdd: () => undefined,
+    onMenu: () => undefined,
     ...overrides,
   };
 }
@@ -161,6 +162,22 @@ describe('createNodeElement', () => {
       children.indexOf(el.querySelector('.bases-structure-title') as Element),
     );
   });
+
+  it('always includes a touch-only node-menu button, after the "+" (I10)', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode());
+
+    const button = el.querySelector('.bases-structure-node-menu');
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute('data-action')).toBe('menu');
+    expect(button?.getAttribute('aria-label')).toBe('Node menu');
+    expect(button?.getAttribute('type')).toBe('button');
+    const children = Array.from(el.children);
+    expect(children.indexOf(button as Element)).toBeGreaterThan(
+      children.indexOf(el.querySelector('.bases-structure-add') as Element),
+    );
+  });
 });
 
 describe('attachNodeInteractions', () => {
@@ -246,6 +263,40 @@ describe('attachNodeInteractions', () => {
 
     expect(onAdd).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl, buttonEl);
     expect(openLinkText).not.toHaveBeenCalled();
+  });
+
+  it('calls onMenu with the node path, element and the node-menu button on its click, without opening the note (I10)', () => {
+    const app = App.createConfigured__();
+    const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
+    const onMenu = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onMenu });
+    const container = createDiv();
+    const nodeEl = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    container.appendChild(nodeEl);
+    attachNodeInteractions(ctx, container);
+    const buttonEl = container.querySelector('.bases-structure-node-menu');
+
+    buttonEl?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(onMenu).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl, buttonEl);
+    expect(openLinkText).not.toHaveBeenCalled();
+  });
+
+  it('stops the node-menu button click from propagating past the container', () => {
+    const app = App.createConfigured__();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onMenu: vi.fn() });
+    const outer = createDiv();
+    const container = outer.createDiv();
+    container.appendChild(createNodeElement(ctx, makeNode()));
+    attachNodeInteractions(ctx, container);
+    const outerHandler = vi.fn();
+    outer.addEventListener('click', outerHandler);
+
+    container
+      .querySelector('.bases-structure-node-menu')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(outerHandler).not.toHaveBeenCalled();
   });
 
   it('stops the add-button click from propagating past the container', () => {

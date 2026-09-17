@@ -32,6 +32,7 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
    a future one only has to add itself here, not re-derive the specificity trick. */
 .bases-structure .bases-structure-toggle .svg-icon,
 .bases-structure .bases-structure-add .svg-icon,
+.bases-structure .bases-structure-node-menu .svg-icon,
 .bases-structure .bases-structure-toolbar-btn .svg-icon,
 .bases-structure .bases-structure-alsoin-icon .svg-icon {
   width: var(--bases-structure-icon-size);
@@ -303,6 +304,47 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   outline-offset: 1px;
 }
 
+/* I10: the touch-only node-menu button (opens the same menu a `contextmenu` right-click does —
+   see `openNodeMenuFromButton`). A mouse/pen user already has that right-click, so this stays out
+   of the layout entirely (`display: none`) outside `(hover: none)` below, unlike the toggle/"+"
+   (which stay in flow at `opacity: 0`) — there is no hover state on a touch device to reveal it
+   with, so it would otherwise just sit invisible and untappable. */
+.bases-structure-node-menu {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-left: var(--size-2-1);
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.bases-structure-node-menu:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Touch devices (I10): no `:hover` ever fires, so the toggle/"+" would otherwise stay invisible
+   forever — show them at the same opacity a hover reveal gives on desktop, and reveal the
+   touch-only node-menu button in their place for what right-click covers there. */
+@media (hover: none) {
+  .bases-structure-toggle,
+  .bases-structure-add {
+    opacity: 0.55;
+  }
+
+  .bases-structure-node-menu {
+    display: inline-flex;
+    opacity: 0.55;
+  }
+}
+
 .bases-structure-orphans {
   color: var(--text-muted);
 }
@@ -314,6 +356,7 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
    toggle and alsoIn chip. */
 .bases-structure-node.is-drafting > .bases-structure-title,
 .bases-structure-node.is-drafting > .bases-structure-add,
+.bases-structure-node.is-drafting > .bases-structure-node-menu,
 .bases-structure-node.is-drafting > .bases-structure-toggle,
 .bases-structure-node.is-drafting > .bases-structure-alsoin {
   display: none;

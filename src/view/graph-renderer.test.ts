@@ -17,6 +17,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     hoverParent: Component.create__().asOriginalType__(),
     snapshot: snapshot([]),
     onAdd: () => undefined,
+    onMenu: () => undefined,
     ...overrides,
   };
 }

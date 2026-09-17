@@ -26,13 +26,20 @@ function makeNode(path: string, options: { title?: string } = {}): HTMLElement {
 
 function pointerEvent(
   type: string,
-  init: { x?: number; y?: number; button?: number; target?: EventTarget } = {},
+  init: {
+    x?: number;
+    y?: number;
+    button?: number;
+    target?: EventTarget;
+    pointerType?: string;
+  } = {},
 ): PointerEvent {
   const event = new PointerEvent(type, {
     pointerId: POINTER_ID,
     clientX: init.x ?? 0,
     clientY: init.y ?? 0,
     button: init.button ?? 0,
+    pointerType: init.pointerType ?? 'mouse',
     bubbles: true,
     cancelable: true,
   });
@@ -48,7 +55,10 @@ interface Harness {
   readonly elementAt: ReturnType<typeof vi.fn>;
   readonly dispose: () => void;
   moveTo(x: number, y: number, hovered: Element | null): void;
-  down(el: HTMLElement, init?: { x?: number; y?: number; button?: number }): void;
+  down(
+    el: HTMLElement,
+    init?: { x?: number; y?: number; button?: number; pointerType?: string },
+  ): void;
 }
 
 function makeHarness(targets: ReadonlySet<string> = new Set(['parent.md'])): Harness {
@@ -81,6 +91,38 @@ function makeHarness(targets: ReadonlySet<string> = new Set(['parent.md'])): Har
 afterEach(() => {
   document.body.innerHTML = '';
   vi.restoreAllMocks();
+});
+
+describe('attachDrag — touch pointers ignored (I10)', () => {
+  it('never starts a drag for a touch pointer, even well past the threshold', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+
+    h.down(source, { pointerType: 'touch' });
+    h.moveTo(50, 50, parent);
+    h.container.doc.dispatchEvent(
+      pointerEvent('pointerup', { x: 50, y: 50, pointerType: 'touch' }),
+    );
+
+    // A touch drag would fight the container's native scroll (one-finger gesture serving both) —
+    // moving a node on touch goes through the node menu's "Move to…" instead (I10).
+    expect(document.querySelector('.bases-structure-drag-ghost')).toBeNull();
+    expect(source.classList.contains('is-dragging')).toBe(false);
+    expect(h.onDrop).not.toHaveBeenCalled();
+  });
+
+  it('still starts a drag for a mouse pointer past the threshold (control)', () => {
+    const source = makeNode('source.md');
+    const h = makeHarness();
+    h.container.appendChild(source);
+
+    h.down(source, { pointerType: 'mouse' });
+    h.moveTo(50, 50, null);
+
+    expect(source.classList.contains('is-dragging')).toBe(true);
+  });
 });
 
 describe('attachDrag — threshold', () => {

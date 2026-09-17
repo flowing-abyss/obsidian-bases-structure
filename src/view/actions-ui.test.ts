@@ -1838,6 +1838,74 @@ describe('openNodeMenu', () => {
   });
 });
 
+describe('openNodeMenuFromButton (I10 — touch-only node-menu button)', () => {
+  it('lists the identical items openNodeMenu (contextmenu) does', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const buttonEl = createEl('button');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.openNodeMenuFromButton('leaf.md', leafEl, buttonEl);
+
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual([
+      'Open',
+      'Open in new tab',
+      'Add child',
+      'Move to…',
+      'Change type',
+    ]);
+  });
+
+  it('positions from the button’s own rect (U1), not showAtMouseEvent', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const buttonEl = createEl('button');
+    vi.spyOn(buttonEl, 'getBoundingClientRect').mockReturnValue({
+      left: 30,
+      bottom: 40,
+    } as DOMRect);
+    const showAtMouseEventSpy = vi.spyOn(Menu.prototype, 'showAtMouseEvent');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.openNodeMenuFromButton('leaf.md', leafEl, buttonEl);
+
+    expect(showAtMouseEventSpy).not.toHaveBeenCalled();
+    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith(
+      { x: 30, y: 44 },
+      buttonEl.ownerDocument,
+    );
+  });
+
+  it('"Add child" from the touch node menu opens a draft anchored to the node', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const buttonEl = createEl('button');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.openNodeMenuFromButton('leaf.md', leafEl, buttonEl);
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    menu.items__[2]?.onClick__?.(new MouseEvent('click'));
+
+    expect(leafEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
+  });
+});
+
 describe('undoLast', () => {
   it('shows "nothing to undo" and still refreshes when the stack is empty', async () => {
     const h = makeHarness(baseFiles());
