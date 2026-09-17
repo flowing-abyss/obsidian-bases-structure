@@ -311,9 +311,9 @@ describe('StructureView — deferred render while a create draft is open', () =>
     expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
   });
 
-  it('the commit → chain flow still reopens the sibling draft after exactly one render', async () => {
+  it('the commit → chain flow reopens the sibling draft only once a render actually contains the new note (I7)', async () => {
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
-    const { parentEl } = openDraftView(app);
+    const { view, parentEl } = openDraftView(app);
     const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     if (input === null) {
       throw new Error('Test setup error: draft input did not open');
@@ -328,7 +328,19 @@ describe('StructureView — deferred render while a create draft is open', () =>
     await vi.waitFor(() => {
       expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
     });
+    // The render right after commit (`StructureActions.commitAndNotify`'s own `refresh()`) reads
+    // from `view.data.data`, which this harness — like Bases itself — only updates explicitly, not
+    // in the same tick as the vault write. So the chain must still be pending here, not reopened.
     expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+
+    // Simulates Bases' own `onDataUpdated` catching up with the new note.
+    view.data = {
+      data: [mustFile(app, 'cat.md'), mustFile(app, 'New Leaf.md')].map((file) => ({ file })),
+    } as unknown as BasesQueryResult;
+    view.onDataUpdated();
+
+    expect(updateSpy).toHaveBeenCalledTimes(2);
     const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     expect(reopenedInput).not.toBeNull();
     expect(reopenedInput).not.toBe(input);

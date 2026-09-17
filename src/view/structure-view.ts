@@ -224,8 +224,14 @@ export class StructureView extends BasesView {
       },
     };
     const renderer = this.resolveRenderer(schema.layout, ctx);
-    const focusPath = actions.consumeFocus();
+    const focusPath = actions.resolveFocus(structure);
     renderer.update(focusPath === null ? input : { ...input, focusPath });
+    // Must run on *every* render (I7), not just the one right after a commit: the render right
+    // after `commitPlan` resolves almost never has Bases' own data caught up with the note it just
+    // wrote (see `StructureActions.runCommit`), so the pending create's path usually isn't in
+    // `structure` yet on that first pass — this only actually completes it once a later render
+    // (from `onDataUpdated`) does contain it.
+    actions.completePending(structure, this.bodyEl);
   }
 
   /** `ActionsDeps.freshInput()` — re-reads the vault right now, independent of when the last

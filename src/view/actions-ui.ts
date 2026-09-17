@@ -60,6 +60,29 @@ interface DraftState {
   committing: boolean;
 }
 
+/** What a chained draft (I7) still needs once the create it followed becomes visible: which
+ * parent/type to reopen on, and whether that reopen is an "enter" (same parent, sibling) or "tab"
+ * (the newly created node itself, child) chain — see `PendingCreate.chain`. */
+interface PendingChain {
+  readonly mode: ChainMode;
+  readonly parentPath: string;
+  readonly type: string;
+}
+
+/** A just-committed create's path, kept until a render's `Structure` actually contains it (I7):
+ * `refresh()` right after `commitPlan` resolves runs against whatever Bases last handed the view,
+ * which usually does *not* include the brand new note yet (Bases updates asynchronously) — so
+ * neither the `is-new` highlight nor a Tab/Enter chain can complete on that first render. Instead
+ * of firing them against a structure that doesn't have the node, this is kept pending and resolved
+ * by `resolveFocus`/`completePending` on whichever later render (from `onDataUpdated`, once Bases
+ * catches up) first has `path` in its `Structure`. `chain` is `null` when nothing should reopen —
+ * either the draft that created it was already superseded by the time the commit settled, or (see
+ * `clearPendingCreate`) a later user action/draft close cancelled it before it could fire. */
+interface PendingCreate {
+  readonly path: string;
+  readonly chain: PendingChain | null;
+}
+
 const DRAFT_CLASS = 'bases-structure-draft';
 const DRAFT_INPUT_CLASS = 'bases-structure-draft-input';
 // Marks the node an open draft belongs to, so `styles.css` can give it a dedicated typing layout
@@ -159,12 +182,16 @@ class MoveSuggestModal extends FuzzySuggestModal<string> {
  * → undo pipeline a committed draft runs through. One instance per view, created once and reused
  * across renders (see `structure-view.ts`). While a draft is open, `StructureView` defers its own
  * data-driven renders (`hasOpenDraft`) so a background vault change can't rebuild the DOM out from
- * under the typed input; `cancelDraft` — the single teardown path for a draft — reports every close
- * back through `ActionsDeps.onDraftClosed` so that deferred render can run exactly once. */
+ * under the typed input; `teardownDraft` — the single teardown path for a draft — is reported to
+ * `ActionsDeps.onDraftClosed` by its own callers (`cancelDraft` for every *external* close; not
+ * `openDraft`'s own supersede case, which is a continuation of the same draft session, not a
+ * close) so that deferred render can run exactly once. */
 export class StructureActions {
   private readonly deps: ActionsDeps;
   private draft: DraftState | null = null;
-  private pendingFocus: string | null = null;
+  /** A just-committed create still waiting for a render to actually contain its path — see
+   * `PendingCreate`'s own doc comment (I7). */
+  private pendingCreate: PendingCreate | null = null;
   /** The `.bases-structure-body` a draft last opened into — kept even after that draft closes,
    * since the container itself outlives every render (only its children are rebuilt). Belt-and-
    * braces fallback for `openDraft`: if the `anchorEl` it's given is already detached (stale from
@@ -197,15 +224,55 @@ export class StructureActions {
     return this.draft !== null;
   }
 
-  /** The path to highlight in the render that follows a successful create — consumed (cleared) so
-   * a later, unrelated refresh doesn't reapply the highlight. */
-  consumeFocus(): string | null {
-    const focus = this.pendingFocus;
-    this.pendingFocus = null;
-    return focus;
+  /** The path to highlight `is-new` in a render whose `Structure` actually contains it (I7) — read-
+   * only (does *not* consume `pendingCreate`; see `completePending` for that), so `structure-view.ts`
+   * can compute this render's `focusPath` before the DOM is rebuilt, then finish the pending create
+   * afterward once the DOM reflects it. Returns `null` on every render before the created path
+   * actually shows up (Bases usually hasn't caught up yet on the render right after commit — the
+   * whole point of I7 — so this correctly returns `null` there, not the path). */
+  resolveFocus(structure: Structure): string | null {
+    if (this.pendingCreate !== null && structure.nodes.has(this.pendingCreate.path)) {
+      return this.pendingCreate.path;
+    }
+    return null;
+  }
+
+  /** Finishes a pending create once its path is actually in `structure` (I7) — drops it either way
+   * (a chain only ever gets one attempt) and, when it carries a chain, reopens the draft against
+   * the now-current DOM under `root`. Called by `structure-view.ts`'s `render()` right after the
+   * renderer has drawn `structure` (so `root` already contains an element for the created path when
+   * this fires), and must be called on *every* render — including the one immediately after commit,
+   * which usually won't contain the path yet and so is correctly a no-op here. */
+  completePending(structure: Structure, root: HTMLElement): void {
+    const pending = this.pendingCreate;
+    if (pending === null || !structure.nodes.has(pending.path)) {
+      return;
+    }
+    this.pendingCreate = null;
+    if (pending.chain !== null) {
+      this.continueChain({
+        root,
+        parentPath: pending.chain.parentPath,
+        type: pending.chain.type,
+        mode: pending.chain.mode,
+        focusPath: pending.path,
+      });
+    }
+  }
+
+  /** Drops any create still waiting for its render (I7) — called at the start of every other
+   * action (a new create/move/retype/undo) and from `teardownDraft` (a draft closing, whether via
+   * `cancelDraft` or `openDraft` superseding it), per the decision's "the next user action or draft
+   * close cancels it" rule. Does *not* run from inside `runCommit` itself: that method calls
+   * `cancelDraft`/`teardownDraft` for the draft it is *itself* finishing, strictly before setting
+   * `pendingCreate` for that same commit — clearing here first and assigning after keeps that
+   * self-close from wiping out the very state it's about to create. */
+  private clearPendingCreate(): void {
+    this.pendingCreate = null;
   }
 
   startCreate(parentPath: string, anchorEl: HTMLElement, event?: MouseEvent): void {
+    this.clearPendingCreate();
     const { schema, snapshot, structure } = this.deps.getInput();
     const options = childOptions(schema, structure, parentPath);
     if (options.length === 0) {
@@ -236,6 +303,7 @@ export class StructureActions {
    * the shared teardown `cancelDraft` and `openDraft` both build on. Returns whether a draft was
    * actually open (so callers that need to notify can tell a real close from a no-op). */
   private teardownDraft(): boolean {
+    this.clearPendingCreate();
     const draft = this.draft;
     if (draft === null) {
       return false;
@@ -270,6 +338,7 @@ export class StructureActions {
     if (this.guardBusy()) {
       return;
     }
+    this.clearPendingCreate();
     const { schema, snapshot } = this.deps.freshInput();
     const result = planAction(schema, snapshot, { kind: 'move', node, parent }, this.planEnv());
     if (!result.ok) {
@@ -330,6 +399,7 @@ export class StructureActions {
    * global undo command shows (see `formatUndoResult`) — the command itself has no view to
    * refresh, so only the wording is shared, not this method wholesale. */
   undoLast(): void {
+    this.clearPendingCreate();
     this.deps.undo
       .undo()
       .then((result) => {
@@ -397,6 +467,7 @@ export class StructureActions {
     if (this.guardBusy()) {
       return;
     }
+    this.clearPendingCreate();
     const { schema, snapshot } = this.deps.freshInput();
     const result = planAction(schema, snapshot, { kind: 'retype', node, type }, this.planEnv());
     if (!result.ok) {
@@ -573,7 +644,6 @@ export class StructureActions {
   }
 
   private async runCommit(draft: DraftState, name: string, mode: ChainMode): Promise<void> {
-    const root = draft.anchorEl.closest<HTMLElement>(ROOT_SELECTOR);
     const { schema, snapshot } = this.deps.freshInput();
     const env: PlanEnv = this.planEnv();
     const action: Action = { kind: 'create', parent: draft.parentPath, type: draft.type, name };
@@ -593,11 +663,10 @@ export class StructureActions {
     this.committing = false;
     // Captured before this method's own cleanup below touches `this.draft`: if the user cancelled
     // this draft (Escape/blur) or opened a different one while the commit was in flight, `draft`
-    // no longer matches, and chaining has nothing sensible to re-anchor to. `cancelDraft` operates
-    // on whatever `this.draft` currently is, so it must only run when that's still this commit's
-    // own draft — otherwise it would tear down a newer draft the user has since opened.
+    // no longer matches, and chaining has nothing sensible to reopen against. `cancelDraft`
+    // operates on whatever `this.draft` currently is, so it must only run when that's still this
+    // commit's own draft — otherwise it would tear down a newer draft the user has since opened.
     const wasCurrent = this.isCurrentDraft(draft);
-    this.pendingFocus = result.focus;
     if (wasCurrent) {
       this.cancelDraft();
     }
@@ -606,28 +675,28 @@ export class StructureActions {
       return;
     }
     this.showUndoNotice(`Created "${name}"`);
-    if (!wasCurrent) {
-      return;
-    }
-    this.continueChain({
-      root,
-      parentPath: draft.parentPath,
-      type: draft.type,
-      mode,
-      focusPath: result.focus,
-    });
+    // Kept pending (I7), not completed here and now: this `refresh()` almost never has Bases' own
+    // data caught up with the note `commitPlan` just wrote, so `result.focus` isn't in the
+    // `Structure` it just rendered from yet — `resolveFocus`/`completePending` finish the
+    // highlight/chain against whichever later render (from `onDataUpdated`) first actually
+    // contains it. `cancelDraft` above already ran (and, via `teardownDraft`, already cleared any
+    // *older* `pendingCreate`) before this assignment, so this one survives it. Chaining only when
+    // this draft was still the one on screen when the commit settled (`wasCurrent`) — a superseded
+    // draft already moved the user's attention elsewhere, so nothing should reopen on their behalf;
+    // the `is-new` highlight itself still applies either way.
+    this.pendingCreate = {
+      path: result.focus,
+      chain: wasCurrent ? { mode, parentPath: draft.parentPath, type: draft.type } : null,
+    };
   }
 
   private continueChain(ctx: {
-    readonly root: HTMLElement | null;
+    readonly root: HTMLElement;
     readonly parentPath: string;
     readonly type: string;
     readonly mode: ChainMode;
     readonly focusPath: string;
   }): void {
-    if (ctx.root === null) {
-      return;
-    }
     if (ctx.mode === 'enter') {
       const anchorEl = findNodeElement(ctx.root, ctx.parentPath);
       if (anchorEl !== null) {

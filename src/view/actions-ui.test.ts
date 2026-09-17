@@ -104,13 +104,22 @@ interface Harness {
   readonly root: HTMLElement;
   readonly nodes: Map<string, HTMLElement>;
   getInput(): RenderInput;
+  /** Advances what `refresh` renders from to the vault's current file list, then reruns it — the
+   * harness's stand-in for a real `onDataUpdated` (I7): everything a create/move/retype writes is
+   * visible to `getInput`/`freshInput` (and hence to planning) immediately, matching production's
+   * `freshInput`, but `refresh` itself only ever "sees" what this has most recently been told
+   * about, matching production's `this.data.data` — which Bases updates asynchronously, not in the
+   * same tick as the vault write `commitPlan` just made. Without this distinction, a test can't
+   * tell "chained/highlighted immediately" (the bug) apart from "chained/highlighted once the
+   * following render actually contains the new note" (the fix). */
+  simulateBasesUpdate(): void;
 }
 
 interface HarnessOptions {
-  /** `false` mimics a `refresh` that never adds a DOM element for a newly created note (e.g. a
-   * renderer pass that hasn't caught up yet) — used to exercise the "chained anchor can't be
-   * found after refresh" defensive branch. Defaults to `true` (rebuilds like the fixture below
-   * describes). */
+  /** `false` mimics a render pass that never adds a DOM element for a path even once its
+   * `Structure` contains it (e.g. a renderer that hasn't caught up yet) — used to exercise the
+   * "chained anchor can't be found after refresh" defensive branch. Defaults to `true` (rebuilds
+   * like the fixture below describes). */
   readonly rebuildTree?: boolean;
   readonly hostPath?: string;
   /** Defaults to `SCHEMA_CONFIG` — move/retype tests need shapes (a cascading `inherit` key, a
@@ -118,38 +127,73 @@ interface HarnessOptions {
   readonly schemaConfig?: Record<string, unknown>;
 }
 
-/** Wires a real `StructureActions` against a real mock vault: `getInput` re-reads the vault
- * (via the production `readSnapshot`/`buildStructure`) on every call, so a note created mid-test
- * is immediately visible to the next `childOptions`/`planAction` call — and `refresh` grows the
- * fake tree (see `makeTree`) to include any note that doesn't have an element yet, standing in
- * for what a real renderer's `update()` would do. */
+/** Wires a real `StructureActions` against a real mock vault. Two separate views of the vault are
+ * modeled, matching production exactly (I7):
+ * - `freshInput`/`deps.freshInput` always re-reads the vault right now (via the production
+ *   `readSnapshot`/`buildStructure`), same as `StructureView.readFreshInput` — a note created
+ *   mid-test is immediately visible to the next `planAction` call.
+ * - `deps.getInput`/`refresh` build from `visiblePaths`, a set that only advances when the test
+ *   calls `simulateBasesUpdate()` — the harness's model of `this.data.data`, which a real
+ *   `StructureView.render()` reads from and which Bases itself only refreshes asynchronously.
+ *   `refresh` grows the fake tree (see `makeTree`) to include any *visible* path that doesn't have
+ *   an element yet (standing in for what a real renderer's `update()` would do), applies `is-new`
+ *   via `actions.resolveFocus`, and always calls `actions.completePending` — exactly the sequence
+ *   `structure-view.ts`'s `render()` runs, so a pending create/chain only actually completes once
+ *   `simulateBasesUpdate()` has made its path visible. */
 function makeHarness(files: Record<string, string>, options: HarnessOptions = {}): Harness {
   const app = App.createConfigured__({ files });
   const schema = schemaFrom(options.schemaConfig ?? SCHEMA_CONFIG);
   const { root, nodes } = makeTree(Object.keys(files));
   const state = makeState();
   const rebuildTree = options.rebuildTree ?? true;
+  let visiblePaths = new Set(Object.keys(files));
 
-  function getInput(): RenderInput {
+  function buildInputFrom(paths: ReadonlySet<string>): RenderInput {
     const originalApp = app.asOriginalType__();
-    const vaultFiles = app.vault.getMarkdownFiles().map((file) => file.asOriginalType2__());
+    const vaultFiles = app.vault
+      .getMarkdownFiles()
+      .filter((file) => paths.has(file.path))
+      .map((file) => file.asOriginalType2__());
     const snapshot = readSnapshot(originalApp, vaultFiles, null);
     const structure = buildStructure(schema, snapshot);
     return { schema, snapshot, structure, state };
   }
 
+  function getInput(): RenderInput {
+    return buildInputFrom(visiblePaths);
+  }
+
+  function freshInput(): RenderInput {
+    return buildInputFrom(new Set(app.vault.getMarkdownFiles().map((file) => file.path)));
+  }
+
+  // `deps.refresh` needs to call the real `actions`'s `resolveFocus`/`completePending`, but
+  // `actions` itself needs `deps` (hence `refresh`) to already exist to be constructed — this
+  // mutable holder breaks that cycle: `refresh`'s closure reads `actionsHolder.current` at call
+  // time (well after `actions` is constructed below, at actual test-code call time), while the
+  // holder binding itself is still a plain `const`.
+  const actionsHolder: { current: StructureActions | null } = { current: null };
+
   const refresh = vi.fn(() => {
-    if (!rebuildTree) {
+    const actions = actionsHolder.current;
+    if (actions === null) {
       return;
     }
-    for (const path of getInput().structure.nodes.keys()) {
-      if (!nodes.has(path)) {
-        const nodeEl = root.createDiv(NODE_CLASS, (el) => {
-          el.setAttribute('data-path', path);
-        });
-        nodes.set(path, nodeEl);
+    const input = getInput();
+    const focusPath = actions.resolveFocus(input.structure);
+    if (rebuildTree) {
+      for (const path of input.structure.nodes.keys()) {
+        let nodeEl = nodes.get(path);
+        if (nodeEl === undefined) {
+          nodeEl = root.createDiv(NODE_CLASS, (el) => {
+            el.setAttribute('data-path', path);
+          });
+          nodes.set(path, nodeEl);
+        }
+        nodeEl.classList.toggle('is-new', path === focusPath);
       }
     }
+    actions.completePending(input.structure, root);
   });
 
   const undo = new UndoManager(app.asOriginalType__());
@@ -158,16 +202,28 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
     app: app.asOriginalType__(),
     undo,
     getInput,
-    // The harness's own `getInput` already re-reads the vault on every call (see its own doc
-    // comment), so it doubles as `freshInput` here — a real `StructureView` needs a separate
-    // function only because its `getInput` is memoised per render (`lastInput`).
-    freshInput: getInput,
+    freshInput,
     hostPath: options.hostPath ?? '',
     refresh,
     onDraftClosed,
   };
   const actions = new StructureActions(deps);
-  return { app, schema, actions, undo, refresh, onDraftClosed, root, nodes, getInput };
+  actionsHolder.current = actions;
+  return {
+    app,
+    schema,
+    actions,
+    undo,
+    refresh,
+    onDraftClosed,
+    root,
+    nodes,
+    getInput,
+    simulateBasesUpdate: () => {
+      visiblePaths = new Set(app.vault.getMarkdownFiles().map((file) => file.path));
+      refresh();
+    },
+  };
 }
 
 function baseFiles(): Record<string, string> {
@@ -490,7 +546,7 @@ describe('commit — Enter', () => {
     expect(h.undo.canUndo).toBe(false);
   });
 
-  it('reopens a draft on the same parent with the same type after a successful create (sibling chaining)', async () => {
+  it('does not reopen a draft on the refresh that runs before Bases has caught up with the new note (I7)', async () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
@@ -501,6 +557,25 @@ describe('commit — Enter', () => {
       expect(h.refresh).toHaveBeenCalledTimes(1);
     });
 
+    // The note exists in the vault, but `refresh` (the harness's stand-in for a real render) only
+    // "sees" what `simulateBasesUpdate` has told it about — nothing has yet, so no draft reopens.
+    expect(h.app.vault.getFileByPath('Sibling One.md')).not.toBeNull();
+    expect(leafEl.querySelector('.bases-structure-draft-input')).toBeNull();
+  });
+
+  it('reopens a draft on the same parent with the same type once the created note becomes visible (sibling chaining)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'Sibling One';
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    h.simulateBasesUpdate();
+
     const reopened = leafEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     expect(reopened).not.toBeNull();
     expect(reopened?.placeholder).toBe('Sub');
@@ -508,7 +583,7 @@ describe('commit — Enter', () => {
 });
 
 describe('commit — Tab', () => {
-  it('commits the name and opens a draft on the newly created note (child chaining)', async () => {
+  it('does nothing on the refresh that runs before Bases has caught up with the new note — the chain is still pending (I7)', async () => {
     const h = makeHarness(baseFiles());
     const catEl = h.nodes.get('cat.md');
     if (catEl === undefined) throw new Error('missing cat element');
@@ -528,8 +603,36 @@ describe('commit — Tab', () => {
       expect(h.refresh).toHaveBeenCalledTimes(1);
     });
 
+    // This is the reviewer's original repro (I7): before this fix, `refresh()` reading from a
+    // structure that doesn't have the new note yet meant Tab-chaining silently did nothing, ever.
+    expect(h.nodes.get('Chain Leaf.md')).toBeUndefined();
+    expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
+  });
+
+  it('commits the name and opens a draft on the newly created note once it becomes visible (child chaining)', async () => {
+    const h = makeHarness(baseFiles());
+    const catEl = h.nodes.get('cat.md');
+    if (catEl === undefined) throw new Error('missing cat element');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+    h.actions.startCreate('cat.md', catEl);
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
+    const draftEl = draftInput(h.root);
+    draftEl.value = 'Chain Leaf';
+
+    pressKey(draftEl, 'Tab');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+    h.simulateBasesUpdate();
+
     const newNodeEl = h.nodes.get('Chain Leaf.md');
     expect(newNodeEl).toBeDefined();
+    expect(newNodeEl?.classList.contains('is-new')).toBe(true);
     const reopened = newNodeEl?.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     expect(reopened?.placeholder).toBe('Sub');
   });
@@ -543,11 +646,14 @@ describe('commit — Tab', () => {
     draftEl.value = 'Leaf Sub';
 
     // `Sub` (the type just created) has no schema children of its own, so the Tab chain has
-    // nowhere to go: no draft should appear anywhere in the tree.
+    // nowhere to go: no draft should appear anywhere in the tree, before or after Bases catches up.
     pressKey(draftEl, 'Tab');
     await vi.waitFor(() => {
       expect(h.refresh).toHaveBeenCalledTimes(1);
     });
+    expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
+
+    h.simulateBasesUpdate();
 
     expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
   });
@@ -784,7 +890,7 @@ describe('edge cases', () => {
     expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
   });
 
-  it('does not reopen the chained child draft when the created note has no element after refresh', async () => {
+  it('does not reopen the chained child draft when the created note still has no element once it becomes visible', async () => {
     const h = makeHarness(baseFiles(), { rebuildTree: false });
     const catEl = h.nodes.get('cat.md');
     if (catEl === undefined) throw new Error('missing cat element');
@@ -802,29 +908,38 @@ describe('edge cases', () => {
     await vi.waitFor(() => {
       expect(h.refresh).toHaveBeenCalled();
     });
-
     expect(h.app.vault.getFileByPath('No Element.md')).not.toBeNull();
+
+    // The new note is now visible in `Structure` (so the pending chain does attempt to complete),
+    // but `rebuildTree: false` means no DOM element was ever built for it — `continueChain`'s own
+    // "anchor not found" guard is what has to stop it here, not "nothing was pending yet".
+    h.simulateBasesUpdate();
+
     expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
   });
 
-  it('does not reopen a draft when the committed anchor sits outside any rendered root', async () => {
+  it('drops a pending chain when a new "+" starts before the created note becomes visible (the next user action cancels it)', async () => {
     const h = makeHarness(baseFiles());
-    const detachedEl = createDiv(NODE_CLASS, (el) => {
-      el.setAttribute('data-path', 'leaf.md');
-    });
-
-    h.actions.startCreate('leaf.md', detachedEl);
-    const inputEl = detachedEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
-    if (inputEl === null) throw new Error('missing draft input');
-    inputEl.value = 'Orphaned';
-
-    pressKey(inputEl, 'Enter');
+    const leafEl = h.nodes.get('leaf.md');
+    const otherEl = h.nodes.get('other.md');
+    if (leafEl === undefined || otherEl === undefined) throw new Error('missing elements');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'Pending Chain';
+    pressKey(draftInput(h.root), 'Enter');
     await vi.waitFor(() => {
-      expect(h.refresh).toHaveBeenCalled();
+      expect(h.refresh).toHaveBeenCalledTimes(1);
     });
 
-    expect(h.app.vault.getFileByPath('Orphaned.md')).not.toBeNull();
-    expect(h.root.querySelector('.bases-structure-draft')).toBeNull();
+    // A new "+" opened elsewhere before Bases ever reports the earlier create becoming visible —
+    // per the decision ("the next user action ... cancels it"), the still-pending chain is
+    // dropped, so it can never reopen (and, worse, tear down this unrelated draft) later once the
+    // created note does show up.
+    h.actions.startCreate('other.md', otherEl);
+
+    h.simulateBasesUpdate();
+
+    expect(leafEl.querySelector('.bases-structure-draft-input')).toBeNull();
+    expect(otherEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
   });
 
   it('logs and shows a Notice when the undo triggered from the notice button rejects', async () => {
@@ -1010,14 +1125,14 @@ describe('hasOpenDraft / onDraftClosed — carried-over fix: keep an open create
   });
 });
 
-describe('consumeFocus', () => {
-  it('returns null when nothing has been created yet', () => {
+describe('resolveFocus / completePending — is-new highlight and pending completion (I7)', () => {
+  it('resolveFocus returns null when nothing has been created yet', () => {
     const h = makeHarness(baseFiles());
 
-    expect(h.actions.consumeFocus()).toBeNull();
+    expect(h.actions.resolveFocus(h.getInput().structure)).toBeNull();
   });
 
-  it('returns the created path once after a successful create, then null', async () => {
+  it('resolveFocus returns null against a structure that does not yet contain the created path, and the path once it does', async () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
@@ -1029,8 +1144,43 @@ describe('consumeFocus', () => {
       expect(h.refresh).toHaveBeenCalled();
     });
 
-    expect(h.actions.consumeFocus()).toBe('New Sub.md');
-    expect(h.actions.consumeFocus()).toBeNull();
+    // Still pending: the refresh above ran against the harness's not-yet-advanced visible paths,
+    // same as `getInput()` would right now.
+    expect(h.actions.resolveFocus(h.getInput().structure)).toBeNull();
+
+    const freshStructure = buildStructure(
+      h.schema,
+      readSnapshot(
+        h.app.asOriginalType__(),
+        h.app.vault.getMarkdownFiles().map((file) => file.asOriginalType2__()),
+        null,
+      ),
+    );
+    expect(h.actions.resolveFocus(freshStructure)).toBe('New Sub.md');
+  });
+
+  it('applies is-new to the created node once a render actually contains it, and completePending consumes it (not reapplied on a later unrelated render)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+
+    pressKey(draftInput(h.root), 'Enter');
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    });
+    // No is-new anywhere yet — Bases hasn't told the harness about the new note.
+    expect(h.root.querySelector('.is-new')).toBeNull();
+
+    h.simulateBasesUpdate();
+    const newEl = h.nodes.get('New Sub.md');
+    expect(newEl?.classList.contains('is-new')).toBe(true);
+
+    // A later, unrelated refresh must not reapply the highlight to a node that no longer matches
+    // a (by-then-cleared) pending focus.
+    h.simulateBasesUpdate();
+    expect(newEl?.classList.contains('is-new')).toBe(false);
   });
 });
 
