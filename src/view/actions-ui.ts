@@ -6,6 +6,7 @@
 
 import type { App, FuzzyMatch, PaneType } from 'obsidian';
 import { FuzzySuggestModal, Keymap, Menu, Notice } from 'obsidian';
+import type { Diagnostic } from '../core/diagnostics.js';
 import { moveTargets } from '../core/plan-move.js';
 import { retypeOptions } from '../core/plan-retype.js';
 import type { Action, Plan, PlanEnv } from '../core/plan-types.js';
@@ -173,6 +174,12 @@ function formatSkipped(skipped: readonly string[], nameOf: (path: string) => str
  * decide whether `clearOptimistic` has anything to actually clear. */
 function didUndoSomething(result: UndoResult | UndoBlockedResult): boolean {
   return !('blocked' in result) && result.label !== null;
+}
+
+/** Whether `node` has its own `inherit-mismatch` diagnostic — gates "Fix inheritance" in the node
+ * menu, so the item only ever appears for a node the diagnostic actually flagged. */
+function hasInheritMismatch(diagnostics: readonly Diagnostic[], node: string): boolean {
+  return diagnostics.some((d) => d.kind === 'inherit-mismatch' && d.node === node);
 }
 
 /** `Structure: nothing to undo` / `Structure: undone "<label>" (skipped a, b, +N more)` /
@@ -442,6 +449,38 @@ export class StructureActions {
     this.commitAndNotify(snapshot, result.plan, label, message);
   }
 
+  /** Plans and commits a `'fix-inherit'` action: rewrites `node`'s own inherit-key values and
+   * cascades the fix to its subtree. Rejections show the planner's reason and write nothing.
+   * Mirrors `startMove`'s shape (plan, notice on rejection, optimistic render, commit, undo
+   * transaction) but — per its own `Promise<void>` signature — lets an unexpected commit failure
+   * propagate to the caller instead of catching it itself, the same division `runCommit` and its
+   * own caller (`commitDraft`) use; `buildEditItems`'s `onClick` is what actually catches it.
+   * Plans against `freshInput()`, and is ignored while another commit is in flight. */
+  async fixInherit(node: string): Promise<void> {
+    if (this.guardBusy()) {
+      return;
+    }
+    this.clearPendingCreate();
+    const { schema, snapshot } = this.deps.freshInput();
+    const result = planAction(schema, snapshot, { kind: 'fix-inherit', node }, this.planEnv());
+    if (!result.ok) {
+      notifyError(result.reason);
+      return;
+    }
+    const name = displayName(snapshot, node);
+    this.committing = true;
+    const outcome = await this.commitWithOptimism(
+      snapshot,
+      result.plan,
+      `Fix inheritance of "${name}"`,
+    );
+    this.committing = false;
+    this.deps.refresh();
+    if (outcome.applied) {
+      this.showUndoNotice(`Fixed inherited properties on "${name}"`, outcome.transaction);
+    }
+  }
+
   /** `retypeOptions(node)` → a menu of type names; empty → a Notice. Choosing a type commits a
    * `'retype'` action. */
   startRetype(node: string, anchorEl: HTMLElement, event?: MouseEvent): void {
@@ -560,6 +599,17 @@ export class StructureActions {
         }
       });
     });
+    if (hasInheritMismatch(this.deps.getInput().diagnostics, node)) {
+      menu.addItem((item) => {
+        item.setTitle('Fix inheritance').onClick(() => {
+          this.fixInherit(node).catch((error: unknown) => {
+            this.committing = false;
+            logError(error);
+            notifyError(`could not apply the change. ${errorMessage(error)}`);
+          });
+        });
+      });
+    }
   }
 
   /** Public (task 16): the keyboard's `Enter`/`Mod+Enter` open the active node the same way the

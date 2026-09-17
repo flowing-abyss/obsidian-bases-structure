@@ -271,6 +271,30 @@ function moveFiles(): Record<string, string> {
   };
 }
 
+/** Category/Meta/Hier, `category` inherited through `meta`, plus a Hier -> Hier "up" property so
+ * a cascade can be exercised without a text-based edge. `bad.md` disagrees with `m.md`'s own
+ * category; `child.md` nests under `bad.md` and, before any fix, merely mirrors `bad.md`'s own
+ * (wrong) value; `ok.md` already matches `m.md`. */
+const FIX_INHERIT_SCHEMA_CONFIG = {
+  inherit: ['category'],
+  types: {
+    Category: { tag: 'category', children: { Meta: 'category' } },
+    Meta: { tag: 'meta', children: { Hier: 'meta' } },
+    Hier: { tag: 'hier', children: { Hier: 'up' } },
+  },
+};
+
+function fixInheritFiles(): Record<string, string> {
+  return {
+    'cat1.md': '---\ntags: [category]\n---\n',
+    'm.md': '---\ntags: [meta]\ncategory: "[[cat1]]"\n---\n',
+    'wrong.md': '---\n---\n',
+    'bad.md': '---\ntags: [hier]\nmeta: "[[m]]"\ncategory: "[[wrong]]"\n---\n',
+    'child.md': '---\ntags: [hier]\nup: "[[bad]]"\ncategory: "[[wrong]]"\n---\n',
+    'ok.md': '---\ntags: [hier]\nmeta: "[[m]]"\ncategory: "[[cat1]]"\n---\n',
+  };
+}
+
 /** Cat with two sibling child types (A, B) that don't accept each other's children — enough to
  * exercise both a real retype (`item.md`: A → B) and an empty-`retypeOptions` node (`cat.md`
  * itself, whose only child would fail under either sibling type). */
@@ -1458,6 +1482,61 @@ describe('startMove', () => {
   });
 });
 
+describe('fixInherit', () => {
+  it('commits the fix, cascades to the child, refreshes and shows an undo notice', async () => {
+    const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+
+    await h.actions.fixInherit('bad.md');
+
+    expect(h.refresh).toHaveBeenCalled();
+    const badFile = mustFile(h.app, 'bad.md');
+    const childFile = mustFile(h.app, 'child.md');
+    expect(h.app.metadataCache.getFileCache(badFile)?.frontmatter?.['category']).toBe('[[cat1]]');
+    expect(h.app.metadataCache.getFileCache(childFile)?.frontmatter?.['category']).toBe('[[cat1]]');
+    expect(h.undo.canUndo).toBe(true);
+    const notice = lastNotice();
+    const fragment = notice?.message as DocumentFragment;
+    expect(fragment.querySelector('span')?.textContent).toBe('Fixed inherited properties on "bad"');
+  });
+
+  it('shows the planner rejection reason and writes nothing when there is nothing to fix', async () => {
+    const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+
+    await h.actions.fixInherit('ok.md');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "ok" already matches its parent');
+    expect(h.undo.canUndo).toBe(false);
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('ignores a second call started while the first is still committing, with its own Notice (I5)', async () => {
+    const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+
+    const first = h.actions.fixInherit('bad.md');
+    const noticesBeforeSecond = NoticeMock.instances.length;
+    await h.actions.fixInherit('bad.md');
+
+    expect(NoticeMock.instances).toHaveLength(noticesBeforeSecond + 1);
+    expect(NoticeMock.instances[noticesBeforeSecond]?.message).toBe(
+      'Structure: still applying the previous change',
+    );
+    await first;
+  });
+
+  it('propagates an unexpected commit failure to the caller instead of catching it itself', async () => {
+    // Unlike `startMove`/`commitRetype` (void, self-contained), `fixInherit` returns a `Promise`
+    // that rejects on a commit failure — its one caller (`buildEditItems`'s own `onClick`) is what
+    // catches it; see the menu-level test for that half of the contract.
+    const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+    vi.spyOn(h.undo, 'push').mockImplementation(() => {
+      throw new Error('push boom');
+    });
+
+    await expect(h.actions.fixInherit('bad.md')).rejects.toThrow('push boom');
+  });
+});
+
 interface MoveModal {
   getItems(): string[];
   getItemText(item: string): string;
@@ -1970,6 +2049,89 @@ describe('openNodeMenu', () => {
 
     await vi.waitFor(() => {
       expect(undoSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('"Fix inheritance" — only offered for a node the diagnostic actually flagged', () => {
+    it('appears, after "Change type", for a node with an inherit-mismatch', () => {
+      const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+      const badEl = h.nodes.get('bad.md');
+      if (badEl === undefined) throw new Error('missing bad element');
+      const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+      h.actions.openNodeMenu('bad.md', targetEvent(badEl));
+
+      const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+      expect(menu.items__.map((item) => item.title__)).toStrictEqual([
+        'Open',
+        'Open in new tab',
+        'Add child',
+        'Move to…',
+        'Change type',
+        'Fix inheritance',
+      ]);
+    });
+
+    it('is absent for a node that already matches its parent', () => {
+      const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+      const okEl = h.nodes.get('ok.md');
+      if (okEl === undefined) throw new Error('missing ok element');
+      const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+      h.actions.openNodeMenu('ok.md', targetEvent(okEl));
+
+      const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+      expect(menu.items__.some((item) => item.title__ === 'Fix inheritance')).toBe(false);
+    });
+
+    it('commits the fix when clicked', async () => {
+      const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+      const badEl = h.nodes.get('bad.md');
+      if (badEl === undefined) throw new Error('missing bad element');
+      const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+      h.actions.openNodeMenu('bad.md', targetEvent(badEl));
+      const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+      const fixItem = menu.items__.find((item) => item.title__ === 'Fix inheritance');
+      fixItem?.onClick__?.(new MouseEvent('click'));
+
+      await vi.waitFor(() => {
+        expect(h.refresh).toHaveBeenCalled();
+      });
+      const badFile = mustFile(h.app, 'bad.md');
+      expect(h.app.metadataCache.getFileCache(badFile)?.frontmatter?.['category']).toBe('[[cat1]]');
+    });
+
+    it('catches an unexpected commit failure, notifies, and clears the committing lock', async () => {
+      const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+      const badEl = h.nodes.get('bad.md');
+      if (badEl === undefined) throw new Error('missing bad element');
+      vi.spyOn(h.undo, 'push').mockImplementation(() => {
+        throw new Error('push boom');
+      });
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+      h.actions.openNodeMenu('bad.md', targetEvent(badEl));
+      const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
+      const fixItem = menu.items__.find((item) => item.title__ === 'Fix inheritance');
+      fixItem?.onClick__?.(new MouseEvent('click'));
+
+      await vi.waitFor(() => {
+        expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+      });
+      expect(
+        NoticeMock.instances.some(
+          (notice) => notice.message === 'Structure: could not apply the change. push boom',
+        ),
+      ).toBe(true);
+
+      // The lock cleared: a follow-up call is no longer ignored as "still applying".
+      const noticesBefore = NoticeMock.instances.length;
+      await h.actions.fixInherit('ok.md');
+      expect(NoticeMock.instances[noticesBefore]?.message).toBe(
+        'Structure: "ok" already matches its parent',
+      );
     });
   });
 });

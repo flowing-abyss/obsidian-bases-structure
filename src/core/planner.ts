@@ -5,6 +5,7 @@
 
 import { ruleBetween } from './derive.js';
 import { planCreate } from './plan-create.js';
+import { planFixInherit } from './plan-fix-inherit.js';
 import { planMove } from './plan-move.js';
 import { planRetype } from './plan-retype.js';
 import type { Action, PlanEnv, PlanResult } from './plan-types.js';
@@ -25,6 +26,8 @@ export function planAction(
       return planMove(schema, snapshot, action);
     case 'retype':
       return planRetype(schema, snapshot, action, env);
+    case 'fix-inherit':
+      return planFixInherit(schema, snapshot, action);
   }
 }
 

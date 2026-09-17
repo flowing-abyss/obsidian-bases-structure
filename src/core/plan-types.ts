@@ -10,7 +10,8 @@ export type Action =
       readonly name: string;
     }
   | { readonly kind: 'move'; readonly node: string; readonly parent: string }
-  | { readonly kind: 'retype'; readonly node: string; readonly type: string };
+  | { readonly kind: 'retype'; readonly node: string; readonly type: string }
+  | { readonly kind: 'fix-inherit'; readonly node: string };
 
 export type WriteValue =
   // A link property patch: `remove`/`add` are resolved target *paths*, applied against whatever
