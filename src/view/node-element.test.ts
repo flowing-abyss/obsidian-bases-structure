@@ -84,6 +84,15 @@ describe('createNodeElement', () => {
     expect(title?.textContent).toBe('Alpha');
   });
 
+  it('gives the title tabindex -1 so the node itself is the only tab stop (M10)', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode());
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('tabindex')).toBe('-1');
+  });
+
   it('uses an empty data-type attribute when the node type is null', () => {
     const ctx = makeCtx();
 

@@ -92,10 +92,12 @@ export function createNodeElement(
   el.createEl('a', {
     cls: 'internal-link bases-structure-title',
     text: displayName(ctx.snapshot, node.path),
-    // No real `href`: navigation is fully handled by `attachNodeInteractions` (via `data-href`),
-    // and a literal `href` would make jsdom log spurious "navigation to another Document"
-    // warnings in tests. `tabindex` keeps the link keyboard-focusable without one.
-    attr: { 'data-href': node.path, tabindex: '0' },
+    // No real `href`: navigation is fully handled by `attachNodeInteractions` (via `data-href`).
+    // `tabindex="-1"` (M10) keeps the title out of the regular Tab order — the node itself is
+    // already the one Tab stop (`applyActiveNode`'s roving tabindex), and a separate stop for the
+    // title inside it doubled every node's Tab count for no benefit (the title still opens on a
+    // real click, and keyboard `Enter` on the active node already opens it — see `keyboard.ts`).
+    attr: { 'data-href': node.path, tabindex: '-1' },
   });
   appendAddButton(el);
   appendAlsoIn(el, ctx, node);
