@@ -131,7 +131,12 @@ export class OutlineRenderer implements StructureRenderer {
     });
     this.disposeInteractions = attachNodeInteractions(this.nodeCtx, this.outlineEl);
     this.outlineEl.addEventListener('click', this.handleToggleClick);
-    this.outlineEl.addEventListener('scroll', this.handleScroll);
+    // M5: `.bases-structure-outline` (this.outlineEl) never scrolls itself — it's a plain
+    // `display: flex; flex-direction: column` block with no height constraint of its own, so it
+    // just grows with its content. `.bases-structure-body` (`containerEl`, what actually has
+    // `overflow: auto` in styles.css) is the element that really scrolls; listening/writing on
+    // `outlineEl` meant this never fired and `scrollTop` writes had no visible effect at all.
+    this.containerEl.addEventListener('scroll', this.handleScroll);
   }
 
   update(input: RenderInput): void {
@@ -162,7 +167,7 @@ export class OutlineRenderer implements StructureRenderer {
       this.listEl = listEl;
       this.emptyEl.addClass('is-hidden');
     }
-    this.outlineEl.scrollTop = input.state.scrollTop;
+    this.containerEl.scrollTop = input.state.scrollTop;
     this.applyActiveState(input.state.active, hadFocus);
   }
 
@@ -185,7 +190,7 @@ export class OutlineRenderer implements StructureRenderer {
 
   destroy(): void {
     this.outlineEl.removeEventListener('click', this.handleToggleClick);
-    this.outlineEl.removeEventListener('scroll', this.handleScroll);
+    this.containerEl.removeEventListener('scroll', this.handleScroll);
     this.disposeInteractions();
     this.containerEl.empty();
   }
@@ -224,6 +229,6 @@ export class OutlineRenderer implements StructureRenderer {
     if (this.lastInput === null) {
       return;
     }
-    this.lastInput.state.scrollTop = this.outlineEl.scrollTop;
+    this.lastInput.state.scrollTop = this.containerEl.scrollTop;
   };
 }

@@ -698,7 +698,10 @@ describe('OutlineRenderer', () => {
     expect(document.activeElement).toBe(outside);
   });
 
-  it('restores scrollTop across updates', () => {
+  it('restores scrollTop across updates, on the element that actually scrolls (M5)', () => {
+    // `container` (what the constructor is given) is `.bases-structure-body` in production — the
+    // element with `overflow: auto` — not `.bases-structure-outline` (`outlineEl`), which is a
+    // plain flex column with no height constraint of its own and so never actually scrolls.
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot([note('a.md')], { results: ['a.md'] });
     const structure = buildStructure(schema, snap);
@@ -709,7 +712,7 @@ describe('OutlineRenderer', () => {
 
     renderer.update({ schema, snapshot: snap, structure, state });
 
-    expect(outlineEl(container).scrollTop).toBe(42);
+    expect(container.scrollTop).toBe(42);
   });
 
   it('keeps a scrolled position across a toggle-triggered update (regression)', () => {
@@ -727,10 +730,9 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-scroll-toggle');
     renderer.update({ schema, snapshot: snap, structure, state });
-    const outline = outlineEl(container);
 
-    outline.scrollTop = 77;
-    outline.dispatchEvent(new Event('scroll'));
+    container.scrollTop = 77;
+    container.dispatchEvent(new Event('scroll'));
     expect(state.scrollTop).toBe(77);
 
     container
@@ -738,7 +740,7 @@ describe('OutlineRenderer', () => {
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(state.scrollTop).toBe(77);
-    expect(outlineEl(container).scrollTop).toBe(77);
+    expect(container.scrollTop).toBe(77);
   });
 
   it('stops writing scrollTop into state once destroyed', () => {
@@ -749,11 +751,10 @@ describe('OutlineRenderer', () => {
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-scroll-destroy');
     renderer.update({ schema, snapshot: snap, structure, state });
-    const outline = outlineEl(container);
 
     renderer.destroy();
-    outline.scrollTop = 99;
-    outline.dispatchEvent(new Event('scroll'));
+    container.scrollTop = 99;
+    container.dispatchEvent(new Event('scroll'));
 
     expect(state.scrollTop).toBe(0);
   });
