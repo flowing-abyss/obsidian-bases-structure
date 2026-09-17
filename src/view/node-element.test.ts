@@ -253,6 +253,43 @@ describe('createNodeElement', () => {
     expect(title?.getAttribute('data-link-path')).toBe('a.md');
   });
 
+  it('keeps a carried attribute for an uppercase, spaced frontmatter key (Supercharged Links normalises it) (D1 follow-up)', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { 'Due Date': ['a', 'b'] } });
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-due-date', 'a b');
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-due-date')).toBe('a b');
+  });
+
+  it('drops that attribute once the uppercase, spaced frontmatter key is removed (D1 follow-up)', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: {} }); // `Due Date` no longer present.
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-due-date', 'a b');
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.hasAttribute('data-link-due-date')).toBe(false);
+  });
+
+  it('always carries data-link-data-href over — file-derived, never frontmatter-sourced (D1 follow-up)', () => {
+    const previousTitle = createDiv().createEl('a');
+    previousTitle.setAttribute('data-link-data-href', 'A.md');
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), { previousTitle });
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-data-href')).toBe('A.md');
+  });
+
   it('does not carry an arbitrary class over from the previous title (D1 follow-up)', () => {
     const previousTitle = createDiv().createEl('a');
     previousTitle.classList.add('some-supercharged-links-class');

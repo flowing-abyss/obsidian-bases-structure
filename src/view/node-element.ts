@@ -38,11 +38,9 @@ export interface NodeElementContext {
 export interface NodeElementFlags {
   readonly isRoot?: boolean;
   readonly isOrphan?: boolean;
-  /** D1 follow-up ("keep Supercharged Links icons on the title line"): the *same path's* title
-   * element from the render being replaced, if any — see `carryOverSuperchargedLinkState`'s own
-   * doc comment for why. Only whichever of its `data-link-*` attributes are still backed by the
-   * note's current state get copied forward — see that function's own doc comment. `previousTitle`
-   * itself is otherwise inert (no classes are carried from it). `collectTitleElements` builds the
+  /** The same path's title element from the render being replaced, if any — its `data-link-*`
+   * attributes are carried forward where still backed by current state (see
+   * `carryOverSuperchargedLinkState`); no classes are carried. `collectTitleElements` builds the
    * map callers pass this from. */
   readonly previousTitle?: HTMLElement;
 }
@@ -92,59 +90,33 @@ function appendAlsoIn(el: HTMLElement, ctx: NodeElementContext, node: StructureN
   chip.createSpan({ text: names.join(', ') });
 }
 
-/** D1 follow-up #2 ("drop Supercharged Links attributes whose source is gone"): whether
- * `data-link-<key>` is still backed by *something* in the note's current state, and so is safe to
- * carry forward from a previous render. Carrying every `data-link-*` attribute unconditionally
- * (this function's own first version) let a *deleted* frontmatter key's attribute — and its
- * `--data-link-<key>` CSS variable — linger forever: `applySuperchargedLinkAttributes` only ever
- * sets a key that's actually present, and this view rebuilds every node on every render, so
- * nothing else would ever clear a stale one.
- *
- * - `<key>` still present in `frontmatter` (any value type — a list, e.g. `tags`, is exactly what
- *   Supercharged Links itself computes asynchronously, the whole reason this carry-over exists) —
- *   eligible.
- * - `<key> === 'tags'` and the note currently has any tag at all, frontmatter or inline
- *   (Supercharged Links' `targetTags` option folds both together, same as `getAllTags`) —
- *   eligible even when frontmatter itself has no `tags` key of its own.
- * - `<key> === 'path'` — Supercharged Links' own path-derived attribute, inherent to *which* note
- *   this link points to, never sourced from frontmatter at all — always eligible.
- * - Anything else — dropped, not carried. */
+/** Whether Supercharged Links' `data-link-<key>` is still backed by the note's current state, and
+ * so safe to carry forward from a previous render: some frontmatter key normalises to `key`
+ * (Supercharged Links lowercases the attribute name and replaces spaces with hyphens, so
+ * `Due Date` backs `due-date`) — any value type, since a list is exactly what
+ * `applySuperchargedLinkAttributes` never sets itself; `tags` also counts via any current tag,
+ * frontmatter or inline; `path`/`data-href` are file-derived, never frontmatter, so always
+ * eligible. Everything else is dropped. */
 function isSuperchargedLinkAttributeStillTrue(
   key: string,
   frontmatter: FrontMatterCache | undefined,
   hasAnyTag: boolean,
 ): boolean {
-  if (frontmatter !== undefined && Object.prototype.hasOwnProperty.call(frontmatter, key)) {
-    return true;
+  if (frontmatter !== undefined) {
+    for (const frontmatterKey of Object.keys(frontmatter)) {
+      if (frontmatterKey.replace(/ /g, '-').toLowerCase() === key) {
+        return true;
+      }
+    }
   }
   if (key === 'tags') {
     return hasAnyTag;
   }
-  return key === 'path';
+  return key === 'path' || key === 'data-href';
 }
 
-/** Supercharged Links sets attributes for *non-scalar* frontmatter (e.g. `data-link-tags`, from a
- * list) itself, asynchronously, via its own `MutationObserver` — `applySuperchargedLinkAttributes`
- * never does (it only ever handles scalars). Both renderers rebuild every node element on every
- * render, so without this, a value Supercharged Links had already discovered before the rebuild
- * would vanish the instant this node's path re-renders, only to reappear whenever the observer
- * next happens to fire — and since `.bases-structure-node` sizes itself from its own content
- * (`width: max-content`, since 0b0d1df), an attribute that adds an `::after` icon appearing *after*
- * this node was already measured is exactly what pushed that icon onto a second line (nowhere else
- * for it to go once the node had already been laid out narrower).
- *
- * Copies a `data-link-*` attribute (and its CSS variable) from `previousTitle` onto `titleEl` only
- * when `titleEl` doesn't already carry that name (scalar frontmatter, just applied above by
- * `applySuperchargedLinkAttributes`, always wins over a carried-over value for the same name) *and*
- * `isSuperchargedLinkAttributeStillTrue` says the note's current state still backs it — otherwise a
- * deleted frontmatter key's attribute would carry forward forever instead of disappearing on the
- * next render, same as before this whole mechanism existed. No classes are carried: unlike an
- * attribute, this module can't tell whether an arbitrary class Supercharged Links added still
- * applies, so nothing beyond the fixed `data-link-icon`/`data-link-icon-after`/`data-link-text`
- * classes `createNodeElement` already always adds is carried over. A no-op when there is no
- * previous title (this path is new this render). */
-/** The note-derived facts `isSuperchargedLinkAttributeStillTrue` checks each carry-over candidate
- * against — bundled into one object purely to stay inside this project's `max-params` budget. */
+/** The current-state facts `isSuperchargedLinkAttributeStillTrue` checks against, bundled to stay
+ * under this project's `max-params` budget. */
 interface CurrentLinkState {
   readonly frontmatter: FrontMatterCache | undefined;
   readonly hasAnyTag: boolean;
@@ -158,9 +130,8 @@ function readCurrentLinkState(app: App, path: string): CurrentLinkState {
   };
 }
 
-/** One `data-link-*` attribute of `previousTitle`, copied onto `titleEl` (with its CSS variable)
- * when eligible — see `carryOverSuperchargedLinkState`'s own doc comment for the full contract.
- * Split out from it purely to stay inside this project's `complexity` budget. */
+/** One `data-link-*` attribute of `previousTitle`, copied onto `titleEl` when eligible — split out
+ * from `carryOverSuperchargedLinkState` to stay under this project's `complexity` budget. */
 function carryOneSuperchargedLinkAttribute(
   titleEl: HTMLElement,
   previousTitle: HTMLElement,
@@ -182,6 +153,18 @@ function carryOneSuperchargedLinkAttribute(
   }
 }
 
+/** Supercharged Links sets `data-link-<key>` for non-scalar frontmatter (e.g. tags) itself,
+ * asynchronously, via its own `MutationObserver` — `applySuperchargedLinkAttributes` only ever
+ * handles scalars. Both renderers rebuild every node every render, so without this, a value
+ * Supercharged Links had already found would vanish on rebuild, and the `::after` icon some
+ * `data-link-*` attributes add would appear after this node was already measured, wrapping onto a
+ * second line for lack of room.
+ *
+ * Copies a `data-link-*` attribute (and its CSS variable) from `previousTitle` onto `titleEl` when
+ * `titleEl` doesn't already carry that name (fresh frontmatter always wins) and
+ * `isSuperchargedLinkAttributeStillTrue` confirms it's still backed. No classes are carried — only
+ * the fixed `data-link-icon`/`data-link-icon-after`/`data-link-text` classes survive. A no-op with
+ * no previous title. */
 function carryOverSuperchargedLinkState(
   titleEl: HTMLElement,
   previousTitle: HTMLElement | undefined,
@@ -251,11 +234,10 @@ export function findNodeElement(root: HTMLElement, path: string): HTMLElement | 
   return null;
 }
 
-/** D1 follow-up: every currently-rendered title element under `root`, keyed by its node's own
- * `data-path` — a snapshot both renderers take right before they tear down the *previous* render's
- * elements, so `createNodeElement`'s `previousTitle` flag has something to carry Supercharged
- * Links' own state from (see `carryOverSuperchargedLinkState`). Must be called before the
- * container is emptied for the next render, or there is nothing left to collect. */
+/** Every currently-rendered title element under `root`, keyed by its node's own `data-path` — a
+ * snapshot taken right before the previous render's elements are torn down, so
+ * `createNodeElement`'s `previousTitle` flag has something to carry Supercharged Links' own state
+ * from (see `carryOverSuperchargedLinkState`). Must be called before the container is emptied. */
 export function collectTitleElements(root: HTMLElement): Map<string, HTMLElement> {
   const titlesByPath = new Map<string, HTMLElement>();
   for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
