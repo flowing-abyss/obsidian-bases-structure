@@ -913,6 +913,70 @@ describe('GraphRenderer', () => {
   });
 });
 
+/** `direction: 'down'` (U3). The chain fixture (`chainStructure`, no siblings) with `fixedMeasure`
+ * (every box 100x20) keeps the geometry hand-checkable: with `DEFAULT_VERTICAL_LAYOUT_OPTIONS`
+ * (`columnGap: 40`), depth grows straight down, each level 60px below the last (columnGap 40 +
+ * node height 20). Every node lands at `x = 12`, not 0 — `a.md` is a depth-1 node with a visible
+ * child (`b.md`), so `layoutTree` still computes a padded group frame around it (`groupPadding:
+ * 12`, unused for drawing since task 15 — see `layout.ts` — but still part of the vertical extent
+ * `placeAllTops` shifts the whole tree by, to keep every coordinate non-negative); the same
+ * shift is exactly why the *horizontal* geometry test above puts every one of these nodes at
+ * `top: 12px` rather than 0. */
+function verticalSchema(): ReturnType<typeof parseSchema>['schema'] {
+  return parseSchema((key) => (key === 'direction' ? 'down' : undefined)).schema;
+}
+
+describe('GraphRenderer — direction: down', () => {
+  it('positions nodes top-to-bottom instead of left-to-right', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(makeInput({ schema: verticalSchema() }));
+
+    const rootEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    const bEl = must(container.querySelector<HTMLElement>('[data-path="b.md"]'));
+    expect(rootEl.style.left).toBe('12px');
+    expect(rootEl.style.top).toBe('0px');
+    expect(aEl.style.left).toBe('12px');
+    expect(aEl.style.top).toBe('60px');
+    expect(bEl.style.left).toBe('12px');
+    expect(bEl.style.top).toBe('120px');
+  });
+
+  it('draws tree edges bottom-centre to top-centre instead of right-centre to left-centre', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    renderer.update(makeInput({ schema: verticalSchema() }));
+
+    const edges = Array.from(
+      container.querySelectorAll<SVGPathElement>('.bases-structure-edge:not(.is-extra)'),
+    );
+    expect(edges.map((edge) => edge.getAttribute('d'))).toStrictEqual([
+      'M 62 20 C 62 44, 62 36, 62 60',
+      'M 62 80 C 62 104, 62 96, 62 120',
+    ]);
+  });
+
+  it('switching direction on an already-rendered view re-lays-out without recreating the renderer', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'a.md' });
+    renderer.update(makeInput({ state }));
+    const aElBefore = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aElBefore.style.top).toBe('12px');
+
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    // Same renderer instance re-laid-out (not recreated) — collapsed/active state (`state` itself)
+    // survives untouched, and the node now sits at its vertical position.
+    expect(state.active).toBe('a.md');
+    const aElAfter = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aElAfter.style.top).toBe('60px');
+  });
+});
+
 describe('GraphRenderer — pop-out window (M3)', () => {
   it('checks focus against the container’s own document on a same-active-path re-render, not the global one', () => {
     // See `keyboard.test.ts`'s identical pop-out test for why an `<iframe>` (real focus tracking)

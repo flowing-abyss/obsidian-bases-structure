@@ -64,7 +64,7 @@ describe('StructureViewPlugin.onload', () => {
     expect(view).toBeInstanceOf(StructureView);
   });
 
-  it('exposes exactly the layout dropdown option', () => {
+  it('exposes the layout and direction dropdown options', () => {
     const plugin = createPlugin();
     plugin.onload();
     const registration = mocked(plugin).basesViewRegistrations__.get(STRUCTURE_VIEW_ID);
@@ -72,7 +72,7 @@ describe('StructureViewPlugin.onload', () => {
 
     const options = registration?.options?.(config.asOriginalType__()) ?? [];
 
-    expect(options).toHaveLength(1);
+    expect(options).toHaveLength(2);
     expect(options[0]).toMatchObject({
       type: 'dropdown',
       key: 'layout',
@@ -80,6 +80,35 @@ describe('StructureViewPlugin.onload', () => {
       options: { graph: 'Graph', outline: 'Outline' },
       default: 'graph',
     });
+    expect(options[1]).toMatchObject({
+      type: 'dropdown',
+      key: 'direction',
+      displayName: 'Direction',
+      options: { right: 'Left to right', down: 'Top to bottom' },
+      default: 'right',
+    });
+  });
+
+  it('hides the direction option for the outline layout and shows it for the graph (U3)', () => {
+    const plugin = createPlugin();
+    plugin.onload();
+    const registration = mocked(plugin).basesViewRegistrations__.get(STRUCTURE_VIEW_ID);
+    const config = BasesViewConfig.create__('', STRUCTURE_VIEW_ID, 'Structure');
+
+    const options = registration?.options?.(config.asOriginalType__()) ?? [];
+    const directionOption = options[1];
+    if (directionOption?.type !== 'dropdown') {
+      throw new Error('expected the direction dropdown option to exist');
+    }
+
+    // Config default (nothing set yet) behaves like the graph layout: direction stays visible.
+    expect(directionOption.shouldHide?.()).toBe(false);
+
+    config.set('layout', 'outline');
+    expect(directionOption.shouldHide?.()).toBe(true);
+
+    config.set('layout', 'graph');
+    expect(directionOption.shouldHide?.()).toBe(false);
   });
 
   it('registers a hover-link-preview source matching the event attachNodeInteractions fires (M4)', () => {

@@ -386,6 +386,12 @@ export class StructureView extends BasesView {
       undo: () => {
         this.actions?.undoLast();
       },
+      // U3: the outline has no growth axis of its own and must ignore `Schema.direction`
+      // entirely (see the spec) — arrow keys there always use the standard, left-to-right
+      // mapping regardless of what a hand-edited `.base` file sets, since its own UI option is
+      // hidden for the outline layout in the first place.
+      getDirection: () =>
+        this.rendererLayout === 'graph' ? (this.lastInput?.schema.direction ?? 'right') : 'right',
     });
   }
 

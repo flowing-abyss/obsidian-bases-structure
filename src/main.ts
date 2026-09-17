@@ -9,12 +9,15 @@ export { STRUCTURE_VIEW_ID };
 
 const UNDO_COMMAND_ID = 'undo-last-change';
 
-/** The Bases view's only config control: which renderer draws the tree. The parent property
- * itself is edited directly in the `.base` file (see `parseSchema`, which still reads `parent`
- * from config) — the view's own options only ever hold things that change the picture. `config`
- * is unused for now, but the registration hook always passes it, so the parameter stays for
- * signature parity. */
-function buildViewOptions(_config: BasesViewConfig): BasesAllOptions[] {
+/** The Bases view's config controls: which renderer draws the tree, and (graph only) which axis
+ * it grows along. The parent property itself is edited directly in the `.base` file (see
+ * `parseSchema`, which still reads `parent` from config) — these options only ever hold things
+ * that change the picture. `shouldHide` closes over `config` (there is no other way to read the
+ * *current* config value from inside it — `BasesOption.shouldHide` takes no arguments, see
+ * `obsidian.d.ts`), so the direction option disappears the moment the layout option is switched
+ * to outline (U3): the outline has no growth axis of its own, so offering the control there would
+ * just be dead chrome. */
+function buildViewOptions(config: BasesViewConfig): BasesAllOptions[] {
   return [
     {
       type: 'dropdown',
@@ -22,6 +25,14 @@ function buildViewOptions(_config: BasesViewConfig): BasesAllOptions[] {
       displayName: 'Layout',
       options: { graph: 'Graph', outline: 'Outline' },
       default: 'graph',
+    },
+    {
+      type: 'dropdown',
+      key: 'direction',
+      displayName: 'Direction',
+      options: { right: 'Left to right', down: 'Top to bottom' },
+      default: 'right',
+      shouldHide: () => config.get('layout') === 'outline',
     },
   ];
 }

@@ -5,6 +5,7 @@
 // or `[contenteditable]`, since the create draft owns its own Enter/Tab/Escape handling (see
 // `actions-ui.ts`).
 
+import type { Direction } from '../core/schema.js';
 import type { Structure, StructureNode } from '../core/structure.js';
 import { applyActiveNode, focusActiveNode } from './node-element.js';
 import type { ViewUiState } from './view-state.js';
@@ -35,6 +36,11 @@ export interface KeyboardDeps {
   readonly movePicker: (path: string) => void;
   readonly retype: (path: string, anchorEl: HTMLElement) => void;
   readonly undo: () => void;
+  /** Which axis the *graph* currently grows along (U3) — arrow-key roles mirror accordingly (see
+   * `keyHandlersFor`). The outline has no growth axis of its own and always behaves as `'right'`;
+   * `structure-view.ts`'s wiring is what enforces that (it reports `'right'` whenever the outline
+   * is the active renderer, regardless of `Schema.direction`), not this module. */
+  readonly getDirection: () => Direction;
 }
 
 const NODE_SELECTOR = '.bases-structure-node';
@@ -303,14 +309,10 @@ function handleEscape(deps: KeyboardDeps): void {
   setActive(deps, null);
 }
 
-/** Map of binding key (see `bindingKey`) to handler — keeping dispatch a single lookup, rather
- * than an if/else chain over every combination, is what keeps this module's cyclomatic/cognitive
- * complexity within budget. */
-const KEY_HANDLERS: Record<string, KeyHandler> = {
-  ArrowUp: handleArrowUp,
-  ArrowDown: handleArrowDown,
-  ArrowLeft: handleArrowLeft,
-  ArrowRight: handleArrowRight,
+/** Every binding that doesn't depend on direction — shared by both `KEY_HANDLERS_RIGHT` and
+ * `KEY_HANDLERS_DOWN` below. Keeping dispatch a single lookup, rather than an if/else chain over
+ * every combination, is what keeps this module's cyclomatic/cognitive complexity within budget. */
+const COMMON_KEY_HANDLERS: Record<string, KeyHandler> = {
   Home: handleHome,
   End: handleEnd,
   ' ': handleSpace,
@@ -322,6 +324,32 @@ const KEY_HANDLERS: Record<string, KeyHandler> = {
   t: handleRetype,
   Escape: handleEscape,
 };
+
+/** `direction: 'right'` (the default): Up/Down move among siblings, Left/Right collapse-or-go-to-
+ * parent / expand-or-go-to-first-child — matching the tree's own left-to-right growth axis. */
+const KEY_HANDLERS_RIGHT: Record<string, KeyHandler> = {
+  ...COMMON_KEY_HANDLERS,
+  ArrowUp: handleArrowUp,
+  ArrowDown: handleArrowDown,
+  ArrowLeft: handleArrowLeft,
+  ArrowRight: handleArrowRight,
+};
+
+/** `direction: 'down'` (U3): the same four handlers as `KEY_HANDLERS_RIGHT`, mirrored onto the
+ * physical keys that now match the tree's top-to-bottom growth axis — Left/Right move among
+ * siblings (who now spread horizontally), Up/Down collapse-or-parent / expand-or-first-child (who
+ * now sit above/below). */
+const KEY_HANDLERS_DOWN: Record<string, KeyHandler> = {
+  ...COMMON_KEY_HANDLERS,
+  ArrowLeft: handleArrowUp,
+  ArrowRight: handleArrowDown,
+  ArrowUp: handleArrowLeft,
+  ArrowDown: handleArrowRight,
+};
+
+function keyHandlersFor(direction: Direction): Record<string, KeyHandler> {
+  return direction === 'down' ? KEY_HANDLERS_DOWN : KEY_HANDLERS_RIGHT;
+}
 
 /** M7: `Mod+z` is deliberately outside `KEY_HANDLERS`/`resolveActiveCtx` — every other binding
  * needs an active node (`ActiveCtx`) to act on, but undo doesn't; gating it on one anyway (as an
@@ -412,7 +440,7 @@ export function attachKeyboard(deps: KeyboardDeps): () => void {
     if (ctx === null) {
       return;
     }
-    const handler = KEY_HANDLERS[key];
+    const handler = keyHandlersFor(deps.getDirection())[key];
     if (handler === undefined) {
       return;
     }

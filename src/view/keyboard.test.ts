@@ -4,6 +4,7 @@
 // `drag.test.ts` tests `attachDrag` in isolation from the renderers/`StructureView`.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Direction } from '../core/schema.js';
 import type { Structure, StructureNode } from '../core/structure.js';
 import { attachKeyboard, type KeyboardDeps } from './keyboard.js';
 import type { ViewUiState } from './view-state.js';
@@ -76,7 +77,11 @@ interface Harness {
   readonly dispose: () => void;
 }
 
-function makeHarness(structure: Structure, active: string | null): Harness {
+function makeHarness(
+  structure: Structure,
+  active: string | null,
+  direction: Direction = 'right',
+): Harness {
   const container = createDiv();
   document.body.appendChild(container);
   for (const path of structure.nodes.keys()) {
@@ -94,6 +99,7 @@ function makeHarness(structure: Structure, active: string | null): Harness {
     movePicker: vi.fn(),
     retype: vi.fn(),
     undo: vi.fn(),
+    getDirection: vi.fn(() => direction),
   };
   const dispose = attachKeyboard(deps);
   return { container, state, deps, dispose };
@@ -269,6 +275,69 @@ describe('attachKeyboard — collapse/expand', () => {
     expect(h.state.collapsed.size).toBe(0);
     expect(event.defaultPrevented).toBe(true);
     expect(h.deps.renderCollapse).not.toHaveBeenCalled();
+  });
+});
+
+describe('attachKeyboard — direction: down (U3)', () => {
+  // Mirrors the "arrow navigation" and "collapse/expand" describe blocks above, one-to-one, but
+  // with the physical keys swapped to match a top-to-bottom growth axis: ArrowLeft/ArrowRight
+  // move among siblings (who now spread horizontally) where ArrowUp/ArrowDown did for 'right',
+  // and ArrowUp/ArrowDown collapse-or-parent / expand-or-first-child where ArrowLeft/ArrowRight
+  // did — the same handlers, reached through different keys (see `keyHandlersFor`).
+  it.each([
+    { key: 'ArrowRight', start: 'a.md', expected: 'b.md' },
+    { key: 'ArrowLeft', start: 'b.md', expected: 'a.md' },
+  ])('$key moves the active sibling ($start -> $expected)', ({ key, start, expected }) => {
+    const h = makeHarness(makeStructure(), start, 'down');
+
+    h.container.dispatchEvent(keyEvent(key));
+
+    expect(h.state.active).toBe(expected);
+    expect(h.deps.renderCollapse).not.toHaveBeenCalled();
+  });
+
+  it('ArrowDown on an expanded branch moves into the first child', () => {
+    const h = makeHarness(makeStructure(), 'a.md', 'down');
+
+    h.container.dispatchEvent(keyEvent('ArrowDown'));
+
+    expect(h.state.active).toBe('a1.md');
+  });
+
+  it('ArrowUp on a leaf moves back to the parent', () => {
+    const h = makeHarness(makeStructure(), 'a1.md', 'down');
+
+    h.container.dispatchEvent(keyEvent('ArrowUp'));
+
+    expect(h.state.active).toBe('a.md');
+  });
+
+  it('ArrowUp collapses an expanded branch instead of moving to the parent', () => {
+    const h = makeHarness(makeStructure(), 'a.md', 'down');
+
+    h.container.dispatchEvent(keyEvent('ArrowUp'));
+
+    expect(h.state.collapsed.has('a.md')).toBe(true);
+    expect(h.state.active).toBe('a.md');
+    expect(h.deps.renderCollapse).toHaveBeenCalledTimes(1);
+  });
+
+  it('ArrowDown expands a collapsed branch instead of moving to the first child', () => {
+    const h = makeHarness(makeStructure(), 'a.md', 'down');
+    h.state.collapsed.add('a.md');
+
+    h.container.dispatchEvent(keyEvent('ArrowDown'));
+
+    expect(h.state.collapsed.has('a.md')).toBe(false);
+    expect(h.state.active).toBe('a.md');
+  });
+
+  it('plain right-direction keys still work when getDirection reports right (regression)', () => {
+    const h = makeHarness(makeStructure(), 'a.md', 'right');
+
+    h.container.dispatchEvent(keyEvent('ArrowRight'));
+
+    expect(h.state.active).toBe('a1.md');
   });
 });
 
@@ -732,6 +801,7 @@ describe('attachKeyboard — pop-out window (M3)', () => {
       movePicker: vi.fn(),
       retype: vi.fn(),
       undo: vi.fn(),
+      getDirection: vi.fn((): Direction => 'right'),
     };
     attachKeyboard(deps);
     nodeEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));

@@ -1043,6 +1043,49 @@ describe('StructureView — keyboard wiring', () => {
     expect(disposeSpy2).not.toHaveBeenCalled();
   });
 
+  it('does not recreate the renderer/keyboard attachment for a direction-only config change (U3)', () => {
+    const disposeSpy = vi.fn();
+    const attachKeyboardSpy = vi
+      .spyOn(keyboardModule, 'attachKeyboard')
+      .mockReturnValue(disposeSpy);
+    const { view } = catLeafView();
+    view.onDataUpdated();
+    expect(attachKeyboardSpy).toHaveBeenCalledTimes(1);
+
+    view.config.set('direction', 'down');
+    view.onDataUpdated();
+
+    expect(disposeSpy).not.toHaveBeenCalled();
+    expect(attachKeyboardSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("getDirection reflects the graph's current Schema.direction (U3)", () => {
+    const attachKeyboardSpy = vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(vi.fn());
+    const { view } = catLeafView();
+    view.onDataUpdated();
+    const deps = attachKeyboardSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachKeyboard was not called');
+    expect(deps.getDirection()).toBe('right');
+
+    view.config.set('direction', 'down');
+    view.onDataUpdated();
+
+    expect(deps.getDirection()).toBe('down');
+  });
+
+  it('getDirection always reports "right" for the outline, even with direction: down set directly (U3)', () => {
+    const attachKeyboardSpy = vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(vi.fn());
+    const { view } = catLeafView();
+    view.config.set('layout', 'outline');
+    view.config.set('direction', 'down');
+
+    view.onDataUpdated();
+
+    const deps = attachKeyboardSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachKeyboard was not called');
+    expect(deps.getDirection()).toBe('right');
+  });
+
   it('disposes the keyboard attachment on unload', () => {
     const disposeSpy = vi.fn();
     vi.spyOn(keyboardModule, 'attachKeyboard').mockReturnValue(disposeSpy);

@@ -6,7 +6,13 @@
 // layer and the SVG's dynamic content (everything after `<defs>`) are rebuilt each time.
 
 import type { LayoutResult, Size } from '../core/layout.js';
-import { DEFAULT_LAYOUT_OPTIONS, layoutTree } from '../core/layout.js';
+import {
+  DEFAULT_LAYOUT_OPTIONS,
+  DEFAULT_VERTICAL_LAYOUT_OPTIONS,
+  layoutTree,
+  layoutTreeVertical,
+} from '../core/layout.js';
+import type { Direction } from '../core/schema.js';
 import type { ExtraLink, Structure, StructureNode } from '../core/structure.js';
 import { edgePath } from './edges.js';
 import { setSizedIcon } from './icon.js';
@@ -320,20 +326,22 @@ export class GraphRenderer implements StructureRenderer {
 
     const elementsByPath = this.buildNodeElements(entries, input.state.collapsed, input.focusPath);
     const sizesByPath = this.measureAll(entries, elementsByPath);
-    const layoutResult = layoutTree(
-      {
-        tops: forestTops,
-        childrenOf: (path) => input.structure.nodes.get(path)?.children ?? [],
-        sizeOf: (path) =>
-          sizesByPath.get(path) ?? { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT },
-        collapsed: input.state.collapsed,
-      },
-      DEFAULT_LAYOUT_OPTIONS,
-    );
+    const direction = input.schema.direction;
+    const layoutInput = {
+      tops: forestTops,
+      childrenOf: (path: string) => input.structure.nodes.get(path)?.children ?? [],
+      sizeOf: (path: string) =>
+        sizesByPath.get(path) ?? { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT },
+      collapsed: input.state.collapsed,
+    };
+    const layoutResult =
+      direction === 'down'
+        ? layoutTreeVertical(layoutInput, DEFAULT_VERTICAL_LAYOUT_OPTIONS)
+        : layoutTree(layoutInput, DEFAULT_LAYOUT_OPTIONS);
 
     this.positionNodes(entries, elementsByPath, layoutResult);
     this.applyCanvasSize(layoutResult);
-    this.drawSvg(entries, layoutResult);
+    this.drawSvg(entries, layoutResult, direction);
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
     this.applyAutoFit(input.state);
     this.applyZoom(input.state.zoom);
@@ -460,18 +468,26 @@ export class GraphRenderer implements StructureRenderer {
 
   /** Group frames are a layout-only concept now (`layoutTree` still computes them so spacing
    * doesn't change) — nothing here draws `layoutResult.groups`. */
-  private drawSvg(entries: readonly VisibleEntry[], layoutResult: LayoutResult): void {
+  private drawSvg(
+    entries: readonly VisibleEntry[],
+    layoutResult: LayoutResult,
+    direction: Direction,
+  ): void {
     for (const child of Array.from(this.svgEl.children)) {
       if (child !== this.defsEl) {
         child.remove();
       }
     }
     this.edgesByPath = new Map();
-    this.drawTreeEdges(entries, layoutResult);
-    this.drawExtraEdges(entries, layoutResult);
+    this.drawTreeEdges(entries, layoutResult, direction);
+    this.drawExtraEdges(entries, layoutResult, direction);
   }
 
-  private drawTreeEdges(entries: readonly VisibleEntry[], layoutResult: LayoutResult): void {
+  private drawTreeEdges(
+    entries: readonly VisibleEntry[],
+    layoutResult: LayoutResult,
+    direction: Direction,
+  ): void {
     for (const entry of entries) {
       if (entry.node.parent === null) {
         continue;
@@ -483,7 +499,7 @@ export class GraphRenderer implements StructureRenderer {
       }
       const path = createSvgEl(this.container.doc, 'path');
       path.classList.add('bases-structure-edge');
-      path.setAttribute('d', edgePath(fromBox, toBox));
+      path.setAttribute('d', edgePath(fromBox, toBox, direction));
       if (entry.node.twoWay) {
         path.classList.add('is-two-way');
         path.setAttribute('marker-start', TREE_ARROW_MARKER_URL);
@@ -494,15 +510,24 @@ export class GraphRenderer implements StructureRenderer {
     }
   }
 
-  private drawExtraEdges(entries: readonly VisibleEntry[], layoutResult: LayoutResult): void {
+  private drawExtraEdges(
+    entries: readonly VisibleEntry[],
+    layoutResult: LayoutResult,
+    direction: Direction,
+  ): void {
     for (const entry of entries) {
       for (const extra of entry.node.extras) {
-        this.drawExtraEdge(extra, entry.path, layoutResult);
+        this.drawExtraEdge(extra, entry.path, layoutResult, direction);
       }
     }
   }
 
-  private drawExtraEdge(extra: ExtraLink, childPath: string, layoutResult: LayoutResult): void {
+  private drawExtraEdge(
+    extra: ExtraLink,
+    childPath: string,
+    layoutResult: LayoutResult,
+    direction: Direction,
+  ): void {
     const fromBox = layoutResult.boxes.get(extra.parent);
     const toBox = layoutResult.boxes.get(childPath);
     if (fromBox === undefined || toBox === undefined) {
@@ -510,7 +535,7 @@ export class GraphRenderer implements StructureRenderer {
     }
     const path = createSvgEl(this.container.doc, 'path');
     path.classList.add('bases-structure-edge', 'is-extra');
-    path.setAttribute('d', edgePath(fromBox, toBox));
+    path.setAttribute('d', edgePath(fromBox, toBox, direction));
     path.setAttribute('marker-end', EXTRA_ARROW_MARKER_URL);
     this.svgEl.appendChild(path);
     this.registerEdge(path, extra.parent, childPath);
