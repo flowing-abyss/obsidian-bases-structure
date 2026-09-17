@@ -169,8 +169,21 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
   // Round 2 C1: the edge key's stale set is the old parent itself plus whatever it used to
   // contribute to this specific key (`U_old(k)`, just the *single* old parent — not the node's
   // other old property parents, which never contributed to `k` in a way this move invalidates).
+  // Round 3 fix: `oldContribOf` only ever falls back to O's *own* raw values for `k` when nothing
+  // else claims it — that fallback is the `inherit`-cascade mechanism, so it only applies when `k`
+  // is actually a `schema.inherit` key. For a plain (non-inherited) edge property, O's own values
+  // for that same property name are unrelated data that happens to share a name, not something O
+  // ever contributed to N — including them here deleted a value N held for its own reasons (e.g.
+  // O and N both happening to link the same third note through a same-named, non-inherited key).
   const staleForNewKey = new Set(
-    oldParent === null ? [] : [oldParent, ...oldContribOf(ctx, oldParent, rule.property)],
+    oldParent === null
+      ? []
+      : [
+          oldParent,
+          ...(schema.inherit.includes(rule.property)
+            ? oldContribOf(ctx, oldParent, rule.property)
+            : []),
+        ],
   );
   const edgeWrites = buildEdgeWrites(schema, {
     snapshot,

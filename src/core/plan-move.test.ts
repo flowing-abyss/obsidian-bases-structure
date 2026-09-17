@@ -390,6 +390,107 @@ describe('planAction — move: round 2 C1 — remove only what the action invali
     expect(after.notes.get('child.md')?.frontmatter['category']).toStrictEqual(['[[cat1]]']);
     expect(after.notes.get('child.md')?.propertyLinks['category']).toStrictEqual(['cat1.md']);
   });
+
+  it("round 3: a non-inherited edge key only removes the old parent itself, never the old parent's own (unrelated) value for that same property name", () => {
+    // "area" is N's edge key here but isn't in `schema.inherit` — O's own "area" value is
+    // coincidental, unrelated data (O is the untyped host, so it's a structure node at all only by
+    // virtue of being host; its own "area" property has no structural meaning). N's edge to O is
+    // via "[[O]]"; "Ref" is a second, independent value N happens to also hold in the same
+    // property, which is *also* one of O's own (unrelated) area values — round 2's oldContribOf
+    // wrongly folded O's own contribution into the removal set regardless of whether "area" was an
+    // inherit key, deleting Ref even though O never actually contributed it to N.
+    const schema = schemaFrom({
+      types: {
+        AreaT: { tag: 'area-tag', children: { NT: 'area' } },
+        NT: { tag: 'nt' },
+      },
+    });
+    const snap = snapshot(
+      [
+        note('AreaX.md'),
+        note('Ref.md'),
+        note('O.md', {
+          propertyLinks: { area: ['AreaX.md', 'Ref.md'] },
+          frontmatter: { area: ['[[AreaX]]', '[[Ref]]'] },
+        }),
+        note('AreaY.md', { tags: ['area-tag'] }),
+        note('N.md', {
+          tags: ['nt'],
+          propertyLinks: { area: ['O.md', 'Ref.md'] },
+          frontmatter: { area: ['[[O]]', '[[Ref]]'] },
+        }),
+      ],
+      { host: 'O.md' },
+    );
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'N.md', parent: 'AreaY.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'N.md',
+        writes: [
+          {
+            key: 'area',
+            value: { kind: 'links', remove: ['O.md'], add: ['AreaY.md'], list: true },
+          },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('N.md')?.frontmatter['area']).toStrictEqual(['[[AreaY]]', '[[Ref]]']);
+  });
+
+  it('round 3: an untyped host’s own value for a non-inherited edge key never leaks into the moved node’s removal set', () => {
+    // The reviewer's exact second probe: an untyped host MOC with its own (unrelated) "up: [[Home]]",
+    // and a task whose own "up" holds both MOC (its real parent) and Home (its own, independent
+    // value, coincidentally identical to MOC's). Moving the task must drop only MOC.
+    const schema = schemaFrom({
+      types: {
+        ProjT: { tag: 'proj', children: { TaskT: 'up' } },
+        TaskT: { tag: 'task' },
+      },
+    });
+    const snap = snapshot(
+      [
+        note('Home.md'),
+        note('MOC.md', { propertyLinks: { up: ['Home.md'] }, frontmatter: { up: '[[Home]]' } }),
+        note('Proj.md', { tags: ['proj'] }),
+        note('task.md', {
+          tags: ['task'],
+          propertyLinks: { up: ['MOC.md', 'Home.md'] },
+          frontmatter: { up: ['[[MOC]]', '[[Home]]'] },
+        }),
+      ],
+      { host: 'MOC.md' },
+    );
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'task.md', parent: 'Proj.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'task.md',
+        writes: [
+          { key: 'up', value: { kind: 'links', remove: ['MOC.md'], add: ['Proj.md'], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('task.md')?.frontmatter['up']).toStrictEqual(['[[Proj]]', '[[Home]]']);
+  });
 });
 
 describe('moveTargets', () => {
