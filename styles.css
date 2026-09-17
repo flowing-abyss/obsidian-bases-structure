@@ -22,7 +22,18 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   --bases-structure-icon-size: 16px;
 }
 
-.bases-structure-icon {
+/* U4: sizing rules target `.svg-icon` — the class Obsidian's own `setIcon` itself puts on the
+   `<svg>` — through a selector specific enough (three plugin-scoped classes deep) to beat
+   Obsidian's own global `.svg-icon` rule without `!important`. A plain `.bases-structure-icon`
+   selector (equal or lower specificity than Obsidian's) used to lose that fight outright, leaving
+   every icon in the view at Obsidian's global 18px instead of this view's own size — the
+   misalignment reported as "icons look crooked" (toggle/add/toolbar/chip icons all sized/centred
+   differently from their 20px or 16px button box). Each icon-bearing element gets its own line so
+   a future one only has to add itself here, not re-derive the specificity trick. */
+.bases-structure .bases-structure-toggle .svg-icon,
+.bases-structure .bases-structure-add .svg-icon,
+.bases-structure .bases-structure-toolbar-btn .svg-icon,
+.bases-structure .bases-structure-alsoin-icon .svg-icon {
   width: var(--bases-structure-icon-size);
   height: var(--bases-structure-icon-size);
 }
