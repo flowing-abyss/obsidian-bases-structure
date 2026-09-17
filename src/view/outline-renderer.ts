@@ -20,15 +20,20 @@ import {
   type SuperchargedWatch,
 } from '../obsidian/supercharged-links.js';
 import { setSizedIcon } from './icon.js';
-import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
+import type {
+  MutableNodeElementContext,
+  NodeElementContext,
+  NodeElementFlags,
+} from './node-element.js';
 import {
   applyActiveNode,
   attachNodeInteractions,
   cloneNodeElementContext,
   collectTitleElements,
   createNodeElement,
-  findNodeElement,
   focusActiveNode,
+  refreshSuperchargedLinkAttributes,
+  updateNodeElement,
 } from './node-element.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
 
@@ -53,8 +58,13 @@ interface RenderCtx {
   readonly nodeCtx: MutableNodeElementContext;
   readonly seen: Set<string>;
   /** D1 follow-up: the previous render's title elements, keyed by path — see
-   * `carryOverSuperchargedLinkState`'s own doc comment (`node-element.ts`). */
+   * `carryOverSuperchargedLinkState`'s own doc comment (`node-element.ts`). Only consulted for a
+   * path with no entry in `elementsByPath` yet, i.e. one being created fresh this render. */
   readonly previousTitles: ReadonlyMap<string, HTMLElement>;
+  /** Persists across `update()` calls (perf task) — see `GraphRenderer`'s identical field for
+   * why. Owned by the renderer instance; threaded through here since rendering is a set of free
+   * functions, not methods. */
+  readonly elementsByPath: Map<string, HTMLElement>;
 }
 
 /** Same button, same classes/attrs and same icon choice as the graph's own `addToggle` — only
@@ -84,6 +94,32 @@ function addToggleSpacer(el: HTMLElement): void {
   el.prepend(spacer);
 }
 
+/** Keeps `el`'s toggle/spacer in sync with its current child count and collapsed state. Patches
+ * an existing toggle in place rather than replacing it: a toggle click bubbles past this same
+ * call (`handleToggleClick` re-renders before the click reaches `attachKeyboard`'s listener
+ * further up), and a `.remove()`'d button detaches from its parent — `event.target.closest(...)`
+ * on a now-parentless node can no longer find the node div at all, silently dropping the
+ * click-also-selects-the-node behaviour. Only swaps toggle↔spacer, or creates either from
+ * nothing, when the child count itself crosses zero. */
+function applyToggle(el: HTMLElement, node: StructureNode, collapsed: boolean): void {
+  const toggle = el.querySelector<HTMLElement>(TOGGLE_SELECTOR);
+  const spacer = el.querySelector<HTMLElement>('.bases-structure-toggle-spacer');
+  if (node.children.length === 0) {
+    toggle?.remove();
+    if (spacer === null) {
+      addToggleSpacer(el);
+    }
+    return;
+  }
+  spacer?.remove();
+  if (toggle === null) {
+    addToggle(el, collapsed);
+    return;
+  }
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  setSizedIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
+}
+
 /** I8: only the outline marks a two-way edge on the node itself — the graph already draws it as
  * an arrowed-both-ways SVG edge (see `graph-renderer.ts`'s `TREE_ARROW_MARKER_URL`), which the
  * outline has no equivalent of (no edges at all). A small icon right before the title, not
@@ -97,6 +133,13 @@ function addTwoWayMarker(el: HTMLElement, node: StructureNode): void {
   const icon = el.createSpan({ cls: 'bases-structure-two-way-icon' });
   setSizedIcon(icon, 'arrow-left-right');
   title?.before(icon);
+}
+
+/** Keeps the two-way icon in sync with `node.twoWay` for a reused row — drop-then-conditionally-
+ * readd, the same idempotent shape as `applyToggle`/`updateAlsoIn` (`node-element.ts`). */
+function applyTwoWayMarker(el: HTMLElement, node: StructureNode): void {
+  el.querySelector('.bases-structure-two-way-icon')?.remove();
+  addTwoWayMarker(el, node);
 }
 
 /** I8: the outline's only way to show a node's *extra* parents (candidates the planner found but
@@ -124,9 +167,66 @@ function addExtrasChip(
   chip.createSpan({ text: label });
 }
 
+/** Keeps the extras chip in sync with a reused row's current `node.extras` — same
+ * drop-then-readd shape as `applyTwoWayMarker`. */
+function applyExtrasChip(
+  el: HTMLElement,
+  nodeCtx: MutableNodeElementContext,
+  node: StructureNode,
+): void {
+  el.querySelector('.bases-structure-extras')?.remove();
+  addExtrasChip(el, nodeCtx, node);
+}
+
+/** A freshly created row for `path` — never called for a path `ctx.elementsByPath` already has
+ * (see `reconcileNode`). */
+function createFreshNode(
+  path: string,
+  node: StructureNode,
+  ctx: RenderCtx,
+  flags: NodeElementFlags,
+): HTMLElement {
+  const previousTitle = ctx.previousTitles.get(path);
+  return createNodeElement(ctx.nodeCtx, node, {
+    ...flags,
+    ...(previousTitle !== undefined ? { previousTitle } : {}),
+  });
+}
+
+/** Reuse-or-create `path`'s own `.bases-structure-node` (perf task) and refresh every bit that
+ * depends on this render's data — `updateNodeElement`'s core fields plus the outline's own
+ * two-way icon/extras chip/toggle, all idempotent whether the row is fresh or reused. Does *not*
+ * place the returned element into the DOM — `renderNode` does that (`li.appendChild`, which moves
+ * a reused element rather than re-adding it). */
+function reconcileNode(
+  path: string,
+  node: StructureNode,
+  ctx: RenderCtx,
+  isOrphanTop: boolean,
+): HTMLElement {
+  const flags: NodeElementFlags = {
+    isRoot: path === ctx.input.structure.root,
+    isOrphan: isOrphanTop,
+    isNew: path === ctx.input.focusPath,
+  };
+  const existing = ctx.elementsByPath.get(path);
+  const el = existing ?? createFreshNode(path, node, ctx, flags);
+  if (existing !== undefined) {
+    updateNodeElement(el, ctx.nodeCtx, node, flags);
+    refreshSuperchargedLinkAttributes(el, ctx.nodeCtx.app, path);
+  }
+  applyTwoWayMarker(el, node);
+  applyExtrasChip(el, ctx.nodeCtx, node);
+  applyToggle(el, node, ctx.input.state.collapsed.has(path));
+  ctx.elementsByPath.set(path, el);
+  return el;
+}
+
 /** Builds one `<li>` (node + optional nested child list) into `ul` and recurses depth-first in
  * `children` order. `ctx.seen` is a defensive cycle guard — `structure.ts` already guarantees an
- * acyclic primary-parent tree, but this renderer doesn't trust that blindly. */
+ * acyclic primary-parent tree, but this renderer doesn't trust that blindly. The `ul`/`li`
+ * skeleton itself is rebuilt fresh every render; only the node element is reused
+ * (`li.appendChild` moves it out of its old, about-to-be-discarded `li`). */
 function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx, isOrphanTop = false): void {
   if (ctx.seen.has(path)) {
     return;
@@ -137,24 +237,9 @@ function renderNode(ul: HTMLElement, path: string, ctx: RenderCtx, isOrphanTop =
     return;
   }
   const li = ul.createEl('li', { cls: ITEM_CLASS });
-  const previousTitle = ctx.previousTitles.get(path);
-  const nodeEl = createNodeElement(ctx.nodeCtx, node, {
-    isRoot: path === ctx.input.structure.root,
-    isOrphan: isOrphanTop,
-    ...(previousTitle !== undefined ? { previousTitle } : {}),
-  });
-  addTwoWayMarker(nodeEl, node);
-  addExtrasChip(nodeEl, ctx.nodeCtx, node);
-  const collapsed = ctx.input.state.collapsed.has(path);
-  if (node.children.length > 0) {
-    addToggle(nodeEl, collapsed);
-  } else {
-    addToggleSpacer(nodeEl);
-  }
-  if (path === ctx.input.focusPath) {
-    nodeEl.classList.add('is-new');
-  }
+  const nodeEl = reconcileNode(path, node, ctx, isOrphanTop);
   li.appendChild(nodeEl);
+  const collapsed = ctx.input.state.collapsed.has(path);
   if (node.children.length > 0 && !collapsed) {
     renderChildren(li, node.children, ctx);
   }
@@ -200,6 +285,9 @@ export class OutlineRenderer implements StructureRenderer {
   // it `null`.
   private lastActivePath: string | null = null;
   private hasRenderedOnce = false;
+  // Persists across `update()` calls (perf task) — mirrors `GraphRenderer`'s identical field, see
+  // its doc comment. `getNodeElement` reads straight from this map.
+  private readonly elementsByPath = new Map<string, HTMLElement>();
 
   constructor(
     containerEl: HTMLElement,
@@ -268,18 +356,26 @@ export class OutlineRenderer implements StructureRenderer {
     this.lastInput = input;
     this.nodeCtx.snapshot = input.snapshot;
     this.nodeCtx.sourcePath = input.snapshot.host ?? '';
-    // D1 follow-up: snapshotted *before* the old list is removed below — see
-    // `carryOverSuperchargedLinkState`'s own doc comment (`node-element.ts`).
+    // D1 follow-up: snapshotted before anything below could touch the DOM — see
+    // `carryOverSuperchargedLinkState`'s own doc comment (`node-element.ts`). Only ever consulted
+    // for a path with no entry in `elementsByPath` yet.
     const previousTitles = collectTitleElements(this.outlineEl);
     this.listEl?.remove();
     this.listEl = null;
 
-    const ctx: RenderCtx = { input, nodeCtx: this.nodeCtx, seen: new Set(), previousTitles };
+    const ctx: RenderCtx = {
+      input,
+      nodeCtx: this.nodeCtx,
+      seen: new Set(),
+      previousTitles,
+      elementsByPath: this.elementsByPath,
+    };
     const listEl = this.outlineEl.createEl('ul', { cls: LIST_CLASS });
     for (const path of input.structure.tops) {
       renderNode(listEl, path, ctx);
     }
     renderOrphans(listEl, ctx);
+    this.pruneGoneElements(ctx.seen);
 
     if (listEl.childElementCount === 0) {
       listEl.remove();
@@ -292,11 +388,28 @@ export class OutlineRenderer implements StructureRenderer {
     this.applyActiveState(input.state.active, hadFocus);
   }
 
+  /** Drops whatever `elementsByPath` still holds for a path `renderNode` didn't visit this render
+   * — gone entirely, or hidden behind a just-collapsed ancestor (`renderNode` never recurses into
+   * a collapsed node's children, so they're never in `seen` either), matching this renderer's own
+   * long-standing behaviour (a re-expand always builds it fresh). The element itself needs no
+   * explicit removal: it only survives in the old, already-detached `ul` this render replaced
+   * (see `update()`'s own `this.listEl?.remove()`), which is discarded the moment nothing
+   * references it any more. */
+  private pruneGoneElements(seen: ReadonlySet<string>): void {
+    for (const path of Array.from(this.elementsByPath.keys())) {
+      if (!seen.has(path)) {
+        this.elementsByPath.delete(path);
+      }
+    }
+  }
+
   /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) — see
-   * the graph renderer's identical method for why (node elements are rebuilt wholesale above) and
-   * why focus/scroll follow either an actual change *or* `hadFocus` (captured in `update()` before
-   * the rebuild) — the latter is what keeps a collapse/expand refresh (same active path, but every
-   * node element replaced) from silently dropping real focus to `document.body`. */
+   * the graph renderer's identical method for why (`is-active`/tabindex live outside
+   * `NodeElementFlags`, so a reused element doesn't carry them forward on its own) and why
+   * focus/scroll follow either an actual change *or* `hadFocus` (captured in `update()` before
+   * anything else runs) — the latter is what keeps a collapse/expand refresh from silently
+   * dropping real focus to `document.body` on the rare render where the active node's own element
+   * *is* replaced (it was inside the collapsed/expanded subtree). */
   private applyActiveState(active: string | null, hadFocus: boolean): void {
     const activeEl = applyActiveNode(this.outlineEl, active);
     if (activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
@@ -306,7 +419,7 @@ export class OutlineRenderer implements StructureRenderer {
   }
 
   getNodeElement(path: string): HTMLElement | null {
-    return findNodeElement(this.outlineEl, path);
+    return this.elementsByPath.get(path) ?? null;
   }
 
   destroy(): void {
@@ -315,6 +428,7 @@ export class OutlineRenderer implements StructureRenderer {
     this.containerEl.removeEventListener('scroll', this.handleScroll);
     this.disposeInteractions();
     this.containerEl.empty();
+    this.elementsByPath.clear();
   }
 
   /** Delegated toggle click, mirroring the graph's `handleNodesClick`: flip `state.collapsed` for

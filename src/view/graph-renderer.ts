@@ -2,8 +2,11 @@
 // `layoutTree`), edges as SVG (cubic beziers between node borders — no group frames, no arrows on
 // a plain tree edge, direction is implied by the left-to-right layout), a zoom/fit toolbar and
 // collapse toggles.
-// The DOM is built once in the constructor and reused across `update()` calls; only the nodes
-// layer and the SVG's dynamic content (everything after `<defs>`) are rebuilt each time.
+// The DOM is built once in the constructor and reused across `update()` calls. The nodes layer
+// itself is reconciled, not rebuilt (perf task): a node that stays keeps its own element — same
+// title instance, so Supercharged Links state on it survives — only ones that appear or disappear
+// are created or removed. The SVG's dynamic content (everything after `<defs>`) is still rebuilt
+// each time.
 
 import type { Box, LayoutOptions, LayoutResult, Size } from '../core/layout.js';
 import {
@@ -22,15 +25,20 @@ import {
 import type { EdgeLabelChild } from './edges.js';
 import { edgeAnchors, edgePath, planEdgeLabels } from './edges.js';
 import { setSizedIcon } from './icon.js';
-import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
+import type {
+  MutableNodeElementContext,
+  NodeElementContext,
+  NodeElementFlags,
+} from './node-element.js';
 import {
   applyActiveNode,
   attachNodeInteractions,
   cloneNodeElementContext,
   collectTitleElements,
   createNodeElement,
-  findNodeElement,
   focusActiveNode,
+  refreshSuperchargedLinkAttributes,
+  updateNodeElement,
 } from './node-element.js';
 import { attachPan } from './pan.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
@@ -328,6 +336,11 @@ export class GraphRenderer implements StructureRenderer {
   // focus/scroll nobody asked for on that render.
   private lastActivePath: string | null = null;
   private hasRenderedOnce = false;
+  // Persists across `update()` calls (perf task): a node that stays reuses its element — same
+  // title instance, so Supercharged Links state on it survives — instead of every render
+  // destroying and rebuilding all of them. `getNodeElement` reads straight from this map, which
+  // only ever holds entries for paths currently in the DOM (see `pruneGoneElements`/`showEmpty`).
+  private readonly elementsByPath = new Map<string, HTMLElement>();
 
   constructor(container: HTMLElement, ctx: NodeElementContext, options: GraphRendererOptions = {}) {
     this.container = container;
@@ -408,11 +421,11 @@ export class GraphRenderer implements StructureRenderer {
   }
 
   update(input: RenderInput): void {
-    // Captured before anything below rebuilds `nodesEl`'s children (destroying whatever real DOM
-    // focus was on): a full rebuild always replaces the active node's own element, even when its
-    // `data-path` is unchanged (e.g. a collapse/expand `refresh()`) — without this, focus would
-    // silently fall back to `document.body`, and the next real keydown would never reach the
-    // container's delegated listener again (see `applyActiveState`).
+    // Captured before anything below touches `nodesEl`'s children: a node that persists reuses
+    // its element (perf task), but the active node can still lose its element outright — first
+    // render, or one that was hidden by collapse and only just reappeared — without this, focus
+    // would silently fall back to `document.body`, and the next real keydown would never reach
+    // the container's delegated listener again (see `applyActiveState`).
     // M3: `this.container.doc` (its own owner document — a pop-out window's, when the view is
     // open in one), not the global `document`, which would never match focus genuinely inside a
     // pop-out and so never re-focus a rebuilt node there.
@@ -456,15 +469,17 @@ export class GraphRenderer implements StructureRenderer {
     this.applyActiveState(input.state.active, hadFocus);
   }
 
-  /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) — the
-   * node elements themselves are rebuilt wholesale above, so nothing here can just persist a
-   * class from before. Moves real focus/scroll when `active` actually changed since the last
-   * render (tracked via `lastActivePath`) *or* when focus was already inside the graph before
-   * this render (`hadFocus`, captured in `update()` before the rebuild) — the latter is what keeps
-   * a collapse/expand refresh (same active path, but every node element replaced) from silently
-   * dropping real focus to `document.body`. Without `hadFocus`, an unrelated re-render (e.g. a
-   * create commit while the user's focus is on some other element entirely, like a draft input)
-   * still won't steal focus back, since `hadFocus` is only true when focus genuinely was here. */
+  /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) —
+   * `is-active`/tabindex live outside `NodeElementFlags`, so nothing here can just persist a
+   * class from before even though the element itself usually does now (perf task). Moves real
+   * focus/scroll when `active` actually changed since the last render (tracked via
+   * `lastActivePath`) *or* when focus was already inside the graph before this render (`hadFocus`,
+   * captured in `update()` before anything else runs) — the latter is what keeps a collapse/expand
+   * refresh from silently dropping real focus to `document.body` on the rare render where the
+   * active node's own element *is* replaced (it was inside the collapsed/expanded subtree).
+   * Without `hadFocus`, an unrelated re-render (e.g. a create commit while the user's focus is on
+   * some other element entirely, like a draft input) still won't steal focus back, since
+   * `hadFocus` is only true when focus genuinely was here. */
   private applyActiveState(active: string | null, hadFocus: boolean): void {
     const activeEl = applyActiveNode(this.nodesEl, active);
     if (activeEl !== null && (hadFocus || active !== this.lastActivePath)) {
@@ -474,7 +489,7 @@ export class GraphRenderer implements StructureRenderer {
   }
 
   getNodeElement(path: string): HTMLElement | null {
-    return findNodeElement(this.nodesEl, path);
+    return this.elementsByPath.get(path) ?? null;
   }
 
   destroy(): void {
@@ -490,36 +505,89 @@ export class GraphRenderer implements StructureRenderer {
     this.graphEl.removeEventListener('wheel', this.handleWheel);
     this.graphEl.removeEventListener('scroll', this.handleScroll);
     this.container.empty();
+    this.elementsByPath.clear();
   }
 
+  /** Reuse-or-create per visible entry (perf task), then drop whatever `elementsByPath` still
+   * holds for a path that isn't visible any more — a node hidden behind a just-collapsed ancestor
+   * is torn down exactly like a genuinely deleted one, matching this renderer's own long-standing
+   * behaviour (a re-expand always builds it fresh). */
   private buildNodeElements(
     entries: readonly VisibleEntry[],
     collapsed: ReadonlySet<string>,
     focusPath: string | undefined,
   ): Map<string, HTMLElement> {
-    // D1 follow-up: snapshotted *before* `empty()` below destroys them — see
-    // `carryOverSuperchargedLinkState`'s own doc comment for why a rebuilt node needs its
-    // predecessor's title element at all.
+    // D1 follow-up: snapshotted before anything below could touch the DOM — see
+    // `carryOverSuperchargedLinkState`'s own doc comment. Only ever consulted for a path with no
+    // entry in `elementsByPath` yet, i.e. one being created fresh this render.
     const previousTitles = collectTitleElements(this.nodesEl);
-    this.nodesEl.empty();
-    const elements = new Map<string, HTMLElement>();
+    const seen = new Set<string>();
     for (const entry of entries) {
-      const previousTitle = previousTitles.get(entry.path);
-      const el = createNodeElement(this.ctx, entry.node, {
-        isRoot: entry.isRoot,
-        isOrphan: entry.isOrphan,
-        ...(previousTitle !== undefined ? { previousTitle } : {}),
-      });
-      if (entry.node.children.length > 0) {
-        this.addToggle(el, collapsed.has(entry.path));
-      }
-      if (entry.path === focusPath) {
-        el.classList.add('is-new');
-      }
-      this.nodesEl.appendChild(el);
-      elements.set(entry.path, el);
+      seen.add(entry.path);
+      this.reconcileNodeElement(entry, collapsed, focusPath, previousTitles);
     }
-    return elements;
+    this.pruneGoneElements(seen);
+    return this.elementsByPath;
+  }
+
+  private reconcileNodeElement(
+    entry: VisibleEntry,
+    collapsed: ReadonlySet<string>,
+    focusPath: string | undefined,
+    previousTitles: ReadonlyMap<string, HTMLElement>,
+  ): void {
+    const flags: NodeElementFlags = {
+      isRoot: entry.isRoot,
+      isOrphan: entry.isOrphan,
+      isNew: entry.path === focusPath,
+    };
+    const existing = this.elementsByPath.get(entry.path);
+    if (existing !== undefined) {
+      updateNodeElement(existing, this.ctx, entry.node, flags);
+      refreshSuperchargedLinkAttributes(existing, this.ctx.app, entry.path);
+      this.syncToggle(existing, entry.node, collapsed.has(entry.path));
+      return;
+    }
+    const previousTitle = previousTitles.get(entry.path);
+    const el = createNodeElement(this.ctx, entry.node, {
+      ...flags,
+      ...(previousTitle !== undefined ? { previousTitle } : {}),
+    });
+    if (entry.node.children.length > 0) {
+      this.addToggle(el, collapsed.has(entry.path));
+    }
+    this.nodesEl.appendChild(el);
+    this.elementsByPath.set(entry.path, el);
+  }
+
+  /** Keeps an existing node's toggle in sync with its current child count/collapsed state.
+   * Patches an existing toggle in place rather than replacing it: a toggle click's own delegated
+   * handler (`handleNodesClick`) re-renders before the click bubbles further to `attachKeyboard`'s
+   * listener on `bodyEl` — a `.remove()`'d button detaches from its parent, so `event.target`
+   * would no longer have an ancestor `closest(NODE_SELECTOR)` could find, silently dropping the
+   * click-also-selects-the-node behaviour (see `outline-renderer.ts`'s identical `applyToggle`,
+   * where this was actually caught). Only replaced when the child count itself crosses zero. */
+  private syncToggle(el: HTMLElement, node: StructureNode, collapsed: boolean): void {
+    const toggle = el.querySelector<HTMLElement>(':scope > .bases-structure-toggle');
+    if (node.children.length === 0) {
+      toggle?.remove();
+      return;
+    }
+    if (toggle === null) {
+      this.addToggle(el, collapsed);
+      return;
+    }
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    setSizedIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
+  }
+
+  private pruneGoneElements(seen: ReadonlySet<string>): void {
+    for (const [path, el] of Array.from(this.elementsByPath.entries())) {
+      if (!seen.has(path)) {
+        el.remove();
+        this.elementsByPath.delete(path);
+      }
+    }
   }
 
   private addToggle(el: HTMLElement, collapsed: boolean): void {
@@ -847,6 +915,7 @@ export class GraphRenderer implements StructureRenderer {
     // the graph's own `overflow: auto` to still report while nothing is actually shown.
     this.wrapEl.addClass('is-hidden');
     this.nodesEl.empty();
+    this.elementsByPath.clear();
     this.labelsEl.empty();
   }
 

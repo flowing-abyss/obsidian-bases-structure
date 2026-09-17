@@ -2,7 +2,7 @@ import { App, Component } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import { parseSchema } from '../core/schema.js';
-import type { Structure } from '../core/structure.js';
+import type { Structure, StructureNode } from '../core/structure.js';
 import { buildStructure } from '../core/structure.js';
 import * as superchargedLinksModule from '../obsidian/supercharged-links.js';
 import type { NodeElementContext } from './node-element.js';
@@ -746,10 +746,11 @@ describe('OutlineRenderer', () => {
     expect(document.activeElement).toBe(rootEl);
   });
 
-  it('re-focuses the rebuilt active node on a same-active-path re-render when focus was already inside', () => {
-    // See the graph renderer's identical test for why: every `update()` rebuilds the node
-    // elements from scratch (destroying whatever had real focus), even for a collapse/expand
-    // refresh where `state.active` itself doesn't change.
+  it('keeps real focus on the active node across a same-active-path re-render when focus was already inside', () => {
+    // See the graph renderer's identical test for why: node elements are reused across
+    // `update()` now (perf task), so `childEl` never actually loses real focus here — but
+    // `applyActiveState` still has to *ask* to focus it again (via `hadFocus`) on every render
+    // regardless, for whichever node a render *does* have to replace.
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot(
       [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
@@ -769,9 +770,9 @@ describe('OutlineRenderer', () => {
 
     renderer.update({ schema, snapshot: snap, structure, state });
 
-    const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
-    expect(rebuiltChildEl).not.toBe(childEl);
-    expect(document.activeElement).toBe(rebuiltChildEl);
+    const sameChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    expect(sameChildEl).toBe(childEl);
+    expect(document.activeElement).toBe(sameChildEl);
   });
 
   it('does not steal focus on a same-active-path re-render when focus was elsewhere', () => {
@@ -905,9 +906,11 @@ describe('OutlineRenderer', () => {
 
       renderer.update({ schema, snapshot: snap, structure, state }); // Same path: only hadFocus can trigger refocus.
 
-      const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
-      expect(rebuiltChildEl).not.toBe(childEl);
-      expect(otherDoc.activeElement).toBe(rebuiltChildEl);
+      // `childEl` is reused now (perf task) and never actually lost focus — this still guards
+      // `hadFocus` reading the right document for whichever node a render *does* have to replace.
+      const sameChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+      expect(sameChildEl).toBe(childEl);
+      expect(otherDoc.activeElement).toBe(sameChildEl);
     });
   });
 
@@ -1016,9 +1019,11 @@ describe('OutlineRenderer', () => {
 
       renderer.update({ schema, snapshot: snap, structure, state });
 
-      const rebuiltTitle = container.querySelector('[data-path="root.md"] .bases-structure-title');
-      expect(rebuiltTitle).not.toBe(title);
-      expect(rebuiltTitle?.getAttribute('data-link-related')).toBe('x y');
+      // Node elements are reused across updates now (perf task): the title is the *same*
+      // instance, so the attribute simply survives — nothing has to copy it onto a replacement.
+      const sameTitle = container.querySelector('[data-path="root.md"] .bases-structure-title');
+      expect(sameTitle).toBe(title);
+      expect(sameTitle?.getAttribute('data-link-related')).toBe('x y');
     });
 
     it('drops a data-link-* attribute and its CSS variable once its frontmatter key is removed', () => {
@@ -1134,5 +1139,199 @@ describe('OutlineRenderer', () => {
 
       expect(hookSpy).not.toHaveBeenCalled();
     });
+  });
+});
+
+/** Builds a `Structure` directly (no `buildStructure`/schema round-trip) so a test can control
+ * exactly which paths are tops and which are whose children between two `update()` calls —
+ * `node.parent` is left `null` throughout since `outline-renderer.ts` never reads it (only
+ * `children` drives its depth-first traversal). */
+function outlineStructure(
+  tops: readonly string[],
+  childrenByPath: Record<string, readonly string[]> = {},
+): Structure {
+  const paths = new Set<string>(tops);
+  for (const [path, children] of Object.entries(childrenByPath)) {
+    paths.add(path);
+    for (const child of children) {
+      paths.add(child);
+    }
+  }
+  const nodes = new Map<string, StructureNode>();
+  for (const path of paths) {
+    nodes.set(path, {
+      path,
+      type: null,
+      parent: null,
+      edge: null,
+      children: childrenByPath[path] ?? [],
+      extras: [],
+      alsoIn: [],
+      twoWay: false,
+    });
+  }
+  return { root: tops[0] ?? null, tops, orphans: [], nodes, issues: [] };
+}
+
+/** The `<ul>` directly nesting `path`'s own children, or `undefined` if `path` isn't currently
+ * rendered — split out from the nesting-order test below purely to stay under this project's
+ * `complexity` budget (each optional-chain step counts against it). */
+function childListOf(renderer: OutlineRenderer, path: string): Element | null | undefined {
+  return renderer.getNodeElement(path)?.closest('li')?.querySelector(':scope > ul');
+}
+
+describe('OutlineRenderer — reconciling node elements instead of rebuilding them', () => {
+  it('reuses node elements across updates', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md'), note('b.md'), note('c.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-reconcile-reuse');
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md', 'b.md']),
+      state,
+    });
+    const first = renderer.getNodeElement('a.md');
+
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md', 'b.md', 'c.md']),
+      state,
+    });
+
+    expect(renderer.getNodeElement('a.md')).toBe(first);
+    expect(renderer.getNodeElement('c.md')).not.toBeNull();
+  });
+
+  it('drops elements for nodes that are gone', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md'), note('b.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-reconcile-drop');
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md', 'b.md']),
+      state,
+    });
+
+    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+
+    expect(renderer.getNodeElement('b.md')).toBeNull();
+    expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(1);
+  });
+
+  it('keeps nesting in sync with structure after a reconcile that moves a node to a different parent', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('root.md'), note('a.md'), note('b.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-reconcile-move');
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['root.md'], { 'root.md': ['a.md', 'b.md'] }),
+      state,
+    });
+    const rootListBefore = childListOf(renderer, 'root.md');
+    expect(rootListBefore?.contains(renderer.getNodeElement('a.md'))).toBe(true);
+
+    // `a.md` moves from being a direct child of `root.md` to being `b.md`'s child instead.
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['root.md'], { 'root.md': ['b.md'], 'b.md': ['a.md'] }),
+      state,
+    });
+
+    const aEl = renderer.getNodeElement('a.md');
+    const bList = childListOf(renderer, 'b.md');
+    const rootListAfter = childListOf(renderer, 'root.md');
+    // `a.md`'s own `<li>` sits directly inside `b.md`'s list now, not root's — `contains()` alone
+    // can't tell "direct child" from "nested several levels down", so this checks the immediate
+    // parent instead.
+    expect(aEl?.closest('li')?.parentElement).toBe(bList);
+    expect(rootListAfter?.children).toHaveLength(1);
+  });
+
+  it('clears is-new on a later render once focusPath no longer names the node (I7)', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-reconcile-is-new');
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md']),
+      state,
+      focusPath: 'a.md',
+    });
+    expect(renderer.getNodeElement('a.md')?.classList.contains('is-new')).toBe(true);
+
+    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+
+    expect(renderer.getNodeElement('a.md')?.classList.contains('is-new')).toBe(false);
+  });
+
+  it('adds a toggle to a reused node once it gains children, and restores the spacer once they are gone', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md'), note('b.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-reconcile-toggle');
+    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+    expect(renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle')).toBeNull();
+    expect(
+      renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle-spacer'),
+    ).not.toBeNull();
+
+    renderer.update({
+      schema,
+      snapshot: snap,
+      structure: outlineStructure(['a.md'], { 'a.md': ['b.md'] }),
+      state,
+    });
+    expect(
+      renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle'),
+    ).not.toBeNull();
+    expect(
+      renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle-spacer'),
+    ).toBeNull();
+
+    renderer.update({ schema, snapshot: snap, structure: outlineStructure(['a.md']), state });
+    expect(renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle')).toBeNull();
+    expect(
+      renderer.getNodeElement('a.md')?.querySelector('.bases-structure-toggle-spacer'),
+    ).not.toBeNull();
+  });
+
+  it('adds/removes the two-way icon on a reused node as node.twoWay changes', () => {
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot([note('a.md')]);
+    const container = createDiv();
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-reconcile-twoway');
+    const notTwoWay = outlineStructure(['a.md']);
+    renderer.update({ schema, snapshot: snap, structure: notTwoWay, state });
+    expect(
+      renderer.getNodeElement('a.md')?.querySelector('.bases-structure-two-way-icon'),
+    ).toBeNull();
+
+    const baseNode = notTwoWay.nodes.get('a.md');
+    if (baseNode === undefined) throw new Error('Test setup error: missing a.md node');
+    const twoWayStructure: Structure = {
+      ...notTwoWay,
+      nodes: new Map(notTwoWay.nodes).set('a.md', { ...baseNode, twoWay: true }),
+    };
+    renderer.update({ schema, snapshot: snap, structure: twoWayStructure, state });
+
+    expect(
+      renderer.getNodeElement('a.md')?.querySelector('.bases-structure-two-way-icon'),
+    ).not.toBeNull();
   });
 });

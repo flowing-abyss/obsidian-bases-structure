@@ -38,10 +38,14 @@ export interface NodeElementContext {
 export interface NodeElementFlags {
   readonly isRoot?: boolean;
   readonly isOrphan?: boolean;
+  /** The one render right after this node was created (I7) — a transient highlight, so
+   * `updateNodeElement` must actively clear it on every later render, not just add it once. */
+  readonly isNew?: boolean;
   /** The same path's title element from the render being replaced, if any — its `data-link-*`
    * attributes are carried forward where still backed by current state (see
    * `carryOverSuperchargedLinkState`); no classes are carried. `collectTitleElements` builds the
-   * map callers pass this from. */
+   * map callers pass this from. Only consulted for an element being created fresh: a reused
+   * element's own title is never replaced, so it has nothing to carry from. */
   readonly previousTitle?: HTMLElement;
 }
 
@@ -71,6 +75,7 @@ export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeEle
 
 const HOVER_SOURCE = 'bases-structure';
 const TITLE_SELECTOR = '.bases-structure-title';
+const ALSOIN_SELECTOR = '.bases-structure-alsoin';
 const ADD_SELECTOR = '[data-action="add"]';
 const MENU_SELECTOR = '[data-action="menu"]';
 const NODE_SELECTOR = '.bases-structure-node';
@@ -155,10 +160,11 @@ function carryOneSuperchargedLinkAttribute(
 
 /** Supercharged Links sets `data-link-<key>` for non-scalar frontmatter (e.g. tags) itself,
  * asynchronously, via its own `MutationObserver` — `applySuperchargedLinkAttributes` only ever
- * handles scalars. Both renderers rebuild every node every render, so without this, a value
- * Supercharged Links had already found would vanish on rebuild, and the `::after` icon some
+ * handles scalars. A genuinely new element still needs this: without it, a value Supercharged
+ * Links had already found on the node it replaces would vanish, and the `::after` icon some
  * `data-link-*` attributes add would appear after this node was already measured, wrapping onto a
- * second line for lack of room.
+ * second line for lack of room. A node that merely stays keeps its title outright (see
+ * `updateNodeElement`), so this never runs for one.
  *
  * Copies a `data-link-*` attribute (and its CSS variable) from `previousTitle` onto `titleEl` when
  * `titleEl` doesn't already carry that name (fresh frontmatter always wins) and
@@ -180,6 +186,44 @@ function carryOverSuperchargedLinkState(
   }
 }
 
+/** `data-path`/`data-type` — the two attributes that identify a node and never change identity
+ * across an update, only value (a `type` edit stays the same element). Shared by `createNodeElement`
+ * and `updateNodeElement`. */
+function applyNodeAttributes(el: HTMLElement, node: StructureNode): void {
+  el.setAttribute('data-path', node.path);
+  el.setAttribute('data-type', node.type ?? '');
+}
+
+/** `is-root`/`is-orphan`/`is-new` — every class that depends on `flags` rather than being fixed
+ * at creation (`bases-structure-node` itself). `toggle`, not `add`, so a reused element's classes
+ * actually track the current render instead of only ever accumulating (`is-new` in particular
+ * must be removable — see `NodeElementFlags.isNew`'s own doc comment). */
+function applyNodeClasses(el: HTMLElement, flags: NodeElementFlags): void {
+  el.classList.toggle('is-root', flags.isRoot === true);
+  el.classList.toggle('is-orphan', flags.isOrphan === true);
+  el.classList.toggle('is-new', flags.isNew === true);
+}
+
+/** The title's node-derived content — text and the path `attachNodeInteractions` reads clicks
+ * against. Never touches classes, `tabindex` or `data-link-*`: those are either fixed at creation
+ * or Supercharged Links' own state (see `refreshSuperchargedLinkAttributes`). */
+function updateTitleContent(
+  titleEl: HTMLElement,
+  ctx: NodeElementContext,
+  node: StructureNode,
+): void {
+  titleEl.textContent = displayName(ctx.snapshot, node.path);
+  titleEl.setAttribute('data-href', node.path);
+}
+
+/** Rebuilds the "also lives here" chip from scratch — cheap and holds no external state (unlike
+ * the title), so a stale chip is simply dropped and a current one appended in its place. A no-op
+ * append when `node.alsoIn` is empty (see `appendAlsoIn`). */
+function updateAlsoIn(el: HTMLElement, ctx: NodeElementContext, node: StructureNode): void {
+  el.querySelector(ALSOIN_SELECTOR)?.remove();
+  appendAlsoIn(el, ctx, node);
+}
+
 /** The node card: `div.bases-structure-node` (`data-path`, `data-type`, `is-root`/`is-orphan`)
  * containing the title link and, when present, the "also in" chip. */
 export function createNodeElement(
@@ -187,27 +231,19 @@ export function createNodeElement(
   node: StructureNode,
   flags: NodeElementFlags = {},
 ): HTMLElement {
-  const classes = ['bases-structure-node'];
-  if (flags.isRoot === true) {
-    classes.push('is-root');
-  }
-  if (flags.isOrphan === true) {
-    classes.push('is-orphan');
-  }
-  const el = createDiv({
-    cls: classes,
-    attr: { 'data-path': node.path, 'data-type': node.type ?? '' },
-  });
+  const el = createDiv({ cls: 'bases-structure-node' });
+  applyNodeAttributes(el, node);
+  applyNodeClasses(el, flags);
   const titleEl = el.createEl('a', {
     cls: 'internal-link bases-structure-title',
-    text: displayName(ctx.snapshot, node.path),
     // No real `href`: navigation is fully handled by `attachNodeInteractions` (via `data-href`).
     // `tabindex="-1"` (M10) keeps the title out of the regular Tab order — the node itself is
     // already the one Tab stop (`applyActiveNode`'s roving tabindex), and a separate stop for the
     // title inside it doubled every node's Tab count for no benefit (the title still opens on a
     // real click, and keyboard `Enter` on the active node already opens it — see `keyboard.ts`).
-    attr: { 'data-href': node.path, tabindex: '-1' },
+    attr: { tabindex: '-1' },
   });
+  updateTitleContent(titleEl, ctx, node);
   // D1: the same classes/attributes Supercharged Links styles a normal internal link with, so a
   // node's title reads exactly like a wikilink to the same note elsewhere in the vault — see
   // `src/obsidian/supercharged-links.ts`'s own doc comment for why this is a no-op without that
@@ -221,17 +257,53 @@ export function createNodeElement(
   return el;
 }
 
-/** Every `.bases-structure-node` under `root` whose `data-path` is `path` — a linear scan instead
- * of an attribute-selector query, since a note path can contain characters (quotes, brackets)
- * that would need escaping in a CSS selector. Backs both renderers' `getNodeElement`, which the
- * keyboard task anchors menus/drafts to. */
-export function findNodeElement(root: HTMLElement, path: string): HTMLElement | null {
-  for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
-    if (el.getAttribute('data-path') === path) {
-      return el;
+/** Refreshes an existing node element in place — the title element instance survives (so
+ * Supercharged Links' own state on it survives too), only its text/`data-href` are updated.
+ * Re-applies `data-path`/`data-type`, `is-root`/`is-orphan`/`is-new`, and the alsoIn chip. Never
+ * touches `data-link-*`: a reused title's Supercharged Links state is refreshed separately, by
+ * `refreshSuperchargedLinkAttributes` — kept apart so a caller that only wants the plain node data
+ * refreshed (e.g. this file's own tests) never has to reason about frontmatter/tag state too. */
+export function updateNodeElement(
+  el: HTMLElement,
+  ctx: NodeElementContext,
+  node: StructureNode,
+  flags: NodeElementFlags = {},
+): void {
+  applyNodeAttributes(el, node);
+  applyNodeClasses(el, flags);
+  const titleEl = el.querySelector<HTMLElement>(TITLE_SELECTOR);
+  if (titleEl !== null) {
+    updateTitleContent(titleEl, ctx, node);
+  }
+  updateAlsoIn(el, ctx, node);
+}
+
+/** Keeps a *reused* title's `data-link-*` state in sync with current frontmatter/tags — the
+ * refresh a persisting node's title now needs instead of the rebuild it used to get for free.
+ * Removes any `data-link-*` attribute (and its `--data-link-*` CSS variable)
+ * `isSuperchargedLinkAttributeStillTrue` no longer backs, then reapplies every current scalar
+ * frontmatter value via `applySuperchargedLinkAttributes` — together, the same two checks
+ * `carryOverSuperchargedLinkState` makes when building a fresh title, just read straight off the
+ * existing element instead of copied from a predecessor. Never touches classes or an attribute
+ * still backed by current state (e.g. a non-scalar value Supercharged Links' own observer set) —
+ * a no-op when `el` has no title at all. */
+export function refreshSuperchargedLinkAttributes(el: HTMLElement, app: App, path: string): void {
+  const titleEl = el.querySelector<HTMLElement>(TITLE_SELECTOR);
+  if (titleEl === null) {
+    return;
+  }
+  const current = readCurrentLinkState(app, path);
+  for (const attr of Array.from(titleEl.attributes)) {
+    if (!attr.name.startsWith('data-link-')) {
+      continue;
+    }
+    const key = attr.name.slice('data-link-'.length);
+    if (!isSuperchargedLinkAttributeStillTrue(key, current.frontmatter, current.hasAnyTag)) {
+      titleEl.removeAttribute(attr.name);
+      titleEl.style.removeProperty(`--${attr.name}`);
     }
   }
-  return null;
+  applySuperchargedLinkAttributes(app, titleEl, path);
 }
 
 /** Every currently-rendered title element under `root`, keyed by its node's own `data-path` — a

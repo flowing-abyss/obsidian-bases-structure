@@ -265,12 +265,13 @@ describe('GraphRenderer', () => {
     expect(document.activeElement).toBe(rootEl);
   });
 
-  it('re-focuses the rebuilt active node on a same-active-path re-render when focus was already inside', () => {
-    // Every `update()` rebuilds the node elements from scratch, even when nothing about `active`
-    // changed (e.g. a collapse/expand `refresh()`) — the *old* element that had real focus is
-    // gone, so without re-focusing the new one, `document.activeElement` would silently fall back
-    // to `document.body`, and the next real keydown would never reach the container's delegated
-    // listener again (the whole reason `keyboard.ts` can use one listener instead of one per node).
+  it('keeps real focus on the active node across a same-active-path re-render when focus was already inside', () => {
+    // Node elements are reused across `update()` (perf task), so `aEl` itself never loses real
+    // focus here — but `applyActiveState` still has to *ask* to focus it again (via `hadFocus`)
+    // on every render regardless, since a re-render that *did* have to replace the active node's
+    // element (any node it doesn't yet know how to reuse) must not leave
+    // `document.activeElement` fallen back to `document.body`, silently breaking the next real
+    // keydown (`keyboard.ts` relies on one delegated listener, not one per node).
     const container = createDiv();
     document.body.appendChild(container);
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
@@ -284,9 +285,9 @@ describe('GraphRenderer', () => {
 
     renderer.update(makeInput({ state }));
 
-    const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
-    expect(rebuiltAEl).not.toBe(aEl);
-    expect(document.activeElement).toBe(rebuiltAEl);
+    const sameAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(sameAEl).toBe(aEl);
+    expect(document.activeElement).toBe(sameAEl);
   });
 
   it('does not steal focus on a same-active-path re-render when focus was elsewhere', () => {
@@ -1173,6 +1174,135 @@ describe('GraphRenderer', () => {
   });
 });
 
+/** A flat forest with no parent/child relationships — every path is its own top. Enough for the
+ * reconciliation tests below, which only care about element identity across updates, not layout. */
+function flatStructure(paths: readonly string[]): Structure {
+  const nodes = new Map(
+    paths.map((path): [string, StructureNode] => [
+      path,
+      {
+        path,
+        type: null,
+        parent: null,
+        edge: null,
+        children: [],
+        extras: [],
+        alsoIn: [],
+        twoWay: false,
+      },
+    ]),
+  );
+  return { root: paths[0] ?? null, tops: paths, orphans: [], nodes, issues: [] };
+}
+
+function flatInput(paths: readonly string[], overrides: Partial<RenderInput> = {}): RenderInput {
+  return makeInput({
+    structure: flatStructure(paths),
+    snapshot: snapshot(paths.map((path) => note(path))),
+    ...overrides,
+  });
+}
+
+/** `topPath` with `childPaths` as its only children — for the toggle-reconciliation test, which
+ * needs a single node's child count to change between two updates while the node itself persists. */
+function structureWithChildren(topPath: string, childPaths: readonly string[]): Structure {
+  const nodes = new Map<string, StructureNode>();
+  nodes.set(topPath, {
+    path: topPath,
+    type: null,
+    parent: null,
+    edge: null,
+    children: childPaths,
+    extras: [],
+    alsoIn: [],
+    twoWay: false,
+  });
+  for (const child of childPaths) {
+    nodes.set(child, {
+      path: child,
+      type: null,
+      parent: topPath,
+      edge: null,
+      children: [],
+      extras: [],
+      alsoIn: [],
+      twoWay: false,
+    });
+  }
+  return { root: topPath, tops: [topPath], orphans: [], nodes, issues: [] };
+}
+
+describe('GraphRenderer — reconciling node elements instead of rebuilding them', () => {
+  it('reuses node elements across updates', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(flatInput(['a.md', 'b.md']));
+    const first = renderer.getNodeElement('a.md');
+
+    renderer.update(flatInput(['a.md', 'b.md', 'c.md']));
+
+    expect(renderer.getNodeElement('a.md')).toBe(first);
+    expect(renderer.getNodeElement('c.md')).not.toBeNull();
+  });
+
+  it('drops elements for nodes that are gone', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(flatInput(['a.md', 'b.md']));
+
+    renderer.update(flatInput(['a.md']));
+
+    expect(renderer.getNodeElement('b.md')).toBeNull();
+    expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(1);
+  });
+
+  it('keeps the same title element across an update, so Supercharged Links state on it survives', () => {
+    const app = App.createConfigured__();
+    // A non-scalar frontmatter value: `applySuperchargedLinkAttributes` never sets this itself —
+    // only Supercharged Links' own async observer would, simulated below by setting it directly.
+    app.metadataCache.setCache__('a.md', { frontmatter: { related: ['x', 'y'] } });
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx({ app: app.asOriginalType__() }), {
+      measure: fixedMeasure,
+    });
+    renderer.update(flatInput(['a.md']));
+    const title = container.querySelector('[data-path="a.md"] .bases-structure-title');
+    title?.setAttribute('data-link-related', 'x y');
+
+    renderer.update(flatInput(['a.md']));
+
+    expect(container.querySelector('[data-path="a.md"] .bases-structure-title')).toBe(title);
+    expect(title?.getAttribute('data-link-related')).toBe('x y');
+  });
+
+  it('clears is-new on a later render once focusPath no longer names the node (I7)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(flatInput(['a.md'], { focusPath: 'a.md' }));
+    expect(renderer.getNodeElement('a.md')?.classList.contains('is-new')).toBe(true);
+
+    renderer.update(flatInput(['a.md']));
+
+    expect(renderer.getNodeElement('a.md')?.classList.contains('is-new')).toBe(false);
+  });
+
+  it('adds a toggle to a reused node once it gains children, and drops it once they are gone', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const snap = snapshot([note('a.md'), note('b.md')]);
+    renderer.update(makeInput({ structure: structureWithChildren('a.md', []), snapshot: snap }));
+    expect(container.querySelector('[data-path="a.md"] .bases-structure-toggle')).toBeNull();
+
+    renderer.update(
+      makeInput({ structure: structureWithChildren('a.md', ['b.md']), snapshot: snap }),
+    );
+    expect(container.querySelector('[data-path="a.md"] .bases-structure-toggle')).not.toBeNull();
+
+    renderer.update(makeInput({ structure: structureWithChildren('a.md', []), snapshot: snap }));
+    expect(container.querySelector('[data-path="a.md"] .bases-structure-toggle')).toBeNull();
+  });
+});
+
 /** `direction: 'down'` (U3). The chain fixture (`chainStructure`, no siblings) with `fixedMeasure`
  * (every box 100x20) keeps the geometry hand-checkable: with `DEFAULT_VERTICAL_LAYOUT_OPTIONS`
  * (`columnGap: 40`), depth grows straight down, each level 60px below the last (columnGap 40 +
@@ -1260,11 +1390,14 @@ describe('GraphRenderer — pop-out window (M3)', () => {
     renderer.update(makeInput({ state })); // Same active path: only `hadFocus` can trigger refocus.
 
     // Before M3, `hadFocus` read the *global* `document.activeElement` — never `aEl` (which was
-    // genuinely focused inside the pop-out's own document) — so the rebuilt node never got real
-    // focus back, and `otherDoc.activeElement` would have fallen back to `otherDoc.body`.
-    const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
-    expect(rebuiltAEl).not.toBe(aEl);
-    expect(otherDoc.activeElement).toBe(rebuiltAEl);
+    // genuinely focused inside the pop-out's own document) — so a node that had to be rebuilt
+    // never got real focus back, and `otherDoc.activeElement` would have fallen back to
+    // `otherDoc.body`. `aEl` itself is reused now (perf task), so it never actually lost focus —
+    // this still guards `hadFocus` reading the right document for whichever node *does* have to
+    // be replaced on some other render.
+    const sameAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(sameAEl).toBe(aEl);
+    expect(otherDoc.activeElement).toBe(sameAEl);
   });
 });
 

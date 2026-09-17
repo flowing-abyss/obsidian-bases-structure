@@ -9,6 +9,8 @@ import {
   createNodeElement,
   focusActiveNode,
   type NodeElementContext,
+  refreshSuperchargedLinkAttributes,
+  updateNodeElement,
 } from './node-element.js';
 
 const { NoticeMock } = vi.hoisted(() => {
@@ -336,6 +338,141 @@ describe('createNodeElement', () => {
     expect(children.indexOf(button as Element)).toBeGreaterThan(
       children.indexOf(el.querySelector('.bases-structure-add') as Element),
     );
+  });
+});
+
+describe('updateNodeElement', () => {
+  it('keeps the same title element when the node is updated', () => {
+    const ctx = makeCtx({ snapshot: snapshot([note('a.md', { basename: 'A' })]) });
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }), {});
+    const title = el.querySelector('a.bases-structure-title');
+    title?.setAttribute('data-link-type', 'source');
+
+    updateNodeElement(el, ctx, makeNode({ path: 'a.md', type: 'Task' }), { isOrphan: true });
+
+    expect(el.querySelector('a.bases-structure-title')).toBe(title);
+    expect(title?.getAttribute('data-link-type')).toBe('source');
+    expect(el.dataset['type']).toBe('Task');
+    expect(el.classList.contains('is-orphan')).toBe(true);
+  });
+
+  it('refreshes the title text and data-href when the node data changes', () => {
+    const ctx = makeCtx({ snapshot: snapshot([note('a.md', { basename: 'Old' })]) });
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+
+    const laterCtx = makeCtx({ snapshot: snapshot([note('a.md', { basename: 'New' })]) });
+    updateNodeElement(el, laterCtx, makeNode({ path: 'a.md' }));
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.textContent).toBe('New');
+    expect(title?.getAttribute('data-href')).toBe('a.md');
+  });
+
+  it('removes is-root/is-orphan/is-new when flags no longer say so', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode(), { isRoot: true, isOrphan: true, isNew: true });
+
+    updateNodeElement(el, ctx, makeNode(), {});
+
+    expect(el.classList.contains('is-root')).toBe(false);
+    expect(el.classList.contains('is-orphan')).toBe(false);
+    expect(el.classList.contains('is-new')).toBe(false);
+  });
+
+  it('rebuilds the alsoIn chip to match the current node', () => {
+    const ctx = makeCtx({
+      snapshot: snapshot([note('a.md'), note('b.md', { basename: 'Beta' })]),
+    });
+    const el = createNodeElement(ctx, makeNode({ alsoIn: [] }));
+    expect(el.querySelector('.bases-structure-alsoin')).toBeNull();
+
+    updateNodeElement(el, ctx, makeNode({ alsoIn: ['b.md'] }));
+
+    expect(el.querySelector('.bases-structure-alsoin')?.textContent).toBe('Beta');
+  });
+
+  it('drops the alsoIn chip once the node no longer has extra parents', () => {
+    const ctx = makeCtx({
+      snapshot: snapshot([note('a.md'), note('b.md', { basename: 'Beta' })]),
+    });
+    const el = createNodeElement(ctx, makeNode({ alsoIn: ['b.md'] }));
+    expect(el.querySelector('.bases-structure-alsoin')).not.toBeNull();
+
+    updateNodeElement(el, ctx, makeNode({ alsoIn: [] }));
+
+    expect(el.querySelector('.bases-structure-alsoin')).toBeNull();
+  });
+
+  it('does nothing when the element has no title (defensive)', () => {
+    const ctx = makeCtx();
+    const el = createDiv();
+
+    expect(() => {
+      updateNodeElement(el, ctx, makeNode());
+    }).not.toThrow();
+  });
+});
+
+describe('refreshSuperchargedLinkAttributes', () => {
+  it('drops a data-link-* attribute once its frontmatter key is removed', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { type: 'A' } });
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    const title = el.querySelector<HTMLElement>('.bases-structure-title');
+    expect(title?.getAttribute('data-link-type')).toBe('A');
+
+    app.metadataCache.setCache__('a.md', { frontmatter: {} });
+    refreshSuperchargedLinkAttributes(el, app.asOriginalType__(), 'a.md');
+
+    expect(title?.hasAttribute('data-link-type')).toBe(false);
+    expect(title?.style.getPropertyValue('--data-link-type')).toBe('');
+  });
+
+  it('lets current scalar frontmatter win over a stale value for the same attribute', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { type: 'A' } });
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+
+    app.metadataCache.setCache__('a.md', { frontmatter: { type: 'B' } });
+    refreshSuperchargedLinkAttributes(el, app.asOriginalType__(), 'a.md');
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-type')).toBe('B');
+  });
+
+  it('keeps a non-scalar attribute Supercharged Links set itself while its key is still present', () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { related: ['x', 'y'] } });
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    const title = el.querySelector<HTMLElement>('.bases-structure-title');
+    title?.setAttribute('data-link-related', 'x y');
+
+    refreshSuperchargedLinkAttributes(el, app.asOriginalType__(), 'a.md');
+
+    expect(title?.getAttribute('data-link-related')).toBe('x y');
+  });
+
+  it('always keeps data-link-path — a path-derived attribute, never frontmatter-sourced', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    const title = el.querySelector<HTMLElement>('.bases-structure-title');
+    title?.setAttribute('data-link-path', 'a.md');
+
+    refreshSuperchargedLinkAttributes(el, ctx.app, 'a.md');
+
+    expect(title?.getAttribute('data-link-path')).toBe('a.md');
+  });
+
+  it('does nothing when the element has no title (defensive)', () => {
+    const ctx = makeCtx();
+    const el = createDiv();
+
+    expect(() => {
+      refreshSuperchargedLinkAttributes(el, ctx.app, 'a.md');
+    }).not.toThrow();
   });
 });
 
