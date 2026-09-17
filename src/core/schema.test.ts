@@ -469,3 +469,23 @@ describe('parseSchema — direction', () => {
     expect(issues).toStrictEqual([]);
   });
 });
+
+describe('parseSchema — edgeLabels (D2)', () => {
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+    ['true', false],
+    [1, false],
+  ] as const)('normalises edgeLabels=%s to %s (true only for literal true)', (raw, expected) => {
+    const { schema } = parseSchema(makeRead({ parent: 'up', edgeLabels: raw }));
+
+    expect(schema.edgeLabels).toBe(expected);
+  });
+
+  it('never reports an issue for edgeLabels, however it is set', () => {
+    const { issues } = parseSchema(makeRead({ parent: 'up', edgeLabels: 'bogus' }));
+
+    expect(issues).toStrictEqual([]);
+  });
+});

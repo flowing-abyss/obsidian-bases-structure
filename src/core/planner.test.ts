@@ -497,6 +497,7 @@ describe('planAction — create: untyped root, competing parent-type rules (hand
       inherit: [],
       layout: 'graph',
       direction: 'right',
+      edgeLabels: false,
     };
     const snap = snapshot(
       [

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import type { Size } from '../core/layout.js';
 import { parseSchema } from '../core/schema.js';
-import type { Structure } from '../core/structure.js';
+import type { Structure, StructureNode } from '../core/structure.js';
 import * as superchargedLinksModule from '../obsidian/supercharged-links.js';
 import { GraphRenderer } from './graph-renderer.js';
 import type { NodeElementContext } from './node-element.js';
@@ -1171,6 +1171,180 @@ describe('GraphRenderer — pop-out window (M3)', () => {
     const rebuiltAEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
     expect(rebuiltAEl).not.toBe(aEl);
     expect(otherDoc.activeElement).toBe(rebuiltAEl);
+  });
+});
+
+describe('GraphRenderer — edge labels (D2)', () => {
+  /** root.md -> [a.md, b.md, c.md], all type "Task" — a single run of 3 visible siblings, so
+   * `planEdgeLabels` picks the middle one (`b.md`, index `floor((3-1)/2)` = 1) as the label's
+   * anchor. Every box is a fixed 100x20 via `measureByKind` below (nodes) so column positions are
+   * hand-checkable the same way `chainStructure`'s own tests are. */
+  function siblingsStructure(): Structure {
+    const child = (path: string): [string, StructureNode] => [
+      path,
+      {
+        path,
+        type: 'Task',
+        parent: 'root.md',
+        edge: null,
+        children: [],
+        extras: [],
+        alsoIn: [],
+        twoWay: false,
+      },
+    ];
+    return {
+      root: 'root.md',
+      tops: ['root.md'],
+      orphans: [],
+      nodes: new Map([
+        [
+          'root.md',
+          {
+            path: 'root.md',
+            type: null,
+            parent: null,
+            edge: null,
+            children: ['a.md', 'b.md', 'c.md'],
+            extras: [],
+            alsoIn: [],
+            twoWay: false,
+          },
+        ],
+        child('a.md'),
+        child('b.md'),
+        child('c.md'),
+      ]),
+      issues: [],
+    };
+  }
+
+  function siblingsSnapshot(): ReturnType<typeof snapshot> {
+    return snapshot([note('root.md'), note('a.md'), note('b.md'), note('c.md')]);
+  }
+
+  function makeSchema(overrides: Record<string, unknown> = {}) {
+    return parseSchema((key: string): unknown => overrides[key]).schema;
+  }
+
+  /** 100x20 for a node, 40x14 for a label — distinct enough that gap-widening math
+   * (`widest label + 16` for `right`, `tallest label + 8` for `down`) is hand-checkable from the
+   * resulting `left`/`top` of a depth-1 node. */
+  const measureByKind = (el: HTMLElement): Size =>
+    el.classList.contains('bases-structure-edge-label')
+      ? { width: 40, height: 14 }
+      : { width: 100, height: 20 };
+
+  it('draws no labels and leaves the layout unchanged when edgeLabels is off (default)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByKind });
+
+    renderer.update(
+      makeInput({
+        schema: makeSchema(),
+        structure: siblingsStructure(),
+        snapshot: siblingsSnapshot(),
+      }),
+    );
+
+    expect(container.querySelectorAll('.bases-structure-edge-label')).toHaveLength(0);
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aEl.style.left).toBe('148px'); // 100 (root width) + 48 (default columnGap).
+  });
+
+  it("draws one label per run of same-type siblings, with the run's type as its text", () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByKind });
+
+    renderer.update(
+      makeInput({
+        schema: makeSchema({ edgeLabels: true }),
+        structure: siblingsStructure(),
+        snapshot: siblingsSnapshot(),
+      }),
+    );
+
+    const labels = container.querySelectorAll('.bases-structure-edge-label');
+    expect(labels).toHaveLength(1);
+    expect(labels[0]?.textContent).toBe('Task');
+  });
+
+  it('never labels an untyped ("") run, even when edgeLabels is on', () => {
+    const untyped: Structure = {
+      ...siblingsStructure(),
+      nodes: new Map(
+        Array.from(siblingsStructure().nodes, ([path, node]) => [
+          path,
+          node.parent === null ? node : { ...node, type: '' },
+        ]),
+      ),
+    };
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByKind });
+
+    renderer.update(
+      makeInput({
+        schema: makeSchema({ edgeLabels: true }),
+        structure: untyped,
+        snapshot: siblingsSnapshot(),
+      }),
+    );
+
+    expect(container.querySelectorAll('.bases-structure-edge-label')).toHaveLength(0);
+  });
+
+  it('excludes a two-way child and its own extras from ever hosting a label', () => {
+    // chainWithExtrasStructure: root.md -> a.md -> b.md (two-way, plus an extra dashed edge from
+    // extra.md). Only root -> a.md is a plain, single-child run of a typed ("X") node; a.md's own
+    // child b.md is two-way, so it must never host a label, and extra.md's dashed edge to b.md
+    // (an "extra", not a tree child) must never produce one either.
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByKind });
+
+    renderer.update(
+      makeInput({
+        schema: makeSchema({ edgeLabels: true }),
+        structure: chainWithExtrasStructure(),
+      }),
+    );
+
+    const labels = container.querySelectorAll('.bases-structure-edge-label');
+    expect(labels).toHaveLength(1);
+    expect(labels[0]?.textContent).toBe('X');
+  });
+
+  it('widens the depth gap by the widest label width + 16px for direction: right', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByKind });
+
+    renderer.update(
+      makeInput({
+        schema: makeSchema({ edgeLabels: true }),
+        structure: siblingsStructure(),
+        snapshot: siblingsSnapshot(),
+      }),
+    );
+
+    // 100 (root width) + 48 (default columnGap) + 40 (label width) + 16 (right margin) = 204.
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aEl.style.left).toBe('204px');
+  });
+
+  it('widens the depth gap by the tallest label height + 8px for direction: down', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByKind });
+
+    renderer.update(
+      makeInput({
+        schema: makeSchema({ edgeLabels: true, direction: 'down' }),
+        structure: siblingsStructure(),
+        snapshot: siblingsSnapshot(),
+      }),
+    );
+
+    // 20 (root height) + 40 (default vertical columnGap) + 14 (label height) + 8 (down margin) = 82.
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aEl.style.top).toBe('82px');
   });
 });
 

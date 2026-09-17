@@ -16,6 +16,7 @@ function schemaOf(types: readonly TypeDef[]): Schema {
     inherit: [],
     layout: 'graph',
     direction: 'right',
+    edgeLabels: false,
   };
 }
 

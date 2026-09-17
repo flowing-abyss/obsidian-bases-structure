@@ -64,7 +64,7 @@ describe('StructureViewPlugin.onload', () => {
     expect(view).toBeInstanceOf(StructureView);
   });
 
-  it('exposes the layout and direction dropdown options', () => {
+  it('exposes the layout, direction and edge-labels options', () => {
     const plugin = createPlugin();
     plugin.onload();
     const registration = mocked(plugin).basesViewRegistrations__.get(STRUCTURE_VIEW_ID);
@@ -72,7 +72,7 @@ describe('StructureViewPlugin.onload', () => {
 
     const options = registration?.options?.(config.asOriginalType__()) ?? [];
 
-    expect(options).toHaveLength(2);
+    expect(options).toHaveLength(3);
     expect(options[0]).toMatchObject({
       type: 'dropdown',
       key: 'layout',
@@ -86,6 +86,12 @@ describe('StructureViewPlugin.onload', () => {
       displayName: 'Direction',
       options: { right: 'Left to right', down: 'Top to bottom' },
       default: 'right',
+    });
+    expect(options[2]).toMatchObject({
+      type: 'toggle',
+      key: 'edgeLabels',
+      displayName: 'Show link types',
+      default: false,
     });
   });
 
@@ -109,6 +115,28 @@ describe('StructureViewPlugin.onload', () => {
 
     config.set('layout', 'graph');
     expect(directionOption.shouldHide?.()).toBe(false);
+  });
+
+  it('hides the edge-labels option for the outline layout and shows it for the graph (D2)', () => {
+    const plugin = createPlugin();
+    plugin.onload();
+    const registration = mocked(plugin).basesViewRegistrations__.get(STRUCTURE_VIEW_ID);
+    const config = BasesViewConfig.create__('', STRUCTURE_VIEW_ID, 'Structure');
+
+    const options = registration?.options?.(config.asOriginalType__()) ?? [];
+    const edgeLabelsOption = options[2];
+    if (edgeLabelsOption?.type !== 'toggle') {
+      throw new Error('expected the edgeLabels toggle option to exist');
+    }
+
+    // Config default (nothing set yet) behaves like the graph layout: it stays visible.
+    expect(edgeLabelsOption.shouldHide?.()).toBe(false);
+
+    config.set('layout', 'outline');
+    expect(edgeLabelsOption.shouldHide?.()).toBe(true);
+
+    config.set('layout', 'graph');
+    expect(edgeLabelsOption.shouldHide?.()).toBe(false);
   });
 
   it('registers a hover-link-preview source matching the event attachNodeInteractions fires (M4)', () => {

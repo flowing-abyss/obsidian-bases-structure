@@ -34,6 +34,15 @@ function buildViewOptions(config: BasesViewConfig): BasesAllOptions[] {
       default: 'right',
       shouldHide: () => config.get('layout') === 'outline',
     },
+    // D2: graph-only, same `shouldHide` reasoning as `direction` above — the outline has no edges
+    // to label at all.
+    {
+      type: 'toggle',
+      key: 'edgeLabels',
+      displayName: 'Show link types',
+      default: false,
+      shouldHide: () => config.get('layout') === 'outline',
+    },
   ];
 }
 

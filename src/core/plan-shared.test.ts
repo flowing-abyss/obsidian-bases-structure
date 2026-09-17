@@ -17,6 +17,7 @@ const emptySchema: Schema = {
   inherit: [],
   layout: 'graph',
   direction: 'right',
+  edgeLabels: false,
 };
 
 /** A minimal, self-contained `StructureNode`; callers override only what the scenario needs. */

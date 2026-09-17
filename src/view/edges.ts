@@ -71,3 +71,62 @@ export function edgePath(from: Box, to: Box, direction: Direction): string {
   const { start, end } = edgeAnchors(from, to, direction);
   return direction === 'down' ? verticalPath(start, end) : horizontalPath(start, end);
 }
+
+/** D2: one child, as seen by `planEdgeLabels` — a run only cares about a child's own type, never
+ * whether it's a tree edge or an extra (callers only ever pass a parent's own tree children, in
+ * children order; extras have no run of their own). */
+export interface EdgeLabelChild {
+  readonly path: string;
+  readonly type: string | null;
+}
+
+/** D2: one label to draw, anchored to the tree edge leading to `childPath` — the run's own
+ * middle child, not necessarily the run's first or last one. */
+export interface EdgeLabel {
+  readonly childPath: string;
+  readonly text: string;
+}
+
+/** The end (exclusive) of the run of same-type children starting at `start`. */
+function runEnd(children: readonly EdgeLabelChild[], start: number): number {
+  const type = children[start]?.type;
+  let end = start + 1;
+  while (end < children.length && children[end]?.type === type) {
+    end += 1;
+  }
+  return end;
+}
+
+/** Appends a label for the run `[start, end)`, unless its type is untyped (`null`/`''`, the
+ * implicit type) — those never get a label. */
+function pushRunLabel(
+  labels: EdgeLabel[],
+  children: readonly EdgeLabelChild[],
+  start: number,
+  end: number,
+): void {
+  const type = children[start]?.type;
+  if (type === null || type === undefined || type === '') {
+    return;
+  }
+  const middle = children[start + Math.floor((end - start - 1) / 2)];
+  if (middle !== undefined) {
+    labels.push({ childPath: middle.path, text: type });
+  }
+}
+
+/** D2: one label per run of consecutive same-type children (in the given, already-children-order
+ * list), placed on the middle edge of that run (index `floor((n - 1) / 2)` within the run). A run
+ * of the implicit, untyped (`null`/`''`) type never gets a label. Callers pass only a parent's own
+ * visible *tree* children — extras (secondary parent candidates, drawn as dashed edges) and
+ * two-way children never belong in this list, so they can never end up hosting a label either. */
+export function planEdgeLabels(children: readonly EdgeLabelChild[]): EdgeLabel[] {
+  const labels: EdgeLabel[] = [];
+  let start = 0;
+  while (start < children.length) {
+    const end = runEnd(children, start);
+    pushRunLabel(labels, children, start, end);
+    start = end;
+  }
+  return labels;
+}

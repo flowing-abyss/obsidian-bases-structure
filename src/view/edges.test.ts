@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Box } from '../core/layout.js';
-import type { Point } from './edges.js';
-import { edgeAnchors, edgePath } from './edges.js';
+import type { EdgeLabelChild, Point } from './edges.js';
+import { edgeAnchors, edgePath, planEdgeLabels } from './edges.js';
 
 const from: Box = { x: 0, y: 0, width: 100, height: 20 };
 const to: Box = { x: 200, y: 100, width: 80, height: 40 };
@@ -52,6 +52,77 @@ describe('edgeAnchors — direction: down', () => {
       start: expectedStart,
       end: expectedEnd,
     });
+  });
+});
+
+describe('planEdgeLabels (D2)', () => {
+  function child(path: string, type: string | null): EdgeLabelChild {
+    return { path, type };
+  }
+
+  it('returns no labels for an empty children list', () => {
+    expect(planEdgeLabels([])).toStrictEqual([]);
+  });
+
+  it('labels the single child of a run of one', () => {
+    const children = [child('a.md', 'Task')];
+
+    expect(planEdgeLabels(children)).toStrictEqual([{ childPath: 'a.md', text: 'Task' }]);
+  });
+
+  it('labels the middle edge of an odd-length run (index floor((n-1)/2))', () => {
+    const children = [child('a.md', 'Task'), child('b.md', 'Task'), child('c.md', 'Task')];
+
+    expect(planEdgeLabels(children)).toStrictEqual([{ childPath: 'b.md', text: 'Task' }]);
+  });
+
+  it('labels the lower-middle edge of an even-length run (index floor((n-1)/2))', () => {
+    const children = [
+      child('a.md', 'Task'),
+      child('b.md', 'Task'),
+      child('c.md', 'Task'),
+      child('d.md', 'Task'),
+    ];
+
+    // floor((4-1)/2) = 1 -> the second child.
+    expect(planEdgeLabels(children)).toStrictEqual([{ childPath: 'b.md', text: 'Task' }]);
+  });
+
+  it('emits one label per run of consecutive same-type children, in children order', () => {
+    const children = [
+      child('a.md', 'Task'),
+      child('b.md', 'Task'),
+      child('c.md', 'Note'),
+      child('d.md', 'Task'),
+    ];
+
+    expect(planEdgeLabels(children)).toStrictEqual([
+      { childPath: 'a.md', text: 'Task' },
+      { childPath: 'c.md', text: 'Note' },
+      { childPath: 'd.md', text: 'Task' },
+    ]);
+  });
+
+  it('gives a run of alternating single-child types one label each', () => {
+    const children = [child('a.md', 'A'), child('b.md', 'B'), child('c.md', 'A')];
+
+    expect(planEdgeLabels(children)).toStrictEqual([
+      { childPath: 'a.md', text: 'A' },
+      { childPath: 'b.md', text: 'B' },
+      { childPath: 'c.md', text: 'A' },
+    ]);
+  });
+
+  it('never labels a run of the untyped implicit type ("")', () => {
+    const children = [child('a.md', ''), child('b.md', ''), child('c.md', 'Task')];
+
+    expect(planEdgeLabels(children)).toStrictEqual([{ childPath: 'c.md', text: 'Task' }]);
+  });
+
+  it('never labels a run of null-typed children', () => {
+    const children = [child('a.md', null), child('b.md', null)];
+
+    expect(planEdgeLabels(children)).toStrictEqual([]);
   });
 });
 

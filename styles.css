@@ -606,6 +606,32 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   left: 0;
 }
 
+/* D2 ("Show link types"): one span per labelled run of same-type siblings, positioned (via inline
+   `left`/`top`, set in `graph-renderer.ts`'s `positionLabels`) at the midpoint of its own tree
+   edge — same absolute coordinate space as `.bases-structure-nodes`, so pan/zoom (the canvas's own
+   `transform: scale()`) applies to it exactly like a node. */
+.bases-structure-edge-labels {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+/* A quiet caption sitting on the line: small, muted text on an opaque background (so it reads over
+   the SVG edge underneath, not blended with it), no border — `translate(-50%, -50%)` centres it on
+   its own `left`/`top` without the renderer needing to know the label's measured size again once
+   it's already been positioned. */
+.bases-structure-edge-label {
+  position: absolute;
+  padding: 0 var(--size-2-1);
+  color: var(--text-faint);
+  background-color: var(--background-primary);
+  font-size: var(--font-smallest);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
 /* Added by the graph renderer (as a class, alongside inline `left`/`top`/`width`) only once a
    node has been measured and positioned — an unsized node that is *already* absolutely positioned
    at measurement time collapses to a shrink-to-fit width that can be a single character wide,

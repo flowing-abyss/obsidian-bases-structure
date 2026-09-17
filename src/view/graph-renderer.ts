@@ -5,21 +5,22 @@
 // The DOM is built once in the constructor and reused across `update()` calls; only the nodes
 // layer and the SVG's dynamic content (everything after `<defs>`) are rebuilt each time.
 
-import type { LayoutResult, Size } from '../core/layout.js';
+import type { LayoutOptions, LayoutResult, Size } from '../core/layout.js';
 import {
   DEFAULT_LAYOUT_OPTIONS,
   DEFAULT_VERTICAL_LAYOUT_OPTIONS,
   layoutTree,
   layoutTreeVertical,
 } from '../core/layout.js';
-import type { Direction } from '../core/schema.js';
+import type { Direction, Schema } from '../core/schema.js';
 import type { ExtraLink, Structure, StructureNode } from '../core/structure.js';
 import {
   hookSuperchargedLinks,
   unhookSuperchargedLinks,
   type SuperchargedWatch,
 } from '../obsidian/supercharged-links.js';
-import { edgePath } from './edges.js';
+import type { EdgeLabelChild } from './edges.js';
+import { edgeAnchors, edgePath, planEdgeLabels } from './edges.js';
 import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
@@ -49,6 +50,14 @@ interface VisibleEntry {
   readonly isOrphan: boolean;
 }
 
+/** D2: one edge label about to be drawn — `parent`/`childPath` anchor it to the tree edge between
+ * those two boxes once `layoutResult` is known; `text` is the run's type name. */
+interface PlacedLabel {
+  readonly parent: string;
+  readonly childPath: string;
+  readonly text: string;
+}
+
 interface ToolbarElements {
   readonly toolbarEl: HTMLElement;
   readonly zoomOutBtn: HTMLButtonElement;
@@ -69,6 +78,7 @@ interface CanvasElements {
   readonly svgEl: SVGSVGElement;
   readonly defsEl: SVGDefsElement;
   readonly nodesEl: HTMLElement;
+  readonly labelsEl: HTMLElement;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -102,6 +112,12 @@ const EMPTY_MESSAGE = 'Nothing to show yet';
 // changing its height after `layoutTree` already spaced siblings assuming the shorter, measured
 // one. A couple of spare pixels keeps the applied width comfortably above that boundary.
 const WIDTH_SAFETY_MARGIN = 2;
+// D2: how much wider the depth gap gets when edge labels are on, beyond the widest/tallest
+// measured label — a little clearance so a label's own background never touches the next
+// column's node border. Only added when there is at least one label to draw; with labels off (or
+// an untyped schema producing zero labels), the layout is byte-for-byte what it was before D2.
+const LABEL_GAP_RIGHT_MARGIN = 16;
+const LABEL_GAP_DOWN_MARGIN = 8;
 // D1: every `GraphRenderer` instance gets its own Supercharged Links watch id — two embeds of
 // this view open at once (same plugin, same `ownerId`) would otherwise share a bare id and
 // disconnect each other's observer the moment the second one mounts (`hookSuperchargedLinks`
@@ -194,7 +210,11 @@ function buildCanvas(graphEl: HTMLElement): CanvasElements {
   svgEl.appendChild(defsEl);
   canvasEl.appendChild(svgEl);
   const nodesEl = canvasEl.createDiv('bases-structure-nodes');
-  return { wrapEl, canvasEl, svgEl, defsEl, nodesEl };
+  // D2: on top of the nodes so a label's own opaque background reads as a caption sitting on the
+  // line beneath it, not the other way around — labels never overlap node boxes (the layout gap
+  // widening keeps them apart), so paint order between the two never actually matters visually.
+  const labelsEl = canvasEl.createDiv('bases-structure-edge-labels');
+  return { wrapEl, canvasEl, svgEl, defsEl, nodesEl, labelsEl };
 }
 
 /** Every node reachable from `forestTops` (the structure's tops plus its orphans, so both render
@@ -238,6 +258,23 @@ function collectVisibleEntries(
   return entries;
 }
 
+/** D2: a parent's children, narrowed to `EdgeLabelChild`s for `planEdgeLabels` — a two-way child
+ * (its own edge back to this parent, not the run's type) never hosts a label, so it's dropped
+ * from the list entirely rather than merely skipped as a possible "middle": consecutive same-type
+ * siblings on either side of it still count as one run. A child with no resolved `StructureNode`
+ * (not expected in practice — every path in `node.children` has one) is dropped the same way. */
+function visibleChildTypes(children: readonly string[], structure: Structure): EdgeLabelChild[] {
+  const result: EdgeLabelChild[] = [];
+  for (const path of children) {
+    const node = structure.nodes.get(path);
+    if (node === undefined || node.twoWay) {
+      continue;
+    }
+    result.push({ path, type: node.type });
+  }
+  return result;
+}
+
 export class GraphRenderer implements StructureRenderer {
   private readonly container: HTMLElement;
   private readonly ctx: MutableNodeElementContext;
@@ -254,6 +291,7 @@ export class GraphRenderer implements StructureRenderer {
   private readonly svgEl: SVGSVGElement;
   private readonly defsEl: SVGDefsElement;
   private readonly nodesEl: HTMLElement;
+  private readonly labelsEl: HTMLElement;
   private readonly disposeNodeInteractions: () => void;
   private readonly disposePan: () => void;
   private readonly slWatch: SuperchargedWatch;
@@ -305,6 +343,7 @@ export class GraphRenderer implements StructureRenderer {
     this.svgEl = canvas.svgEl;
     this.defsEl = canvas.defsEl;
     this.nodesEl = canvas.nodesEl;
+    this.labelsEl = canvas.labelsEl;
 
     this.disposeNodeInteractions = attachNodeInteractions(this.ctx, this.nodesEl);
     // M7: pan by dragging the background — the graph itself (`this.graphEl`) is what actually
@@ -389,24 +428,18 @@ export class GraphRenderer implements StructureRenderer {
     }
     this.showContent();
 
-    const elementsByPath = this.buildNodeElements(entries, input.state.collapsed, input.focusPath);
-    const sizesByPath = this.measureAll(entries, elementsByPath);
     const direction = this.lastDirection;
-    const layoutInput = {
-      tops: forestTops,
-      childrenOf: (path: string) => input.structure.nodes.get(path)?.children ?? [],
-      sizeOf: (path: string) =>
-        sizesByPath.get(path) ?? { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT },
-      collapsed: input.state.collapsed,
-    };
-    const layoutResult =
-      direction === 'down'
-        ? layoutTreeVertical(layoutInput, DEFAULT_VERTICAL_LAYOUT_OPTIONS)
-        : layoutTree(layoutInput, DEFAULT_LAYOUT_OPTIONS);
+    const { elementsByPath, labels, labelElementsByChild, layoutResult } = this.computeLayout(
+      entries,
+      input,
+      forestTops,
+      direction,
+    );
 
     this.positionNodes(entries, elementsByPath, layoutResult);
     this.applyCanvasSize(layoutResult);
     this.drawSvg(entries, layoutResult, direction);
+    this.positionLabels(labels, labelElementsByChild, layoutResult, direction);
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
     this.applyAutoFit(input.state);
     this.applyZoom(input.state.zoom);
@@ -503,6 +536,41 @@ export class GraphRenderer implements StructureRenderer {
     return sizes;
   }
 
+  /** The whole "build DOM, measure it, lay it out" pipeline for one `update()` — node elements,
+   * their sizes, D2's edge-label placements/elements/gap-widened options, and the resulting
+   * `layoutTree`/`layoutTreeVertical` call, all in one place so `update()` itself only has to
+   * sequence the *drawing* steps that come after (`positionNodes`, `drawSvg`, `positionLabels`, …)
+   * — kept a separate method purely to stay inside this project's `max-statements` budget. */
+  private computeLayout(
+    entries: readonly VisibleEntry[],
+    input: RenderInput,
+    forestTops: readonly string[],
+    direction: Direction,
+  ): {
+    elementsByPath: Map<string, HTMLElement>;
+    labels: PlacedLabel[];
+    labelElementsByChild: Map<string, HTMLElement>;
+    layoutResult: LayoutResult;
+  } {
+    const elementsByPath = this.buildNodeElements(entries, input.state.collapsed, input.focusPath);
+    const sizesByPath = this.measureAll(entries, elementsByPath);
+    const labels = this.planLabels(entries, input.structure, input.state.collapsed, input.schema);
+    const labelElementsByChild = this.buildLabelElements(labels);
+    const layoutOptions = this.resolveLayoutOptions(direction, labelElementsByChild);
+    const layoutInput = {
+      tops: forestTops,
+      childrenOf: (path: string) => input.structure.nodes.get(path)?.children ?? [],
+      sizeOf: (path: string) =>
+        sizesByPath.get(path) ?? { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT },
+      collapsed: input.state.collapsed,
+    };
+    const layoutResult =
+      direction === 'down'
+        ? layoutTreeVertical(layoutInput, layoutOptions)
+        : layoutTree(layoutInput, layoutOptions);
+    return { elementsByPath, labels, labelElementsByChild, layoutResult };
+  }
+
   private positionNodes(
     entries: readonly VisibleEntry[],
     elementsByPath: ReadonlyMap<string, HTMLElement>,
@@ -522,6 +590,107 @@ export class GraphRenderer implements StructureRenderer {
       el.style.left = `${box.x}px`;
       el.style.top = `${box.y}px`;
       el.style.width = `${box.width}px`;
+    }
+  }
+
+  /** D2: one `PlacedLabel` per run of consecutive same-type visible children under each visible,
+   * non-collapsed parent — `null` when `schema.edgeLabels` is off, matching the outline's own
+   * "ignores it entirely" (the outline never calls this at all). A collapsed parent's children
+   * aren't in `entries` at all (see `collectVisibleEntries`), so its own `node.children` are
+   * skipped here too, the same way `layoutTree` already skips laying them out. */
+  private planLabels(
+    entries: readonly VisibleEntry[],
+    structure: Structure,
+    collapsed: ReadonlySet<string>,
+    schema: Schema,
+  ): PlacedLabel[] {
+    if (!schema.edgeLabels) {
+      return [];
+    }
+    const labels: PlacedLabel[] = [];
+    for (const entry of entries) {
+      if (collapsed.has(entry.path) || entry.node.children.length === 0) {
+        continue;
+      }
+      const childTypes = visibleChildTypes(entry.node.children, structure);
+      for (const label of planEdgeLabels(childTypes)) {
+        labels.push({ parent: entry.path, childPath: label.childPath, text: label.text });
+      }
+    }
+    return labels;
+  }
+
+  /** Creates one `span.bases-structure-edge-label` per placement (text only — position is set
+   * later, once `layoutResult` is known, by `positionLabels`) and measures each like a node, so
+   * `resolveLayoutOptions` can size the widened gap from real rendered dimensions. Rebuilt every
+   * `update()`, same as the node layer. */
+  private buildLabelElements(placements: readonly PlacedLabel[]): Map<string, HTMLElement> {
+    this.labelsEl.empty();
+    const elements = new Map<string, HTMLElement>();
+    for (const placement of placements) {
+      const el = this.labelsEl.createSpan({
+        cls: 'bases-structure-edge-label',
+        text: placement.text,
+      });
+      elements.set(placement.childPath, el);
+    }
+    return elements;
+  }
+
+  /** D2: the widest measured label's width (`+16px`) widens the depth gap for `direction: right`
+   * (labels sit inline in the horizontal gap between columns); the tallest one's height (`+8px`)
+   * widens it for `direction: down` (labels sit in the vertical gap between rows). No labels at
+   * all (`edgeLabels` off, or on but every run untyped) means no widening — the returned options
+   * are then referentially the same defaults `update()` used before D2, so existing layout
+   * snapshots stay unchanged byte-for-byte. */
+  private resolveLayoutOptions(
+    direction: Direction,
+    labelElements: ReadonlyMap<string, HTMLElement>,
+  ): LayoutOptions {
+    const base = direction === 'down' ? DEFAULT_VERTICAL_LAYOUT_OPTIONS : DEFAULT_LAYOUT_OPTIONS;
+    if (labelElements.size === 0) {
+      return base;
+    }
+    const extent = this.measureLabelExtent(labelElements);
+    const extra =
+      direction === 'down'
+        ? extent.height + LABEL_GAP_DOWN_MARGIN
+        : extent.width + LABEL_GAP_RIGHT_MARGIN;
+    return { ...base, columnGap: base.columnGap + extra };
+  }
+
+  private measureLabelExtent(labelElements: ReadonlyMap<string, HTMLElement>): Size {
+    let maxWidth = 0;
+    let maxHeight = 0;
+    for (const el of labelElements.values()) {
+      const size = this.measure(el);
+      maxWidth = Math.max(maxWidth, size.width);
+      maxHeight = Math.max(maxHeight, size.height);
+    }
+    return { width: maxWidth, height: maxHeight };
+  }
+
+  /** Centres each label span (via `styles.css`'s `transform: translate(-50%, -50%)`) on the
+   * midpoint of its own tree edge's anchors — the same `edgeAnchors` the SVG edge itself is drawn
+   * from, so a label always sits exactly on the line it labels regardless of direction. Silently
+   * skips a placement whose parent/child box or element is missing (e.g. a child that lost its
+   * spot in `layoutResult` some other way) rather than throwing. */
+  private positionLabels(
+    placements: readonly PlacedLabel[],
+    labelElements: ReadonlyMap<string, HTMLElement>,
+    layoutResult: LayoutResult,
+    direction: Direction,
+  ): void {
+    for (const placement of placements) {
+      const el = labelElements.get(placement.childPath);
+      const parentBox = layoutResult.boxes.get(placement.parent);
+      const childBox = layoutResult.boxes.get(placement.childPath);
+      if (el === undefined || parentBox === undefined || childBox === undefined) {
+        continue;
+      }
+      const { start, end } = edgeAnchors(parentBox, childBox, direction);
+      el.style.left = `${(start.x + end.x) / 2}px`;
+      el.style.top = `${(start.y + end.y) / 2}px`;
     }
   }
 
@@ -655,6 +824,7 @@ export class GraphRenderer implements StructureRenderer {
     // the graph's own `overflow: auto` to still report while nothing is actually shown.
     this.wrapEl.addClass('is-hidden');
     this.nodesEl.empty();
+    this.labelsEl.empty();
   }
 
   private showContent(): void {

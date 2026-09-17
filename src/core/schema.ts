@@ -34,6 +34,10 @@ export interface Schema {
   readonly inherit: readonly string[];
   readonly layout: 'graph' | 'outline';
   readonly direction: Direction;
+  /** D2: label graph edges with the child's type name (`GraphRenderer` only — the outline ignores
+   * it entirely). `true` only for the literal boolean `true`, matching `direction`'s own
+   * never-an-issue, always-a-safe-fallback treatment of a purely cosmetic option. */
+  readonly edgeLabels: boolean;
 }
 
 export interface SchemaIssue {
@@ -452,6 +456,13 @@ function parseDirection(raw: unknown): Direction {
   return raw === 'down' ? 'down' : 'right';
 }
 
+/** Anything other than the literal `true` is `false` — mirrors `parseDirection`'s own
+ * never-an-issue treatment: a toggle option Bases always writes as a real boolean, so an
+ * unexpected shape here only ever means "not set yet," never a config mistake worth flagging. */
+function parseEdgeLabels(raw: unknown): boolean {
+  return raw === true;
+}
+
 export function parseSchema(read: ConfigReader): { schema: Schema; issues: SchemaIssue[] } {
   const issues: SchemaIssue[] = [];
   const types = resolveTypes(read, issues);
@@ -465,6 +476,7 @@ export function parseSchema(read: ConfigReader): { schema: Schema; issues: Schem
     inherit: parseInherit(read('inherit'), issues),
     layout: parseLayout(read('layout')),
     direction: parseDirection(read('direction')),
+    edgeLabels: parseEdgeLabels(read('edgeLabels')),
   };
   return { schema, issues };
 }

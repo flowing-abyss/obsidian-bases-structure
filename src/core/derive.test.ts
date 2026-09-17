@@ -26,6 +26,7 @@ function schemaOf(types: readonly TypeDef[]): Schema {
     inherit: [],
     layout: 'graph',
     direction: 'right',
+    edgeLabels: false,
   };
 }
 
@@ -322,6 +323,7 @@ describe('deriveSubtreeWrites', () => {
       inherit: ['k'],
       layout: 'graph',
       direction: 'right',
+      edgeLabels: false,
     };
     const structure = structureOf([
       node({ path: 'root.md', type: 'RootOld', children: ['d.md', 'missingChild.md'] }),
