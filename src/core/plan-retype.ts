@@ -572,23 +572,35 @@ function literalRetypeWrites(
   ];
 }
 
+interface BodyOnlyTagInputs {
+  readonly snapshot: Snapshot;
+  readonly node: string;
+  readonly nNote: NoteData | undefined;
+  readonly oldMatch: TypeMatch;
+  readonly newType: TypeDef;
+}
+
 /** I4's rejection check: the old type's tag has to actually be rewritable. When it's present in
  * the note's body/inline text, retype can't remove it there — better to say so than to silently
  * leave it and add the new type's tag alongside it. Round 2 minor 3: checked against `bodyTags`
  * directly (read straight from the metadata cache's own inline-tag entries), not derived as a
  * `tags - frontmatterTags` difference — a tag present in *both* frontmatter and body still keeps
- * the note tagged even after a frontmatter-only rewrite, so it's rejected here too. */
-function bodyOnlyTagReason(
-  snapshot: Snapshot,
-  node: string,
-  nNote: NoteData | undefined,
-  oldMatch: TypeMatch,
-): string | null {
+ * the note tagged even after a frontmatter-only rewrite, so it's rejected here too. Round 4: a tag
+ * the new type's own recipe also requires is excluded from this check, mirroring
+ * `computeTagsWrites`'s round 3 fix for the same reason — nothing distinguishes old from new for
+ * a shared tag, so it's never actually removed, and rejecting a retype over a value that was never
+ * going to be touched only blocks a legitimate change. */
+function bodyOnlyTagReason(inputs: BodyOnlyTagInputs): string | null {
+  const { snapshot, node, nNote, oldMatch, newType } = inputs;
   if (nNote === undefined) {
     return null;
   }
   const bodyTagsLower = new Set(nNote.bodyTags.map((tag) => tag.toLowerCase()));
+  const newLower = new Set(newType.match.tags.map((tag) => tag.toLowerCase()));
   for (const tag of oldMatch.tags) {
+    if (newLower.has(tag.toLowerCase())) {
+      continue;
+    }
     if (bodyTagsLower.has(tag.toLowerCase())) {
       return `"${displayName(snapshot, node)}" keeps the tag "${tag}" in its text; remove it there first`;
     }
@@ -610,7 +622,7 @@ export function planRetype(
   const { nNode, newType, folderTo } = validation.fields;
   const oldMatch = oldMatchOf(schema, nNode.type);
   const nNote = snapshot.notes.get(action.node);
-  const tagReason = bodyOnlyTagReason(snapshot, action.node, nNote, oldMatch);
+  const tagReason = bodyOnlyTagReason({ snapshot, node: action.node, nNote, oldMatch, newType });
   if (tagReason !== null) {
     return { ok: false, reason: tagReason };
   }

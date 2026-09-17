@@ -653,6 +653,47 @@ describe('planAction — retype: I4 — retype only rewrites frontmatter tags, n
     const after = applyPlan(snap, result.plan);
     expect(after.notes.get('n.md')?.frontmatter['tags']).toStrictEqual(['work', 'type/e']);
   });
+
+  it('does not reject a retype over a tag shared by the old and new type that also sits in the body (round 4)', () => {
+    // Same D/E schema and frontmatter as the round 3 test above ("work" required by both, already
+    // in frontmatter), but "work" is *also* an inline `#work` tag in the body. `bodyOnlyTagReason`
+    // used to reject any retype whose old type's tag appeared anywhere in the body, even one the
+    // new type also requires and so `computeTagsWrites` was never going to remove (round 3) —
+    // rejecting here blocked a retype the write layer already handled correctly.
+    const sharedTagSchema = schemaFrom({
+      types: {
+        Cat: { tag: 'cat', children: { D: 'up', E: 'up' } },
+        D: { tag: ['work', 'type/d'] },
+        E: { tag: ['work', 'type/e'] },
+      },
+    });
+    const snap = snapshot([
+      note('cat.md', { tags: ['cat'] }),
+      note('n.md', {
+        tags: ['work', 'type/d'],
+        frontmatterTags: ['work', 'type/d'],
+        bodyTags: ['work'],
+        frontmatter: { tags: ['work', 'type/d'] },
+        propertyLinks: { up: ['cat.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      sharedTagSchema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'E' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [{ key: 'tags', value: { kind: 'listItem', remove: 'type/d', add: 'type/e' } }],
+      },
+    ]);
+  });
 });
 
 describe('planAction — retype: verification failure (resolves to a different type)', () => {
