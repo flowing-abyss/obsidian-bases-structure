@@ -226,64 +226,63 @@ function buildChildrenIndex(
   return map;
 }
 
-/** Walks the parent chain from `start`, marking each node 'visiting' as it goes. A repeat of a
- * 'visiting' node is a cycle (returned as the loop from that repeat onward); reaching `null` or an
- * already-'done' node means this chain is acyclic, so everything walked is marked 'done'. */
-function walkChain(
-  start: string,
-  state: Map<string, 'visiting' | 'done'>,
-  parent: ReadonlyMap<string, string | null>,
-): readonly string[] | null {
-  const path: string[] = [];
-  let current: string | null = start;
-  while (current !== null && state.get(current) !== 'done') {
-    if (state.get(current) === 'visiting') {
-      return path.slice(path.indexOf(current));
-    }
-    state.set(current, 'visiting');
-    path.push(current);
-    current = parent.get(current) ?? null;
-  }
-  for (const visited of path) {
-    state.set(visited, 'done');
-  }
-  return null;
-}
-
-function findCycle(
-  nodes: readonly string[],
-  parent: ReadonlyMap<string, string | null>,
-): readonly string[] | null {
-  const state = new Map<string, 'visiting' | 'done'>();
-  for (const start of nodes) {
-    if (state.get(start) === 'done') {
-      continue;
-    }
-    const cycle = walkChain(start, state, parent);
-    if (cycle !== null) {
-      return cycle;
-    }
-  }
-  return null;
+/** Everything `breakCyclesOnePass` shares across every `start` in the outer loop: the candidate
+ * child counts used to pick a cycle's `top` (computed once — it never changes as cycles are
+ * broken, same as before), the visited/done state (now persistent — see the doc comment below),
+ * and the children index (now updated incrementally instead of rebuilt). Bundled into one object
+ * so the walk/resolve helpers stay within the project's `max-params` budget. */
+interface BreakState {
+  readonly childCounts: ReadonlyMap<string, number>;
+  readonly childrenIndex: Map<string, string[]>;
+  readonly visited: Map<string, 'visiting' | 'done'>;
 }
 
 /** Nodes reachable from `top` by following "children" edges (the reverse of the primary parent
- * pointer) — includes `top` itself and, since `top` sits on a cycle, every cycle member. Relies
- * on `Set` iteration visiting entries added during iteration. */
+ * pointer) — includes `top` itself and, since `top` sits on a cycle, every cycle member. Reads
+ * `childrenIndex` as it currently stands (maintained incrementally by `updateChildrenIndex` as
+ * cycles are broken, rather than rebuilt from scratch here — see `breakCycles`'s doc comment for
+ * why a full rebuild per cycle used to make this quadratic). Relies on `Set` iteration visiting
+ * entries added during iteration. */
 function computeSubtree(
   top: string,
-  orderedNodes: readonly string[],
-  parent: ReadonlyMap<string, string | null>,
+  childrenIndex: ReadonlyMap<string, readonly string[]>,
 ): ReadonlySet<string> {
-  const childrenOf = buildChildrenIndex(orderedNodes, parent);
   const visited = new Set<string>([top]);
   for (const current of visited) {
-    const kids = childrenOf.get(current) ?? [];
+    const kids = childrenIndex.get(current) ?? [];
     for (const kid of kids) {
       visited.add(kid);
     }
   }
   return visited;
+}
+
+/** Keeps `childrenIndex` in sync with a single parent-pointer change (`node`'s primary parent
+ * moving from `oldParent` to `newParent`) — the incremental counterpart to `buildChildrenIndex`,
+ * which would otherwise have to re-scan every node again after each cycle broken in `breakCycles`. */
+function updateChildrenIndex(
+  childrenIndex: Map<string, string[]>,
+  node: string,
+  oldParent: string | null,
+  newParent: string | null,
+): void {
+  if (oldParent !== null) {
+    const list = childrenIndex.get(oldParent);
+    if (list !== undefined) {
+      const index = list.indexOf(node);
+      if (index !== -1) {
+        list.splice(index, 1);
+      }
+    }
+  }
+  if (newParent !== null) {
+    const list = childrenIndex.get(newParent);
+    if (list === undefined) {
+      childrenIndex.set(newParent, [node]);
+    } else {
+      list.push(node);
+    }
+  }
 }
 
 function buildCandidateChildCounts(
@@ -327,37 +326,82 @@ function pickTop(
   );
 }
 
-interface CycleBreakInputs {
-  readonly orderedNodes: readonly string[];
-  readonly childCounts: ReadonlyMap<string, number>;
-}
-
+/** Breaks one cycle by redirecting `top`'s (one of the cycle's own members, chosen by `pickTop`)
+ * primary parent to the best candidate that isn't in `top`'s own subtree — same rule as before.
+ * `top`'s new parent (or its absence) is guaranteed to fall outside `subtree`, which itself always
+ * contains the *entire* walk that led to this cycle (every tail node feeding into it, plus every
+ * other cycle member — see `breakCyclesOnePass`'s doc comment) — so nothing in that walk can ever
+ * be rediscovered as part of a cycle again, however `top`'s new chain continues from here. */
 function resolveCycle(
   env: Env,
   graph: GraphCtx,
-  inputs: CycleBreakInputs,
+  state: BreakState,
   cycle: readonly string[],
 ): void {
-  const top = pickTop(env, inputs.childCounts, cycle);
-  const subtree = computeSubtree(top, inputs.orderedNodes, graph.primary.parent);
+  const top = pickTop(env, state.childCounts, cycle);
+  const subtree = computeSubtree(top, state.childrenIndex);
   const list = graph.candidates.byChild.get(top) ?? [];
   const next = list.find(
     (candidate) => graph.finalNodeTypes.has(candidate.parent) && !subtree.has(candidate.parent),
   );
-  graph.primary.parent.set(top, next?.parent ?? null);
+  const oldParent = graph.primary.parent.get(top) ?? null;
+  const newParent = next?.parent ?? null;
+  graph.primary.parent.set(top, newParent);
   graph.primary.edge.set(top, next?.rule ?? null);
+  updateChildrenIndex(state.childrenIndex, top, oldParent, newParent);
 }
 
-function breakCycles(env: Env, graph: GraphCtx, orderedNodes: readonly string[]): void {
-  const inputs: CycleBreakInputs = {
-    orderedNodes,
-    childCounts: buildCandidateChildCounts(graph.finalNodeTypes, graph.candidates),
-  };
-  let cycle = findCycle(orderedNodes, graph.primary.parent);
-  while (cycle !== null) {
-    resolveCycle(env, graph, inputs, cycle);
-    cycle = findCycle(orderedNodes, graph.primary.parent);
+/** Walks the parent chain from `start`, marking each node 'visiting' as it goes, same as before —
+ * but `state.visited` now persists across every `start` in the outer loop (`breakCyclesOnePass`)
+ * instead of being rebuilt fresh after every single cycle broken. This is safe because breaking a
+ * cycle only ever changes `top`'s own parent pointer, and `top`'s new parent is always chosen from
+ * outside `computeSubtree(top, ...)` — which provably contains this *entire* walk (`path`) up to
+ * and including the cycle itself (every tail node's parent chain leads into the cycle, and every
+ * cycle member reaches every other member by definition) — so once a cycle here is resolved, the
+ * whole `path` walked to find it can be marked 'done' immediately: nothing in it can ever become
+ * part of a *different* cycle later, since `top`'s new outgoing edge can never lead back into it.
+ * A node whose chain doesn't touch this walk at all keeps whatever 'done'/unvisited status it
+ * already had, unaffected by a fix that only ever touches nodes inside `path`. */
+function walkAndBreak(env: Env, graph: GraphCtx, state: BreakState, start: string): void {
+  const path: string[] = [];
+  let current: string | null = start;
+  while (current !== null && state.visited.get(current) !== 'done') {
+    if (state.visited.get(current) === 'visiting') {
+      const cycle = path.slice(path.indexOf(current));
+      resolveCycle(env, graph, state, cycle);
+      break;
+    }
+    state.visited.set(current, 'visiting');
+    path.push(current);
+    current = graph.primary.parent.get(current) ?? null;
   }
+  for (const visited of path) {
+    state.visited.set(visited, 'done');
+  }
+}
+
+/** Breaks every cycle in `graph.primary.parent` in one pass over `orderedNodes`, instead of the
+ * previous "find one cycle by a full fresh scan, fix it, repeat" loop — which re-walked every
+ * already-settled node from scratch after each single fix, and rebuilt the whole children index
+ * (via `computeSubtree`) on every fix too, making both quadratic in the node count (see I6: a
+ * spec-shaped 4,000-note vault with mutual links took multiple seconds to build). Both costs are
+ * now amortized: `state.visited` persists across the whole pass (see `walkAndBreak`'s doc comment
+ * for why that's still correct), and `childrenIndex` is updated incrementally by `resolveCycle`
+ * rather than rebuilt. */
+function breakCycles(
+  env: Env,
+  graph: GraphCtx,
+  orderedNodes: readonly string[],
+): ReadonlyMap<string, readonly string[]> {
+  const state: BreakState = {
+    childCounts: buildCandidateChildCounts(graph.finalNodeTypes, graph.candidates),
+    childrenIndex: buildChildrenIndex(orderedNodes, graph.primary.parent),
+    visited: new Map(),
+  };
+  for (const start of orderedNodes) {
+    walkAndBreak(env, graph, state, start);
+  }
+  return state.childrenIndex;
 }
 
 function ancestorsOf(
@@ -505,8 +549,7 @@ export function buildStructure(schema: Schema, snapshot: Snapshot): Structure {
   const orderedNodes = orderNodes(env, finalNodeTypes);
   const primary = computeInitialPrimary(finalNodeTypes, candidates, root);
   const graph: GraphCtx = { finalNodeTypes, candidates, primary };
-  breakCycles(env, graph, orderedNodes);
-  const childrenIndex = buildChildrenIndex(orderedNodes, primary.parent);
+  const childrenIndex = breakCycles(env, graph, orderedNodes);
   const derived = computeDerived(graph);
   const nodes = buildNodes({ graph, derived, childrenIndex }, orderedNodes);
   const { tops, orphans } = computeTopsAndOrphans(root, orderedNodes, primary.parent);

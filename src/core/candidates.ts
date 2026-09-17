@@ -31,6 +31,10 @@ interface CollectContext {
   readonly resultIndex: ReadonlyMap<string, number>;
   readonly rawByChild: Map<string, Candidate[]>;
   readonly externalByChild: Map<string, ExternalLink[]>;
+  /** Every potential node's own `links`, indexed by target — built once per `collectCandidates`
+   * call so `collectBacklinks` can look up "who links to N" directly instead of scanning every
+   * other potential node's own link list for each N (see `buildBacklinksByTarget`). */
+  readonly backlinksByTarget: ReadonlyMap<string, readonly string[]>;
 }
 
 interface NodeInfo {
@@ -143,18 +147,47 @@ function collectListRule(ctx: CollectContext, nodeInfo: NodeInfo, ruleInfo: Rule
   });
 }
 
+/** Every potential node's own `links`, indexed by target — the reverse of what `collectBacklinks`
+ * used to compute per-call by scanning every other potential node's own link list for each node
+ * with a `backlinks` rule (O(node count × average link list length) per such node). Built once,
+ * so a lookup for a given target is just a map read. */
+function buildBacklinksByTarget(
+  nodeTypes: ReadonlyMap<string, TypeDef | null>,
+  snapshot: Snapshot,
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const xPath of nodeTypes.keys()) {
+    const xNote = snapshot.notes.get(xPath);
+    if (xNote === undefined) {
+      continue;
+    }
+    for (const target of xNote.links) {
+      const list = map.get(target);
+      if (list === undefined) {
+        map.set(target, [xPath]);
+      } else {
+        list.push(xPath);
+      }
+    }
+  }
+  return map;
+}
+
 /** Backlinks candidates come from *any* potential node X (other than N) whose own links include
- * N's path — not from N's own data — so this walks `nodeTypes` rather than a target list. */
+ * N's path — not from N's own data — so this looks up `ctx.backlinksByTarget` (every potential
+ * node that links to N, precomputed once for the whole `collectCandidates` call) instead of
+ * scanning every other potential node's own link list for each N. */
 function collectBacklinks(ctx: CollectContext, nodeInfo: NodeInfo, ruleInfo: RuleInfo): void {
-  for (const [xPath, xType] of ctx.nodeTypes) {
+  const linkers = ctx.backlinksByTarget.get(nodeInfo.path);
+  if (linkers === undefined) {
+    return;
+  }
+  for (const xPath of linkers) {
     if (xPath === nodeInfo.path) {
       continue;
     }
+    const xType = ctx.nodeTypes.get(xPath) ?? null;
     if (xType !== null && xType.name !== ruleInfo.parentType.name) {
-      continue;
-    }
-    const xNote = ctx.snapshot.notes.get(xPath);
-    if (!(xNote?.links.includes(nodeInfo.path) ?? false)) {
       continue;
     }
     pushCandidate(ctx, nodeInfo.path, {
@@ -250,6 +283,7 @@ export function collectCandidates(
     resultIndex: buildResultIndex(snapshot),
     rawByChild: new Map(),
     externalByChild: new Map(),
+    backlinksByTarget: buildBacklinksByTarget(nodeTypes, snapshot),
   };
   for (const [path, type] of nodeTypes) {
     if (type === null) {

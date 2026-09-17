@@ -480,3 +480,71 @@ describe('buildStructure — type conflicts', () => {
     expect(structure.nodes.get('n.md')?.type).toBe('A');
   });
 });
+
+// I6 (final review, batch B): `collectCandidates`'s `collectBacklinks` used to scan every other
+// potential node's own `links` for each node with a `file.backlinks` child rule (node × node ×
+// `links.includes`), and `structure.ts`'s cycle breaking rebuilt the whole children index and
+// re-walked every already-settled node from scratch after fixing *each* cycle — both quadratic in
+// the node count. Reproduces the reviewer's own repro shape: a 4-level spec schema (Category →
+// Meta-note → Problem → Hierarchy, `file.backlinks` self-children on Hierarchy) with 4,000
+// Hierarchy notes, each cross-linking 10 pseudo-random others — dense enough to also force many
+// cycles through `breakCycles`, not just stress `collectBacklinks` alone.
+//
+// Measured on the machine this test was written on (Node, `tsx`, no test framework overhead):
+// before this optimization, `buildStructure` took ~630ms at N=4,000 (and the reviewer's own
+// separate mutual-links repro took ~2.1s at N=8,000, scaling roughly quadratically); after, this
+// exact scenario takes ~35-40ms. The bound below (200ms) is a generous ~5x the optimized time,
+// leaving headroom for slower CI machines while still failing hard if either bottleneck regresses
+// back to quadratic (which would blow well past it long before N reaches 4,000).
+describe('buildStructure — I6 perf regression (4,000 notes, file.backlinks + dense cross-links)', () => {
+  it('builds a 4,000-note spec-shaped structure in well under 200ms', () => {
+    const cfg: Record<string, unknown> = {
+      inherit: ['category', 'meta', 'problem'],
+      types: {
+        Category: {
+          tag: 'system/category',
+          children: { 'Meta-note': 'category', Hierarchy: 'category' },
+        },
+        'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+        Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+        Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+      },
+    };
+    const { schema } = parseSchema(makeRead(cfg));
+    const N = 4000;
+    const metas = 20;
+    const notes = [note('C.md', { tags: ['system/category'] })];
+    for (let m = 0; m < metas; m++) {
+      notes.push(
+        note(`M${m}.md`, {
+          tags: ['system/high/meta'],
+          frontmatter: { category: ['[[C]]'] },
+          propertyLinks: { category: ['C.md'] },
+        }),
+      );
+    }
+    for (let i = 0; i < N; i++) {
+      const links: string[] = [];
+      for (let k = 1; k <= 10; k++) {
+        links.push(`H${(i * 7 + k * 13) % N}.md`);
+      }
+      const m = i % metas;
+      notes.push(
+        note(`H${i}.md`, {
+          tags: ['system/high/hierarchy'],
+          frontmatter: { meta: [`[[M${m}]]`], category: ['[[C]]'] },
+          propertyLinks: { meta: [`M${m}.md`], category: ['C.md'] },
+          links,
+        }),
+      );
+    }
+    const snap = snapshot(notes, { host: 'C.md', results: notes.slice(1).map((n) => n.path) });
+
+    const start = performance.now();
+    const structure = buildStructure(schema, snap);
+    const elapsed = performance.now() - start;
+
+    expect(structure.nodes.size).toBe(1 + metas + N);
+    expect(elapsed).toBeLessThan(200);
+  });
+});
