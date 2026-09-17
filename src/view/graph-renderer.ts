@@ -67,6 +67,16 @@ interface PlacedLabel {
   readonly text: string;
 }
 
+/** The bits of the last `update()` call `computeLayoutFromElements`/`relayout` need to redo layout
+ * without touching `RenderInput` itself — bundled so both stay within this project's `max-params`
+ * budget. */
+interface LayoutContext {
+  readonly entries: readonly VisibleEntry[];
+  readonly input: RenderInput;
+  readonly forestTops: readonly string[];
+  readonly direction: Direction;
+}
+
 interface ToolbarElements {
   readonly toolbarEl: HTMLElement;
   readonly zoomOutBtn: HTMLButtonElement;
@@ -311,6 +321,14 @@ export class GraphRenderer implements StructureRenderer {
   private readonly disposeNodeInteractions: () => void;
   private readonly disposePan: () => void;
   private readonly slWatch: SuperchargedWatch;
+  private readonly nodesObserver: MutationObserver;
+  // Guards `relayout()`'s own writes from re-triggering itself through `nodesObserver` — belt and
+  // braces alongside the attribute-name filter below (`positionNodes` never touches `data-link-*`
+  // anyway), cheap enough to keep even though it's rarely the thing actually filtering a mutation.
+  private positioning = false;
+  // At most one scheduled re-layout at a time (coalesced to one per frame) — `null` when none is
+  // pending, so `destroy()` knows whether there is a handle left to cancel.
+  private pendingRelayoutFrame: number | null = null;
   private state: ViewUiState | null = null;
   private lastInput: RenderInput | null = null;
   private lastLayoutSize: Size = { width: 0, height: 0 };
@@ -376,6 +394,13 @@ export class GraphRenderer implements StructureRenderer {
     nextGraphWatchSeq += 1;
     this.slWatch = { ownerId: options.ownerId, id: `bases-structure-graph-${nextGraphWatchSeq}` };
     this.watchSuperchargedLinks();
+
+    // D3: Supercharged Links decorates a title with `data-link-*` (and the `::after` icon some of
+    // them add) asynchronously, after this node was already measured/positioned — this is what
+    // notices that and re-lays out. `nodesEl` itself never changes across `update()` (only its
+    // children do — see this file's own top comment), so one observer here outlives every render.
+    this.nodesObserver = new MutationObserver(this.handleNodesMutation);
+    this.nodesObserver.observe(this.nodesEl, { attributes: true, subtree: true });
   }
 
   /** D1: watched exactly once, here at construction, against `nodesEl` — a container that stays
@@ -450,12 +475,9 @@ export class GraphRenderer implements StructureRenderer {
     this.showContent();
 
     const direction = this.lastDirection;
-    const { elementsByPath, labels, labelElementsByChild, layoutResult } = this.computeLayout(
-      entries,
-      input,
-      forestTops,
-      direction,
-    );
+    const layoutCtx: LayoutContext = { entries, input, forestTops, direction };
+    const { elementsByPath, labels, labelElementsByChild, layoutResult } =
+      this.computeLayout(layoutCtx);
 
     this.positionNodes(entries, elementsByPath, layoutResult);
     this.applyCanvasSize(layoutResult);
@@ -467,6 +489,12 @@ export class GraphRenderer implements StructureRenderer {
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
     this.applyActiveState(input.state.active, hadFocus);
+    // D3: reconciling a node's `data-link-*` attributes to current frontmatter
+    // (`refreshSuperchargedLinkAttributes`, above, inside `computeLayout`) is itself a
+    // `data-link-*` mutation, but it's this renderer's own normal render, not Supercharged Links
+    // deciding something new — draining it here keeps a plain re-render from scheduling a
+    // redundant re-layout of itself.
+    this.nodesObserver.takeRecords();
   }
 
   /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) —
@@ -494,6 +522,11 @@ export class GraphRenderer implements StructureRenderer {
 
   destroy(): void {
     this.unwatchSuperchargedLinks();
+    this.nodesObserver.disconnect();
+    if (this.pendingRelayoutFrame !== null) {
+      window.cancelAnimationFrame(this.pendingRelayoutFrame);
+      this.pendingRelayoutFrame = null;
+    }
     this.disposeNodeInteractions();
     this.disposePan();
     this.nodesEl.removeEventListener('click', this.handleNodesClick);
@@ -619,22 +652,35 @@ export class GraphRenderer implements StructureRenderer {
   }
 
   /** The whole "build DOM, measure it, lay it out" pipeline for one `update()` — node elements,
-   * their sizes, D2's edge-label placements/elements/gap-widened options, and the resulting
-   * `layoutTree`/`layoutTreeVertical` call, all in one place so `update()` itself only has to
+   * then everything `computeLayoutFromElements` does with them — so `update()` itself only has to
    * sequence the *drawing* steps that come after (`positionNodes`, `drawSvg`, `positionLabels`, …)
    * — kept a separate method purely to stay inside this project's `max-statements` budget. */
-  private computeLayout(
-    entries: readonly VisibleEntry[],
-    input: RenderInput,
-    forestTops: readonly string[],
-    direction: Direction,
-  ): {
+  private computeLayout(ctx: LayoutContext): {
     elementsByPath: Map<string, HTMLElement>;
     labels: PlacedLabel[];
     labelElementsByChild: Map<string, HTMLElement>;
     layoutResult: LayoutResult;
   } {
-    const elementsByPath = this.buildNodeElements(entries, input.state.collapsed, input.focusPath);
+    const elementsByPath = this.buildNodeElements(
+      ctx.entries,
+      ctx.input.state.collapsed,
+      ctx.input.focusPath,
+    );
+    return { elementsByPath, ...this.computeLayoutFromElements(ctx, elementsByPath) };
+  }
+
+  /** The measure/label/`layoutTree` half of `computeLayout`, split out so `relayout` (D3) can redo
+   * it against the *existing* `elementsByPath` — re-measuring nodes whose content changed since the
+   * last render — without rebuilding or reconciling any element. */
+  private computeLayoutFromElements(
+    ctx: LayoutContext,
+    elementsByPath: ReadonlyMap<string, HTMLElement>,
+  ): {
+    labels: PlacedLabel[];
+    labelElementsByChild: Map<string, HTMLElement>;
+    layoutResult: LayoutResult;
+  } {
+    const { entries, input, forestTops, direction } = ctx;
     const sizesByPath = this.measureAll(entries, elementsByPath);
     const labels = this.planLabels(entries, input.structure, input.state.collapsed, input.schema);
     const labelElementsByChild = this.buildLabelElements(labels);
@@ -650,8 +696,58 @@ export class GraphRenderer implements StructureRenderer {
       direction === 'down'
         ? layoutTreeVertical(layoutInput, layoutOptions)
         : layoutTree(layoutInput, layoutOptions);
-    return { elementsByPath, labels, labelElementsByChild, layoutResult };
+    return { labels, labelElementsByChild, layoutResult };
   }
+
+  /** D3: the whole point of `nodesObserver` — re-measure every visible node from `lastInput`
+   * (Supercharged Links may have widened one since the last render) and re-position/redraw from the
+   * result, reusing `elementsByPath` outright. Never rebuilds a node element, never reconciles, and
+   * never touches `data-link-*` — only the layout math and what it positions. A no-op with nothing
+   * to redo (no render yet, or the last one had no visible nodes). */
+  private relayout(): void {
+    const input = this.lastInput;
+    if (input === null) {
+      return;
+    }
+    const forestTops = [...input.structure.tops, ...input.structure.orphans];
+    const entries = collectVisibleEntries(input.structure, forestTops, input.state.collapsed);
+    if (entries.length === 0) {
+      return;
+    }
+    const direction = this.lastDirection;
+    const { labels, labelElementsByChild, layoutResult } = this.computeLayoutFromElements(
+      { entries, input, forestTops, direction },
+      this.elementsByPath,
+    );
+    this.positioning = true;
+    this.positionNodes(entries, this.elementsByPath, layoutResult);
+    this.applyCanvasSize(layoutResult);
+    this.drawSvg(entries, layoutResult, direction);
+    this.positionLabels(labels, labelElementsByChild, layoutResult, direction);
+    this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
+    this.applyZoom(this.currentZoom());
+    this.positioning = false;
+  }
+
+  /** `nodesObserver`'s callback (D3): reacts only to a `data-link-*` attribute changing somewhere
+   * under `nodesEl` — Supercharged Links' own signature — and only when this renderer isn't already
+   * mid-`relayout` itself (`positioning`), so its own writes can never feed back in. Coalesces to at
+   * most one scheduled re-layout at a time via `pendingRelayoutFrame`. */
+  private readonly handleNodesMutation = (mutations: MutationRecord[]): void => {
+    if (this.positioning) {
+      return;
+    }
+    const isLinkChange = mutations.some(
+      (mutation) => mutation.attributeName?.startsWith('data-link-') === true,
+    );
+    if (!isLinkChange || this.pendingRelayoutFrame !== null) {
+      return;
+    }
+    this.pendingRelayoutFrame = window.requestAnimationFrame(() => {
+      this.pendingRelayoutFrame = null;
+      this.relayout();
+    });
+  };
 
   private positionNodes(
     entries: readonly VisibleEntry[],

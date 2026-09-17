@@ -1835,3 +1835,148 @@ describe('GraphRenderer — Supercharged Links attribute carry-over (D1 follow-u
     expect(hookSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('GraphRenderer — re-measure after Supercharged Links changes a node (task 2)', () => {
+  /** jsdom has no `requestAnimationFrame` of its own to drive explicitly, so this replaces it with
+   * a queue the test controls. `flushFrames` first awaits a microtask tick — long enough for the
+   * (real, native) `MutationObserver` callback to run and call the stubbed `requestAnimationFrame`
+   * itself — then invokes whatever got queued, exactly once. */
+  function stubAnimationFrame(): { flushFrames: () => Promise<void> } {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let nextHandle = 1;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
+      const handle = nextHandle++;
+      callbacks.set(handle, cb);
+      return handle;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (handle: number): void => {
+      callbacks.delete(handle);
+    });
+    return {
+      flushFrames: async () => {
+        await Promise.resolve();
+        const pending = Array.from(callbacks.values());
+        callbacks.clear();
+        for (const cb of pending) {
+          cb(0);
+        }
+      },
+    };
+  }
+
+  /** `a.md` and `b.md` as two independent forest tops (`flatInput`) — direction: right stacks
+   * separate tops in their own rows, so growing `a.md`'s own row height pushes `b.md`'s row down,
+   * a change hand-checkable without needing to know either box's exact coordinates. */
+  function measureByWidth(wide: Set<string>): (el: HTMLElement) => Size {
+    return (el) =>
+      wide.has(el.getAttribute('data-path') ?? '')
+        ? { width: 100, height: 60 }
+        : { width: 100, height: 20 };
+  }
+
+  it('re-lays out when Supercharged Links adds an attribute later', async () => {
+    const { flushFrames } = stubAnimationFrame();
+    const wide = new Set<string>();
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByWidth(wide) });
+    renderer.update(flatInput(['a.md', 'b.md']));
+    const before = renderer.getNodeElement('b.md')?.style.top;
+
+    wide.add('a.md'); // the stubbed measure now reports a taller node for a.md
+    must(renderer.getNodeElement('a.md')?.querySelector<HTMLElement>('a')).setAttribute(
+      'data-link-tags',
+      'x',
+    );
+    await flushFrames();
+
+    expect(renderer.getNodeElement('b.md')?.style.top).not.toBe(before);
+  });
+
+  it('ignores an attribute change that is not data-link-*', async () => {
+    const { flushFrames } = stubAnimationFrame();
+    const wide = new Set<string>();
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByWidth(wide) });
+    renderer.update(flatInput(['a.md', 'b.md']));
+    const before = renderer.getNodeElement('b.md')?.style.top;
+
+    wide.add('a.md');
+    must(renderer.getNodeElement('a.md')?.querySelector<HTMLElement>('a')).setAttribute(
+      'data-foo',
+      'x',
+    );
+    await flushFrames();
+
+    expect(renderer.getNodeElement('b.md')?.style.top).toBe(before);
+  });
+
+  it('coalesces several attribute changes into a single re-layout per frame', async () => {
+    const { flushFrames } = stubAnimationFrame();
+    const wide = new Set<string>();
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByWidth(wide) });
+    renderer.update(flatInput(['a.md', 'b.md']));
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame');
+    const title = must(renderer.getNodeElement('a.md')?.querySelector<HTMLElement>('a'));
+
+    wide.add('a.md');
+    title.setAttribute('data-link-tags', 'x');
+    title.setAttribute('data-link-type', 'y');
+    await flushFrames();
+
+    expect(rafSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a pending re-layout frame on destroy, and stops observing', async () => {
+    stubAnimationFrame();
+    const wide = new Set<string>();
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: measureByWidth(wide) });
+    renderer.update(flatInput(['a.md', 'b.md']));
+    const cafSpy = vi.spyOn(window, 'cancelAnimationFrame');
+    const title = must(renderer.getNodeElement('a.md')?.querySelector<HTMLElement>('a'));
+    wide.add('a.md');
+    title.setAttribute('data-link-tags', 'x');
+    await Promise.resolve(); // let the MutationObserver's own microtask schedule the frame
+
+    renderer.destroy();
+
+    expect(cafSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not crash on a mutation observed before the first update (defensive)', async () => {
+    const { flushFrames } = stubAnimationFrame();
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    // `nodesEl` exists as soon as the renderer is constructed, before any `update()` call — so
+    // `relayout()`'s scheduled frame runs against a renderer with no `lastInput` yet.
+    const nodesEl = must(container.querySelector<HTMLElement>('.bases-structure-nodes'));
+    const stray = nodesEl.createDiv();
+    stray.setAttribute('data-link-tags', 'x');
+
+    await expect(flushFrames()).resolves.toBeUndefined();
+
+    expect(renderer.getNodeElement('a.md')).toBeNull();
+  });
+
+  it('does not crash on a mutation observed while the structure has no visible nodes (defensive)', async () => {
+    const { flushFrames } = stubAnimationFrame();
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(flatInput(['a.md']));
+    const title = must(renderer.getNodeElement('a.md')?.querySelector<HTMLElement>('a'));
+    title.setAttribute('data-link-tags', 'x'); // schedules a re-layout for the frame below
+    const emptyStructure: Structure = {
+      root: null,
+      tops: [],
+      orphans: [],
+      nodes: new Map(),
+      issues: [],
+    };
+    renderer.update(makeInput({ structure: emptyStructure, snapshot: snapshot([]) }));
+
+    await expect(flushFrames()).resolves.toBeUndefined();
+
+    expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(0);
+  });
+});
