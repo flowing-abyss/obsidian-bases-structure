@@ -5,7 +5,7 @@
 // The DOM is built once in the constructor and reused across `update()` calls; only the nodes
 // layer and the SVG's dynamic content (everything after `<defs>`) are rebuilt each time.
 
-import type { LayoutOptions, LayoutResult, Size } from '../core/layout.js';
+import type { Box, LayoutOptions, LayoutResult, Size } from '../core/layout.js';
 import {
   DEFAULT_LAYOUT_OPTIONS,
   DEFAULT_VERTICAL_LAYOUT_OPTIONS,
@@ -132,6 +132,12 @@ function defaultMeasure(el: HTMLElement): Size {
     width: el.offsetWidth === 0 ? DEFAULT_NODE_WIDTH : el.offsetWidth + WIDTH_SAFETY_MARGIN,
     height: el.offsetHeight === 0 ? DEFAULT_NODE_HEIGHT : el.offsetHeight,
   };
+}
+
+/** `center` (a layout-space coordinate) scaled to viewport pixels, then offset so it lands in the
+ * middle of a `viewportSize`-wide/tall scroll area — clamped to 0 (the browser clamps the max). */
+function centeredScroll(center: number, zoom: number, viewportSize: number): number {
+  return Math.max(0, center * zoom - viewportSize / 2);
 }
 
 // M3: takes `doc` explicitly (the container's own owner document — a pop-out window's, when the
@@ -443,7 +449,7 @@ export class GraphRenderer implements StructureRenderer {
     this.drawSvg(entries, layoutResult, direction);
     this.positionLabels(labels, labelElementsByChild, layoutResult, direction);
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
-    this.applyAutoFit(input.state);
+    this.applyAutoFit(input.state, layoutResult.boxes.get(forestTops[0] ?? ''));
     this.applyZoom(input.state.zoom);
     this.graphEl.scrollLeft = input.state.scrollLeft;
     this.graphEl.scrollTop = input.state.scrollTop;
@@ -892,7 +898,7 @@ export class GraphRenderer implements StructureRenderer {
    * chance once the container is really laid out. Never lands below `AUTO_FIT_MIN_ZOOM`: a graph
    * nobody explicitly asked to shrink should never open with unreadable text, even a very wide one
    * in a narrow embed — it just overflows into the scroll area past that floor instead. */
-  private applyAutoFit(state: ViewUiState): void {
+  private applyAutoFit(state: ViewUiState, rootBox: Box | undefined): void {
     if (state.zoomTouched || this.lastAutoFitDirection === this.lastDirection) {
       return;
     }
@@ -901,6 +907,33 @@ export class GraphRenderer implements StructureRenderer {
     }
     this.lastAutoFitDirection = this.lastDirection;
     state.zoom = Math.min(ZOOM_MAX, Math.max(AUTO_FIT_MIN_ZOOM, this.computeFitZoom()));
+    this.centerRootInView(state, rootBox);
+  }
+
+  /** The auto-fit floor (`AUTO_FIT_MIN_ZOOM`) can still leave a graph overflowing the viewport —
+   * scroll defaults to 0/0, which isn't necessarily where the root landed (`down` centres the
+   * root horizontally in its column; `right` centres it vertically). Brings the first forest top
+   * into view along that axis; the other axis stays 0. A no-op once the graph already fits (the
+   * clamp lands at 0 on its own). */
+  private centerRootInView(state: ViewUiState, rootBox: Box | undefined): void {
+    if (rootBox === undefined) {
+      return;
+    }
+    if (this.lastDirection === 'down') {
+      state.scrollLeft = centeredScroll(
+        rootBox.x + rootBox.width / 2,
+        state.zoom,
+        this.graphEl.clientWidth,
+      );
+      state.scrollTop = 0;
+    } else {
+      state.scrollLeft = 0;
+      state.scrollTop = centeredScroll(
+        rootBox.y + rootBox.height / 2,
+        state.zoom,
+        this.graphEl.clientHeight,
+      );
+    }
   }
 
   /** U2: "Fit" follows the axis the tree actually grows along. `direction: 'right'` trees grow

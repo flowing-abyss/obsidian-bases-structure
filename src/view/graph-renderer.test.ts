@@ -780,6 +780,86 @@ describe('GraphRenderer', () => {
     expect(state.zoom).toBe(1);
   });
 
+  it('centres the root horizontally for direction: down when the auto-fit floor still overflows', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    // Vertical layout is 124x152 (root at x=12, width 100 — see the "direction: down" describe
+    // block below); a 40x40 viewport floors zoom at 0.85 (see "clamps auto-fit at 0.85 for
+    // direction: down too"), leaving the 105px-wide canvas still wider than the 40px viewport.
+    fakeGraphViewport(container, 40, 40);
+    const state = makeState();
+
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    // Root centre x = 12 + 100/2 = 62; scrollLeft = 62 * 0.85 - 40/2 = 32.7.
+    expect(state.scrollLeft).toBeCloseTo(32.7);
+    expect(state.scrollTop).toBe(0);
+  });
+
+  it('centres the root vertically for direction: right when the auto-fit floor still overflows', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    // Layout is 408x44 (root at y=12, height 20); a 204x22 viewport floors zoom at 0.85 (see
+    // "auto-fits on the first render..."), leaving the 37.4px-tall canvas taller than the 22px
+    // viewport.
+    fakeGraphViewport(container, 204, 22);
+    const state = makeState();
+
+    renderer.update(makeInput({ state }));
+
+    expect(state.scrollLeft).toBe(0);
+    // Root centre y = 12 + 20/2 = 22; scrollTop = 22 * 0.85 - 22/2 = 7.7.
+    expect(state.scrollTop).toBeCloseTo(7.7);
+  });
+
+  it('leaves scroll at 0/0 once the whole graph fits (no overflow to bring the root into)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    // Exactly the vertical layout's own size (124x152): zoom lands on 1, unclamped, and the whole
+    // tree — including the root — is already fully in view.
+    fakeGraphViewport(container, 124, 152);
+    const state = makeState();
+
+    renderer.update(makeInput({ schema: verticalSchema(), state }));
+
+    expect(state.zoom).toBe(1);
+    expect(state.scrollLeft).toBe(0);
+    expect(state.scrollTop).toBe(0);
+  });
+
+  it('keeps the user’s own scroll on a later render instead of re-centring', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 204, 22);
+    const state = makeState();
+    renderer.update(makeInput({ state }));
+    expect(state.scrollTop).toBeCloseTo(7.7); // centred once, as above.
+
+    state.scrollLeft = 5;
+    state.scrollTop = 5;
+    renderer.update(makeInput({ state }));
+
+    expect(state.scrollLeft).toBe(5);
+    expect(state.scrollTop).toBe(5);
+  });
+
+  it('re-centres once for a new direction after a switch (U3)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    fakeGraphViewport(container, 204, 22);
+    const state = makeState();
+    renderer.update(makeInput({ state })); // right: floored at 0.85, vertical overflow.
+    expect(state.scrollLeft).toBe(0);
+    expect(state.scrollTop).toBeCloseTo(7.7);
+
+    fakeGraphViewport(container, 40, 40);
+    renderer.update(makeInput({ schema: verticalSchema(), state })); // down: floored at 0.85 too.
+
+    // Reset for the new axis, and recomputed (not merely left over from the right-direction fit).
+    expect(state.scrollTop).toBe(0);
+    expect(state.scrollLeft).toBeCloseTo(32.7);
+  });
+
   it('exposes aria-labels for the three toolbar controls with no leftover text labels', () => {
     const container = createDiv();
     expect(new GraphRenderer(container, makeCtx(), { measure: fixedMeasure })).toBeInstanceOf(
