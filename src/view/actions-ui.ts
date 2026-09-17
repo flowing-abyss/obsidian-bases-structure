@@ -54,6 +54,14 @@ export interface ActionsDeps {
 
 type ChainMode = 'enter' | 'tab';
 
+/** Where a follow-up menu (U1's type menu) should position itself: `buttonEl` (the actual button
+ * clicked, when there is one) wins over the node it belongs to; `event` (a real click, e.g. on a
+ * context-menu item) wins over both — see `showMenuAt`. */
+interface MenuAnchor {
+  readonly buttonEl: HTMLElement | undefined;
+  readonly event: MouseEvent | undefined;
+}
+
 interface DraftState {
   readonly anchorEl: HTMLElement;
   readonly parentPath: string;
@@ -277,7 +285,18 @@ export class StructureActions {
     this.pendingCreate = null;
   }
 
-  startCreate(parentPath: string, anchorEl: HTMLElement, event?: MouseEvent): void {
+  /** `buttonEl` (U1) is the actual "+" button clicked, when there is one — the type menu
+   * positions itself from *that* element's rect, not `anchorEl` (the whole node), so it opens
+   * directly under the button instead of wherever the node's own top-left happens to be.
+   * `undefined` for every caller that has no distinct button (keyboard Tab, a chained reopen, the
+   * context menu's "Add child" item — those fall back to `anchorEl` itself, or to `event` when
+   * one is given). */
+  startCreate(
+    parentPath: string,
+    anchorEl: HTMLElement,
+    buttonEl?: HTMLElement,
+    event?: MouseEvent,
+  ): void {
     this.clearPendingCreate();
     const { schema, snapshot, structure } = this.deps.getInput();
     const options = childOptions(schema, structure, parentPath);
@@ -290,7 +309,7 @@ export class StructureActions {
       this.openDraft(parentPath, anchorEl, only.type);
       return;
     }
-    this.showTypeMenu(parentPath, anchorEl, options, event);
+    this.showTypeMenu(parentPath, anchorEl, options, { buttonEl, event });
   }
 
   /** The externally-visible close path for a draft — Escape, blur, and `destroy()` funnel through
@@ -459,7 +478,7 @@ export class StructureActions {
     menu.addItem((item) => {
       item.setTitle('Add child').onClick((evt) => {
         if (anchorEl !== null) {
-          this.startCreate(node, anchorEl, asMouseEvent(evt));
+          this.startCreate(node, anchorEl, undefined, asMouseEvent(evt));
         }
       });
     });
@@ -529,20 +548,25 @@ export class StructureActions {
       });
   }
 
-  private showMenuAt(menu: Menu, anchorEl: HTMLElement, event?: MouseEvent): void {
+  /** `event` (a real click, e.g. on a context-menu item) always wins — `showAtMouseEvent` is what
+   * `contextmenu`-triggered menus use throughout. Otherwise (U1) `positionEl`'s own
+   * `getBoundingClientRect()` decides where the menu opens — never a stale mouse event — with a
+   * small 4px gap so it doesn't touch the button, via `positionEl.doc` (its own owner document, a
+   * pop-out window's when the view is open in one — see `showAtPosition`'s signature). */
+  private showMenuAt(menu: Menu, positionEl: HTMLElement, event?: MouseEvent): void {
     if (event !== undefined) {
       menu.showAtMouseEvent(event);
       return;
     }
-    const rect = anchorEl.getBoundingClientRect();
-    menu.showAtPosition({ x: rect.left, y: rect.bottom });
+    const rect = positionEl.getBoundingClientRect();
+    menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 }, positionEl.doc);
   }
 
   private showTypeMenu(
     parentPath: string,
     anchorEl: HTMLElement,
     options: ReadonlyArray<{ readonly type: string; readonly rule: EdgeRule }>,
-    event?: MouseEvent,
+    menuAnchor: MenuAnchor,
   ): void {
     const menu = new Menu();
     for (const option of options) {
@@ -552,7 +576,9 @@ export class StructureActions {
         });
       });
     }
-    this.showMenuAt(menu, anchorEl, event);
+    // U1: the button actually clicked (when there is one) positions the menu — never the whole
+    // node, which can be much wider than the button and so opens the menu away from the click.
+    this.showMenuAt(menu, menuAnchor.buttonEl ?? anchorEl, menuAnchor.event);
   }
 
   /** `anchorEl` gets `DRAFTING_CLASS` for the draft's whole lifetime (removed by `teardownDraft`):

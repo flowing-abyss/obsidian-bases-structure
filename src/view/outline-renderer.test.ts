@@ -374,11 +374,10 @@ describe('OutlineRenderer', () => {
 
     renderer.update({ schema, snapshot: snap, structure, state: getUiState('outline-add') });
     const nodeEl = container.querySelector<HTMLElement>('[data-path="a.md"]');
-    container
-      .querySelector('[data-path="a.md"] .bases-structure-add')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const buttonEl = container.querySelector('[data-path="a.md"] .bases-structure-add');
+    buttonEl?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
-    expect(onAdd).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl);
+    expect(onAdd).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl, buttonEl);
   });
 
   it('a pointerdown on an outline row is a valid drag source (data-path present)', () => {

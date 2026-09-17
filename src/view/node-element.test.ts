@@ -231,7 +231,7 @@ describe('attachNodeInteractions', () => {
     expect(openLinkText).not.toHaveBeenCalled();
   });
 
-  it('calls onAdd with the node path and element on an add-button click, without opening the note', () => {
+  it('calls onAdd with the node path, node element and the add button itself, without opening the note (U1)', () => {
     const app = App.createConfigured__();
     const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
     const onAdd = vi.fn();
@@ -240,12 +240,11 @@ describe('attachNodeInteractions', () => {
     const nodeEl = createNodeElement(ctx, makeNode({ path: 'a.md' }));
     container.appendChild(nodeEl);
     attachNodeInteractions(ctx, container);
+    const buttonEl = container.querySelector('.bases-structure-add');
 
-    container
-      .querySelector('.bases-structure-add')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    buttonEl?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
-    expect(onAdd).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl);
+    expect(onAdd).toHaveBeenCalledExactlyOnceWith('a.md', nodeEl, buttonEl);
     expect(openLinkText).not.toHaveBeenCalled();
   });
 

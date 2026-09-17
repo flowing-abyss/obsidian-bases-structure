@@ -352,9 +352,40 @@ describe('startCreate', () => {
       });
     const event = new MouseEvent('click');
 
-    h.actions.startCreate('cat.md', catEl, event);
+    h.actions.startCreate('cat.md', catEl, undefined, event);
 
     expect(showAtMouseEventSpy).toHaveBeenCalledExactlyOnceWith(event);
+  });
+
+  it('positions the type menu at the "+" button’s own rect, not the (much wider) node’s (U1)', () => {
+    const h = makeHarness(baseFiles());
+    const catEl = h.nodes.get('cat.md');
+    if (catEl === undefined) throw new Error('missing cat element');
+    attachRendererChildren(catEl);
+    const buttonEl = catEl.querySelector<HTMLElement>('.bases-structure-add');
+    if (buttonEl === null) throw new Error('missing add button');
+    // Deliberately different rects: before U1, the menu used `anchorEl` (the whole node) even
+    // when a button was available — this fails unless the button's own numbers are the ones used.
+    vi.spyOn(catEl, 'getBoundingClientRect').mockReturnValue({
+      left: 5,
+      bottom: 10,
+    } as DOMRect);
+    vi.spyOn(buttonEl, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      bottom: 200,
+    } as DOMRect);
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.startCreate('cat.md', catEl, buttonEl);
+
+    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith(
+      { x: 100, y: 204 },
+      buttonEl.ownerDocument,
+    );
   });
 
   it('shows a Notice and opens no draft when nothing is allowed under the node', () => {

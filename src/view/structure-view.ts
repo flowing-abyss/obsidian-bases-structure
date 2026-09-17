@@ -238,8 +238,8 @@ export class StructureView extends BasesView {
       sourcePath: host?.path ?? '',
       hoverParent: this,
       snapshot,
-      onAdd: (path, anchorEl) => {
-        actions.startCreate(path, anchorEl);
+      onAdd: (path, anchorEl, buttonEl) => {
+        actions.startCreate(path, anchorEl, buttonEl);
       },
     };
     const renderer = this.resolveRenderer(schema.layout, ctx);

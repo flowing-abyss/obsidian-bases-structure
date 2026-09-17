@@ -17,9 +17,13 @@ export interface NodeElementContext {
   readonly sourcePath: string; // host path, or '' when there is none
   readonly hoverParent: Component; // the view, for hover-link
   readonly snapshot: Snapshot;
-  /** Invoked with a node's own path and its `.bases-structure-node` element when the "+" button
-   * on that node is clicked — wired to `StructureActions.startCreate` by `structure-view.ts`. */
-  readonly onAdd: (path: string, anchorEl: HTMLElement) => void;
+  /** Invoked with a node's own path, its `.bases-structure-node` element, and the actual "+"
+   * button clicked, when that button is clicked — wired to `StructureActions.startCreate` by
+   * `structure-view.ts`. `anchorEl` (the node) is what a draft attaches to; `buttonEl` (U1) is
+   * what a resulting type menu positions itself under — the node can be much wider than the
+   * button, so anchoring the menu to the node instead used to open it away from where the user
+   * actually clicked. */
+  readonly onAdd: (path: string, anchorEl: HTMLElement, buttonEl: HTMLElement) => void;
 }
 
 /** Flags that depend on where a node sits in the forest rather than on the node itself (a
@@ -38,7 +42,7 @@ export interface MutableNodeElementContext {
   sourcePath: string;
   hoverParent: Component;
   snapshot: Snapshot;
-  onAdd: (path: string, anchorEl: HTMLElement) => void;
+  onAdd: (path: string, anchorEl: HTMLElement, buttonEl: HTMLElement) => void;
 }
 
 export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeElementContext {
@@ -177,17 +181,20 @@ function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } 
   return { title, path };
 }
 
-/** The node whose "+" button was clicked, and its own path — `null` when the click didn't land on
- * an add button at all. */
-function readAddHit(event: MouseEvent): { nodeEl: HTMLElement; path: string } | null {
+/** The node whose "+" button was clicked, its own path, and the button itself (U1: the menu that
+ * follows positions from the button's own rect, not the whole node's) — `null` when the click
+ * didn't land on an add button at all. */
+function readAddHit(
+  event: MouseEvent,
+): { nodeEl: HTMLElement; buttonEl: HTMLElement; path: string } | null {
   if (!(event.target instanceof HTMLElement)) {
     return null;
   }
-  const button = event.target.closest<HTMLElement>(ADD_SELECTOR);
-  if (button === null) {
+  const buttonEl = event.target.closest<HTMLElement>(ADD_SELECTOR);
+  if (buttonEl === null) {
     return null;
   }
-  const nodeEl = button.closest<HTMLElement>(NODE_SELECTOR);
+  const nodeEl = buttonEl.closest<HTMLElement>(NODE_SELECTOR);
   if (nodeEl === null) {
     return null;
   }
@@ -195,7 +202,7 @@ function readAddHit(event: MouseEvent): { nodeEl: HTMLElement; path: string } | 
   if (path === null) {
     return null;
   }
-  return { nodeEl, path };
+  return { nodeEl, buttonEl, path };
 }
 
 /** One delegated `click` and one delegated `mouseover` listener on `container`, matching the
@@ -209,7 +216,7 @@ export function attachNodeInteractions(
     const addHit = readAddHit(event);
     if (addHit !== null) {
       event.stopPropagation();
-      ctx.onAdd(addHit.path, addHit.nodeEl);
+      ctx.onAdd(addHit.path, addHit.nodeEl, addHit.buttonEl);
       return;
     }
     const hit = readTitlePath(event);
