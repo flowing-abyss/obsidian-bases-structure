@@ -39,5 +39,7 @@
   },
   "permissions": {
     "allow": ["mcp__codegraph__*"]
-  }
+  },
+  "enableAllProjectMcpServers": false,
+  "disabledMcpjsonServers": ["context7", "github", "semgrep", "deepwiki"]
 }
