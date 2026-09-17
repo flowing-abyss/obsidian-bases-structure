@@ -32,6 +32,14 @@ export interface KeyboardDeps {
 }
 
 const NODE_SELECTOR = '.bases-structure-node';
+// Matches `node-element.ts`'s own selector — kept as a local copy for the same reason
+// `NODE_SELECTOR` above is (see this module's own doc comment): a title click already opens the
+// note (`attachNodeInteractions`'s delegated listener on the renderer's own container), and I9
+// decided that gesture shouldn't *also* activate the node for keyboard purposes — clicking a title
+// to navigate away is not "select this node", and doing so anyway is what let a stale `state.active`
+// (which survives a view being torn down and recreated) steal focus/scroll back on this same node
+// on a later, unrelated visit.
+const TITLE_SELECTOR = '.bases-structure-title';
 
 /** Everything a key handler needs about "the currently active node" — resolved once per keydown
  * (`resolveActiveCtx`) so the individual handlers below stay simple lookups/mutations. */
@@ -354,6 +362,11 @@ function handleContainerFocus(deps: KeyboardDeps): void {
 
 function handleContainerClick(deps: KeyboardDeps, event: MouseEvent): void {
   if (!(event.target instanceof HTMLElement) || isTypingTarget(event.target)) {
+    return;
+  }
+  // A title click opens the note (see this constant's own doc comment) rather than selecting the
+  // node — leave `state.active` alone so navigating away doesn't also change keyboard focus.
+  if (event.target.closest(TITLE_SELECTOR) !== null) {
     return;
   }
   const path = event.target.closest<HTMLElement>(NODE_SELECTOR)?.getAttribute('data-path');

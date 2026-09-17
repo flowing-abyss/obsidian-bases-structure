@@ -20,7 +20,7 @@ import { displayName } from '../core/snapshot.js';
 import type { Structure, StructureIssue } from '../core/structure.js';
 import { buildStructure } from '../core/structure.js';
 import type StructureViewPlugin from '../main.js';
-import { findHostFile } from '../obsidian/root-finder.js';
+import { findContainingFile, findHostFile } from '../obsidian/root-finder.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
 import type { FreshInput } from './actions-ui.js';
 import { StructureActions } from './actions-ui.js';
@@ -207,10 +207,26 @@ export class StructureView extends BasesView {
     return { schema, issues, host, snapshot, structure };
   }
 
+  /** The `getUiState` key (I9): must include the `.base` file itself, or two different `.base`
+   * files opened directly (no host note at all, so `host` is `null` for both) with a view of the
+   * same name would collide on the exact same key and silently share collapsed/zoom/scroll/active
+   * state. Embedded in a host note, `host.path` already disambiguates (a note only has one Bases
+   * embed of a given view name at a time in practice), so the key stays exactly what it was before
+   * this fix. Opened directly, `host` is `null` — `BasesView`/`BasesViewConfig`/`QueryController`'s
+   * public surface has nothing file-related to fall back to (see `findContainingFile`'s own doc
+   * comment for what was actually checked), so this uses the `.base` file's own path via that
+   * broader, `FileView`-based lookup; if even that somehow finds nothing, the key degrades to the
+   * pre-I9 host+view-name shape (`''::name`) — a known, documented limitation, not a crash. */
+  private resolveStateKey(host: ReturnType<typeof findHostFile>): string {
+    const basePath =
+      host !== null ? host.path : (findContainingFile(this.app, this.containerEl)?.path ?? '');
+    return `${basePath}::${this.config.name}`;
+  }
+
   private render(): void {
     const { schema, issues, host, snapshot, structure } = this.computeCurrentData();
     this.renderIssues(issues, structure.issues, snapshot);
-    const state = getUiState(`${host?.path ?? ''}::${this.config.name}`);
+    const state = getUiState(this.resolveStateKey(host));
     const input: RenderInput = { schema, snapshot, structure, state };
     this.lastInput = input;
     const actions = this.resolveActions(host?.path ?? '', () => this.lastInput ?? input);

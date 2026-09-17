@@ -1,6 +1,6 @@
 import type * as ObsidianModule from 'obsidian';
 import type { BasesQueryResult, PluginManifest, TFile } from 'obsidian';
-import { App, QueryController } from 'obsidian-test-mocks/obsidian';
+import { App, FileView, QueryController } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import StructureViewPlugin from '../main.js';
@@ -950,6 +950,86 @@ describe('StructureView — keyboard wiring', () => {
       expect(findNode(parentEl, 'cat.md').classList.contains('is-active')).toBe(true);
     },
   );
+});
+
+// A minimal concrete `FileView` standing in for the built-in, non-`MarkdownView` `FileView`
+// subclass a directly-opened `.base` file's own leaf really uses (see `root-finder.test.ts`'s
+// identical helper/doc comment — duplicated here rather than shared, matching this project's
+// existing pattern of each view-level test file owning its own small View mocks).
+class TestFileView extends FileView {
+  getViewType(): string {
+    return 'test-file-view';
+  }
+}
+
+/** Attaches `parentEl` (a `StructureView`'s own root container) inside a `FileView` leaf backed
+ * by `basePath` — simulates the view being opened directly (no host markdown note at all), the
+ * one case `findHostFile` alone can't key UI state by (I9). */
+function attachAsDirectBaseLeaf(app: App, parentEl: HTMLElement, basePath: string): void {
+  const leaf = app.workspace.getLeaf(true);
+  const view = new TestFileView(leaf);
+  const file = app.vault.getFileByPath(basePath);
+  if (file === null) {
+    throw new Error(`Test setup error: missing file "${basePath}"`);
+  }
+  view.file = file;
+  leaf.view = view.asOriginalType4__();
+  view.containerEl.appendChild(parentEl);
+}
+
+describe('StructureView — UI state key includes the .base file path when opened directly (I9)', () => {
+  const catConfig = { Cat: { tag: 'cat' } };
+
+  function zoomLabelOf(parentEl: HTMLElement): string | null {
+    return parentEl.querySelector('.bases-structure-zoom-label')?.textContent ?? null;
+  }
+
+  it('does not share zoom state between two different directly-opened .base files with the same (default, empty) view name', () => {
+    const app = App.createConfigured__({
+      files: { 'cat.md': '---\ntags: [cat]\n---\n', 'first.base': '', 'second.base': '' },
+    });
+
+    const { view: viewA, parentEl: parentElA } = createView(app, [mustFile(app, 'cat.md')]);
+    attachAsDirectBaseLeaf(app, parentElA, 'first.base');
+    viewA.config.set('types', catConfig);
+    viewA.onDataUpdated();
+    const zoomInA = parentElA.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]');
+    if (zoomInA === null) throw new Error('Test setup error: missing zoom-in button');
+    zoomInA.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(zoomLabelOf(parentElA)).not.toBe('100%');
+
+    const { view: viewB, parentEl: parentElB } = createView(app, [mustFile(app, 'cat.md')]);
+    attachAsDirectBaseLeaf(app, parentElB, 'second.base');
+    viewB.config.set('types', catConfig);
+    viewB.onDataUpdated();
+
+    // Same empty view name, same schema, same host-less ("opened directly") shape — only the
+    // `.base` file itself tells them apart; without that, view B would inherit view A's zoom.
+    expect(zoomLabelOf(parentElB)).toBe('100%');
+  });
+
+  it('gives the same directly-opened .base file the same state key across two view instances (re-render, not a collision)', () => {
+    const app = App.createConfigured__({
+      files: { 'cat.md': '---\ntags: [cat]\n---\n', 'shared.base': '' },
+    });
+
+    const { view: viewA, parentEl: parentElA } = createView(app, [mustFile(app, 'cat.md')]);
+    attachAsDirectBaseLeaf(app, parentElA, 'shared.base');
+    viewA.config.set('types', catConfig);
+    viewA.onDataUpdated();
+    const zoomInA = parentElA.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]');
+    if (zoomInA === null) throw new Error('Test setup error: missing zoom-in button');
+    zoomInA.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const zoomedLabel = zoomLabelOf(parentElA);
+    expect(zoomedLabel).not.toBe('100%');
+
+    const { view: viewB, parentEl: parentElB } = createView(app, [mustFile(app, 'cat.md')]);
+    attachAsDirectBaseLeaf(app, parentElB, 'shared.base');
+    viewB.config.set('types', catConfig);
+    viewB.onDataUpdated();
+
+    expect(zoomLabelOf(parentElB)).toBe(zoomedLabel);
+  });
 });
 
 describe('formatStructureIssue', () => {

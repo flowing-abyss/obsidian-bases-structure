@@ -213,7 +213,14 @@ export class GraphRenderer implements StructureRenderer {
   // Tracks the active path applied by the *previous* `update()` so a re-render triggered for an
   // unrelated reason (a collapse toggle elsewhere, a refresh from an action) doesn't re-focus or
   // re-scroll to the same node every time — only an actual change does (see `applyActiveState`).
+  // `null` until the first `update()`, which seeds it from that render's own `state.active` (I9)
+  // instead of leaving it `null` — `state.active` survives a view being torn down and recreated
+  // (`getUiState` is keyed independent of any one renderer instance), so a fresh renderer's very
+  // first render would otherwise see its own initial `null` as a "change" the moment `state.active`
+  // is already non-null (e.g. the user had a node active before switching away and back), stealing
+  // focus/scroll nobody asked for on that render.
   private lastActivePath: string | null = null;
+  private hasRenderedOnce = false;
 
   constructor(container: HTMLElement, ctx: NodeElementContext, options: GraphRendererOptions = {}) {
     this.container = container;
@@ -259,6 +266,10 @@ export class GraphRenderer implements StructureRenderer {
     // silently fall back to `document.body`, and the next real keydown would never reach the
     // container's delegated listener again (see `applyActiveState`).
     const hadFocus = this.nodesEl.contains(document.activeElement);
+    if (!this.hasRenderedOnce) {
+      this.lastActivePath = input.state.active;
+      this.hasRenderedOnce = true;
+    }
     this.lastInput = input;
     this.state = input.state;
     this.ctx.snapshot = input.snapshot;

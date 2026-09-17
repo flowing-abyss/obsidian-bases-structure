@@ -600,7 +600,30 @@ describe('OutlineRenderer', () => {
     expect(rootEl?.tabIndex).toBe(-1);
   });
 
-  it('moves real focus to the active node when the active path changes between renders', () => {
+  it('does not move focus on the very first render, even when state.active already names a node (I9)', () => {
+    // `state` survives a renderer being torn down and recreated (`getUiState` is keyed
+    // independent of any one renderer instance) — a fresh renderer's first render must not treat
+    // an already-non-null `state.active` as "just changed" and steal focus/scroll nobody asked for.
+    const { schema } = parseSchema(makeRead({ parent: 'up' }));
+    const snap = snapshot(
+      [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
+      { results: ['child.md', 'root.md'] },
+    );
+    const structure = buildStructure(schema, snap);
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+    const state = getUiState('outline-active-first-render');
+    state.active = 'child.md';
+
+    renderer.update({ schema, snapshot: snap, structure, state });
+
+    const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
+    expect(childEl?.classList.contains('is-active')).toBe(true);
+    expect(document.activeElement).not.toBe(childEl);
+  });
+
+  it('moves real focus to the active node when the active path changes between renders (after the first)', () => {
     const { schema } = parseSchema(makeRead({ parent: 'up' }));
     const snap = snapshot(
       [note('root.md'), note('child.md', { propertyLinks: { up: ['root.md'] } })],
@@ -611,8 +634,9 @@ describe('OutlineRenderer', () => {
     document.body.appendChild(container);
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-active-focus');
-    state.active = 'child.md';
+    renderer.update({ schema, snapshot: snap, structure, state }); // First render: nothing active.
 
+    state.active = 'child.md';
     renderer.update({ schema, snapshot: snap, structure, state });
     const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(document.activeElement).toBe(childEl);
@@ -637,9 +661,10 @@ describe('OutlineRenderer', () => {
     document.body.appendChild(container);
     const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
     const state = getUiState('outline-active-refocus');
-    state.active = 'child.md';
+    renderer.update({ schema, snapshot: snap, structure, state }); // First render: nothing active.
 
-    renderer.update({ schema, snapshot: snap, structure, state });
+    state.active = 'child.md';
+    renderer.update({ schema, snapshot: snap, structure, state }); // Active newly set: focus follows.
     const childEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
     expect(document.activeElement).toBe(childEl);
 

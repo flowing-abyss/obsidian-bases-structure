@@ -228,12 +228,31 @@ describe('GraphRenderer', () => {
     expect(rootEl.tabIndex).toBe(-1);
   });
 
-  it('moves real focus to the active node when the active path changes between renders', () => {
+  it('does not move focus on the very first render, even when state.active already names a node (I9)', () => {
+    // `state` survives a renderer being torn down and recreated (`getUiState` is keyed
+    // independent of any one renderer instance) — a fresh renderer's first render must not treat
+    // an already-non-null `state.active` as "just changed" and steal focus/scroll nobody asked
+    // for (e.g. switching back to a note whose embedded view had an active node before).
     const container = createDiv();
     document.body.appendChild(container);
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
     const state = makeState({ active: 'a.md' });
 
+    renderer.update(makeInput({ state }));
+
+    const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
+    expect(aEl.classList.contains('is-active')).toBe(true);
+    expect(document.activeElement).not.toBe(aEl);
+  });
+
+  it('moves real focus to the active node when the active path changes between renders (after the first)', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: null });
+    renderer.update(makeInput({ state })); // First render: nothing active, nothing to focus.
+
+    state.active = 'a.md';
     renderer.update(makeInput({ state }));
     const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
     expect(document.activeElement).toBe(aEl);
@@ -253,9 +272,11 @@ describe('GraphRenderer', () => {
     const container = createDiv();
     document.body.appendChild(container);
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
-    const state = makeState({ active: 'a.md' });
+    const state = makeState({ active: null });
+    renderer.update(makeInput({ state })); // First render: nothing active yet (I9).
 
-    renderer.update(makeInput({ state }));
+    state.active = 'a.md';
+    renderer.update(makeInput({ state })); // Active newly set: real focus follows.
     const aEl = must(container.querySelector<HTMLElement>('[data-path="a.md"]'));
     expect(document.activeElement).toBe(aEl);
 

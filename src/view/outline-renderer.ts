@@ -115,8 +115,11 @@ export class OutlineRenderer implements StructureRenderer {
   private listEl: HTMLElement | null = null;
   private lastInput: RenderInput | null = null;
   // Tracks the active path applied by the *previous* `update()` — mirrors the graph renderer's
-  // own field, see its doc comment for why an unchanged `active` skips focus/scroll.
+  // own field, see its doc comment for why an unchanged `active` skips focus/scroll, and for why
+  // the first `update()` seeds this from that render's own `state.active` (I9) instead of leaving
+  // it `null`.
   private lastActivePath: string | null = null;
+  private hasRenderedOnce = false;
 
   constructor(containerEl: HTMLElement, ctx: NodeElementContext) {
     this.containerEl = containerEl;
@@ -135,6 +138,10 @@ export class OutlineRenderer implements StructureRenderer {
     // See the graph renderer's identical capture in its own `update()` for why: this has to be
     // read before the rebuild below destroys whatever real DOM focus is currently inside.
     const hadFocus = this.outlineEl.contains(document.activeElement);
+    if (!this.hasRenderedOnce) {
+      this.lastActivePath = input.state.active;
+      this.hasRenderedOnce = true;
+    }
     this.lastInput = input;
     this.nodeCtx.snapshot = input.snapshot;
     this.nodeCtx.sourcePath = input.snapshot.host ?? '';

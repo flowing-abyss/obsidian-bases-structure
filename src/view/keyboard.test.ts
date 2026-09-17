@@ -638,6 +638,31 @@ describe('attachKeyboard — click sets active', () => {
 
     expect(h.state.active).toBe('a.md');
   });
+
+  it('a click on the node title does not change the active node (I9 — that gesture opens the note instead)', () => {
+    const h = makeHarness(makeStructure(), 'a.md');
+    const nodeEl = h.container.querySelector('[data-path="b.md"]');
+    if (nodeEl === null) throw new Error('Test setup error: missing node element');
+    const titleEl = createEl('a', { cls: 'bases-structure-title' });
+    nodeEl.appendChild(titleEl);
+
+    titleEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(h.state.active).toBe('a.md');
+  });
+
+  it('a click on some other part of the same node (not its title) still changes the active node', () => {
+    const h = makeHarness(makeStructure(), 'a.md');
+    const nodeEl = h.container.querySelector('[data-path="b.md"]');
+    if (nodeEl === null) throw new Error('Test setup error: missing node element');
+    const titleEl = createEl('a', { cls: 'bases-structure-title' });
+    nodeEl.appendChild(titleEl);
+
+    // The click lands on the node itself (e.g. its background), not the title link.
+    nodeEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(h.state.active).toBe('b.md');
+  });
 });
 
 describe('attachKeyboard — disposer', () => {
