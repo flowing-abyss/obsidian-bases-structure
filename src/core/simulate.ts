@@ -252,6 +252,7 @@ function applyCreations(state: SimState, creations: Plan['creations']): void {
       bodyTags: [], // a brand-new note has no body text yet
       frontmatter: draft.frontmatter,
       propertyLinks: draft.propertyLinks,
+      unresolvedLinks: {}, // a brand-new note has nothing unresolved to carry over
       links: buildCreationLinks(creation.bodyLinks, draft.propertyLinks),
     };
     state.notes.set(creation.path, noteData);
@@ -330,6 +331,7 @@ function applyChanges(state: SimState, changes: Plan['changes']): void {
       bodyTags: existing.bodyTags, // never rewritten by a plan (I4)
       frontmatter: draft.frontmatter,
       propertyLinks: draft.propertyLinks,
+      unresolvedLinks: existing.unresolvedLinks, // a plan never touches unresolved raw link text
       links: draft.links,
     });
   }

@@ -36,6 +36,7 @@ describe('applyPlan — creations', () => {
         meta: '[[meta]]',
       },
       propertyLinks: { category: ['cat.md'], meta: ['meta.md'] },
+      unresolvedLinks: {},
       links: ['cat.md', 'extra.md', 'meta.md'],
     });
   });
@@ -409,6 +410,7 @@ describe('applyPlan — immutability', () => {
       bodyTags: [],
       frontmatter: { meta: '[[m]]' },
       propertyLinks: { meta: ['m.md'] },
+      unresolvedLinks: {},
       links: ['m.md'],
     });
     expect(snap.notes.has('new.md')).toBe(false);

@@ -21,6 +21,10 @@ export interface NoteData {
   readonly bodyTags: readonly string[];
   readonly frontmatter: Readonly<Record<string, unknown>>;
   readonly propertyLinks: Readonly<Record<string, readonly string[]>>;
+  /** Per frontmatter key, the raw link text (post `getLinkpath`, pre-resolution) of every link
+   * under that key that resolves to no file — the unresolved counterpart to `propertyLinks`,
+   * which only ever holds links that did resolve. */
+  readonly unresolvedLinks: Readonly<Record<string, readonly string[]>>;
   readonly links: readonly string[];
 }
 

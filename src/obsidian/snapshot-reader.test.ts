@@ -135,6 +135,7 @@ describe('readNote', () => {
     expect(note.tags).toStrictEqual([]);
     expect(note.frontmatter).toStrictEqual({});
     expect(note.propertyLinks).toStrictEqual({});
+    expect(note.unresolvedLinks).toStrictEqual({});
     expect(note.links).toStrictEqual([]);
   });
 
@@ -173,6 +174,31 @@ describe('readNote', () => {
     const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
 
     expect(note.propertyLinks).toStrictEqual({ up: ['a.md'], see: ['a.md'] });
+  });
+
+  it('records link values that resolve to nothing', () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\ncategory:\n  - "[[missing]]"\n---\n' },
+    });
+
+    const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
+
+    expect(note.unresolvedLinks).toStrictEqual({ category: ['missing'] });
+    expect(note.propertyLinks).toStrictEqual({});
+  });
+
+  it('keeps resolving later entries under the same key after an earlier one is unresolved', () => {
+    const app = App.createConfigured__({
+      files: {
+        'note.md': '---\ncategory:\n  - "[[missing]]"\n  - "[[a]]"\n  - "[[missing again]]"\n---\n',
+        'a.md': '',
+      },
+    });
+
+    const note = readNote(app.asOriginalType__(), mustFile(app, 'note.md'));
+
+    expect(note.propertyLinks).toStrictEqual({ category: ['a.md'] });
+    expect(note.unresolvedLinks).toStrictEqual({ category: ['missing', 'missing again'] });
   });
 
   it('resolves an alias link [[a|alias]] and a heading link [[a#h]] to the same target', () => {

@@ -50,6 +50,7 @@ describe('note() builder', () => {
       bodyTags: [],
       frontmatter: {},
       propertyLinks: {},
+      unresolvedLinks: {},
       links: [],
     });
   });

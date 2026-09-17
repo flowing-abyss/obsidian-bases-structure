@@ -47,28 +47,42 @@ function propertyOf(key: string): string {
   return dotIndex === -1 ? key : key.slice(0, dotIndex);
 }
 
+interface LinkResolution {
+  readonly propertyLinks: Record<string, readonly string[]>;
+  readonly unresolvedLinks: Record<string, readonly string[]>;
+}
+
+function pushUnique(bucket: Record<string, string[]>, key: string, value: string): void {
+  const list = bucket[key] ?? [];
+  if (!list.includes(value)) {
+    list.push(value);
+  }
+  bucket[key] = list;
+}
+
 /** `propertyLinks`: property → the resolved, deduped, order-of-appearance targets of every
- * frontmatter link under that property. A link that doesn't resolve to a vault file is skipped
- * entirely (per decisions), not recorded as an unresolved entry. */
+ * frontmatter link under that property. `unresolvedLinks`: property → the raw link text (same
+ * `getLinkpath` value used to resolve it) of every link under that property that resolves to no
+ * vault file — recorded instead of silently dropped, so a hand-typed typo surfaces as a
+ * diagnostic rather than vanishing. */
 function readPropertyLinks(
   app: App,
   file: TFile,
   refs: readonly FrontmatterLinkCache[],
-): Record<string, readonly string[]> {
-  const result: Record<string, string[]> = {};
+): LinkResolution {
+  const propertyLinks: Record<string, string[]> = {};
+  const unresolvedLinks: Record<string, string[]> = {};
   for (const ref of refs) {
-    const dest = app.metadataCache.getFirstLinkpathDest(getLinkpath(ref.link), file.path);
-    if (dest === null) {
-      continue;
-    }
     const property = propertyOf(ref.key);
-    const list = result[property] ?? [];
-    if (!list.includes(dest.path)) {
-      list.push(dest.path);
+    const linkpath = getLinkpath(ref.link);
+    const dest = app.metadataCache.getFirstLinkpathDest(linkpath, file.path);
+    if (dest === null) {
+      pushUnique(unresolvedLinks, property, linkpath);
+    } else {
+      pushUnique(propertyLinks, property, dest.path);
     }
-    result[property] = list;
   }
-  return result;
+  return { propertyLinks, unresolvedLinks };
 }
 
 /** The `NoteData` for a single file: tags, frontmatter, property links and outgoing links, all
@@ -89,7 +103,11 @@ export function readNote(app: App, file: TFile): NoteData {
   // of deriving it as `tags - frontmatterTags`, so a tag present in *both* places still correctly
   // reports as body-held.
   const bodyTags = uniqueInOrder((cache.tags ?? []).map((entry) => stripHash(entry.tag)));
-  const propertyLinks = readPropertyLinks(app, file, cache.frontmatterLinks ?? []);
+  const { propertyLinks, unresolvedLinks } = readPropertyLinks(
+    app,
+    file,
+    cache.frontmatterLinks ?? [],
+  );
   const links = Object.keys(app.metadataCache.resolvedLinks[file.path] ?? {});
   return {
     path: file.path,
@@ -99,6 +117,7 @@ export function readNote(app: App, file: TFile): NoteData {
     bodyTags,
     frontmatter,
     propertyLinks,
+    unresolvedLinks,
     links,
   };
 }

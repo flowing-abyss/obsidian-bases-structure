@@ -13,16 +13,25 @@ function basenameOf(path: string): string {
   return fileName.endsWith('.md') ? fileName.slice(0, -3) : fileName;
 }
 
+const DEFAULTS: Omit<NoteData, 'path' | 'basename'> = {
+  tags: [],
+  frontmatterTags: [],
+  bodyTags: [],
+  frontmatter: {},
+  propertyLinks: {},
+  unresolvedLinks: {},
+  links: [],
+};
+
 export function note(path: string, partial: Partial<Omit<NoteData, 'path'>> = {}): NoteData {
   return {
+    ...DEFAULTS,
+    ...partial,
     path,
     basename: partial.basename ?? basenameOf(path),
-    tags: partial.tags ?? [],
-    frontmatterTags: partial.frontmatterTags ?? partial.tags ?? [],
-    bodyTags: partial.bodyTags ?? [],
-    frontmatter: partial.frontmatter ?? {},
-    propertyLinks: partial.propertyLinks ?? {},
-    links: partial.links ?? [],
+    // Defaults to a copy of `tags` when only that's given — everywhere else, callers only care
+    // about the (usually identical) combined `tags` list, not the frontmatter/body split.
+    frontmatterTags: partial.frontmatterTags ?? partial.tags ?? DEFAULTS.frontmatterTags,
   };
 }
 
