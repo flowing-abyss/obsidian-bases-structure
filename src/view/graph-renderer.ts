@@ -14,6 +14,11 @@ import {
 } from '../core/layout.js';
 import type { Direction } from '../core/schema.js';
 import type { ExtraLink, Structure, StructureNode } from '../core/structure.js';
+import {
+  hookSuperchargedLinks,
+  unhookSuperchargedLinks,
+  type SuperchargedWatch,
+} from '../obsidian/supercharged-links.js';
 import { edgePath } from './edges.js';
 import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
@@ -31,6 +36,10 @@ import type { ViewUiState } from './view-state.js';
 
 export interface GraphRendererOptions {
   readonly measure?: (el: HTMLElement) => Size;
+  /** D1: this plugin's own `manifest.id`, namespacing the Supercharged Links watch key so two
+   * installed copies of this plugin never disconnect each other's observers — see
+   * `SuperchargedWatch`'s own doc comment. Omitted in tests that don't care. */
+  readonly ownerId?: string;
 }
 
 interface VisibleEntry {
@@ -93,6 +102,12 @@ const EMPTY_MESSAGE = 'Nothing to show yet';
 // changing its height after `layoutTree` already spaced siblings assuming the shorter, measured
 // one. A couple of spare pixels keeps the applied width comfortably above that boundary.
 const WIDTH_SAFETY_MARGIN = 2;
+// D1: every `GraphRenderer` instance gets its own Supercharged Links watch id — two embeds of
+// this view open at once (same plugin, same `ownerId`) would otherwise share a bare id and
+// disconnect each other's observer the moment the second one mounts (`hookSuperchargedLinks`
+// always unhooks its own key first). Module-scoped, not per-instance: it only has to keep handing
+// out fresh values for as long as the plugin is loaded.
+let nextGraphWatchSeq = 0;
 
 function defaultMeasure(el: HTMLElement): Size {
   return {
@@ -241,6 +256,7 @@ export class GraphRenderer implements StructureRenderer {
   private readonly nodesEl: HTMLElement;
   private readonly disposeNodeInteractions: () => void;
   private readonly disposePan: () => void;
+  private readonly slWatch: SuperchargedWatch;
   private state: ViewUiState | null = null;
   private lastInput: RenderInput | null = null;
   private lastLayoutSize: Size = { width: 0, height: 0 };
@@ -296,6 +312,41 @@ export class GraphRenderer implements StructureRenderer {
     // read/write, same element `handleScroll` below already reads them from.
     this.disposePan = attachPan({ container: this.graphEl, ignoreSelector: PAN_IGNORE_SELECTOR });
     this.attachListeners();
+
+    nextGraphWatchSeq += 1;
+    this.slWatch = { ownerId: options.ownerId, id: `bases-structure-graph-${nextGraphWatchSeq}` };
+    this.watchSuperchargedLinks();
+  }
+
+  /** D1: watched exactly once, here at construction, against `nodesEl` — a container that stays
+   * the same DOM node across every `update()` (only its children are torn down/rebuilt), so
+   * Supercharged Links' own `MutationObserver` keeps seeing every later re-render without this
+   * ever having to re-hook. An unexpected shape of the other plugin (see
+   * `supercharged-links.ts`'s own doc comment) is caught and logged here, never left to break
+   * renderer construction. */
+  private watchSuperchargedLinks(): void {
+    try {
+      hookSuperchargedLinks(
+        this.ctx.app,
+        this.slWatch,
+        this.nodesEl,
+        'a.bases-structure-title',
+        'bases-structure-node',
+      );
+    } catch (error) {
+      console.error('[bases-structure]', error);
+    }
+  }
+
+  /** The `destroy()` half of `watchSuperchargedLinks` — same failure containment, so an
+   * unexpected shape never stops the rest of `destroy()`'s own cleanup (listeners, `container`
+   * teardown) from running. */
+  private unwatchSuperchargedLinks(): void {
+    try {
+      unhookSuperchargedLinks(this.ctx.app, this.slWatch);
+    } catch (error) {
+      console.error('[bases-structure]', error);
+    }
   }
 
   private attachListeners(): void {
@@ -386,6 +437,7 @@ export class GraphRenderer implements StructureRenderer {
   }
 
   destroy(): void {
+    this.unwatchSuperchargedLinks();
     this.disposeNodeInteractions();
     this.disposePan();
     this.nodesEl.removeEventListener('click', this.handleNodesClick);

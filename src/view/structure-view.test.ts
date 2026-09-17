@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import * as schemaModule from '../core/schema.js';
 import StructureViewPlugin from '../main.js';
+import * as superchargedLinksModule from '../obsidian/supercharged-links.js';
 import { UndoManager } from '../obsidian/undo-manager.js';
 import { StructureActions } from './actions-ui.js';
 import * as dragModule from './drag.js';
@@ -106,6 +107,35 @@ describe('StructureView', () => {
     expect(issuesEl?.classList.contains('is-hidden')).toBe(true);
     const nodes = parentEl.querySelectorAll('.bases-structure-body .bases-structure-node');
     expect(Array.from(nodes).map((el) => el.textContent)).toStrictEqual(['b', 'a']);
+  });
+
+  it("passes the plugin's manifest id as the Supercharged Links owner id, for both layouts (D1)", () => {
+    const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+    const app = App.createConfigured__({ files: { 'a.md': '' } });
+    const { view } = createView(app, [mustFile(app, 'a.md')]);
+    view.config.set('parent', 'note.parent');
+
+    view.onDataUpdated();
+
+    expect(hookSpy).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({ ownerId: manifest.id }),
+      expect.anything(),
+      'a.bases-structure-title',
+      'bases-structure-node',
+    );
+
+    hookSpy.mockClear();
+    view.config.set('layout', 'outline');
+    view.onDataUpdated();
+
+    expect(hookSpy).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({ ownerId: manifest.id }),
+      expect.anything(),
+      'a.bases-structure-title',
+      'bases-structure-node',
+    );
   });
 
   it('reuses the renderer instance and the same UI state across a second onDataUpdated with the same layout', () => {

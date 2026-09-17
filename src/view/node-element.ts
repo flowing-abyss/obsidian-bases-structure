@@ -9,6 +9,7 @@ import { Keymap } from 'obsidian';
 import type { Snapshot } from '../core/snapshot.js';
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
+import { applySuperchargedLinkAttributes } from '../obsidian/supercharged-links.js';
 import { setSizedIcon } from './icon.js';
 import { reportOpenFailure } from './open-note.js';
 
@@ -102,7 +103,7 @@ export function createNodeElement(
     cls: classes,
     attr: { 'data-path': node.path, 'data-type': node.type ?? '' },
   });
-  el.createEl('a', {
+  const titleEl = el.createEl('a', {
     cls: 'internal-link bases-structure-title',
     text: displayName(ctx.snapshot, node.path),
     // No real `href`: navigation is fully handled by `attachNodeInteractions` (via `data-href`).
@@ -112,6 +113,12 @@ export function createNodeElement(
     // real click, and keyboard `Enter` on the active node already opens it — see `keyboard.ts`).
     attr: { 'data-href': node.path, tabindex: '-1' },
   });
+  // D1: the same classes/attributes Supercharged Links styles a normal internal link with, so a
+  // node's title reads exactly like a wikilink to the same note elsewhere in the vault — see
+  // `src/obsidian/supercharged-links.ts`'s own doc comment for why this is a no-op without that
+  // plugin installed.
+  titleEl.classList.add('data-link-icon', 'data-link-icon-after', 'data-link-text');
+  applySuperchargedLinkAttributes(ctx.app, titleEl, node.path);
   appendAddButton(el);
   appendNodeMenuButton(el);
   appendAlsoIn(el, ctx, node);

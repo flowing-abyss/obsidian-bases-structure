@@ -14,6 +14,11 @@
 
 import { displayName } from '../core/snapshot.js';
 import type { StructureNode } from '../core/structure.js';
+import {
+  hookSuperchargedLinks,
+  unhookSuperchargedLinks,
+  type SuperchargedWatch,
+} from '../obsidian/supercharged-links.js';
 import { setSizedIcon } from './icon.js';
 import type { MutableNodeElementContext, NodeElementContext } from './node-element.js';
 import {
@@ -32,6 +37,15 @@ const ITEM_CLASS = 'bases-structure-outline-item';
 const TOGGLE_SELECTOR = '.bases-structure-toggle';
 const NODE_SELECTOR = '.bases-structure-node';
 const TITLE_SELECTOR = '.bases-structure-title';
+// D1: mirrors `graph-renderer.ts`'s own counter — see its doc comment for why a fresh id per
+// instance matters (two embeds of this view open at once must not share a watch key).
+let nextOutlineWatchSeq = 0;
+
+export interface OutlineRendererOptions {
+  /** D1: this plugin's own `manifest.id` — see `GraphRendererOptions.ownerId`'s identical doc
+   * comment. Omitted in tests that don't care. */
+  readonly ownerId?: string;
+}
 
 interface RenderCtx {
   readonly input: RenderInput;
@@ -157,6 +171,7 @@ export class OutlineRenderer implements StructureRenderer {
   private readonly outlineEl: HTMLElement;
   private readonly emptyEl: HTMLElement;
   private readonly disposeInteractions: () => void;
+  private readonly slWatch: SuperchargedWatch;
   private listEl: HTMLElement | null = null;
   private lastInput: RenderInput | null = null;
   // Tracks the active path applied by the *previous* `update()` — mirrors the graph renderer's
@@ -166,7 +181,11 @@ export class OutlineRenderer implements StructureRenderer {
   private lastActivePath: string | null = null;
   private hasRenderedOnce = false;
 
-  constructor(containerEl: HTMLElement, ctx: NodeElementContext) {
+  constructor(
+    containerEl: HTMLElement,
+    ctx: NodeElementContext,
+    options: OutlineRendererOptions = {},
+  ) {
     this.containerEl = containerEl;
     this.nodeCtx = cloneNodeElementContext(ctx);
     this.outlineEl = containerEl.createDiv('bases-structure-outline');
@@ -182,6 +201,37 @@ export class OutlineRenderer implements StructureRenderer {
     // `overflow: auto` in styles.css) is the element that really scrolls; listening/writing on
     // `outlineEl` meant this never fired and `scrollTop` writes had no visible effect at all.
     this.containerEl.addEventListener('scroll', this.handleScroll);
+
+    nextOutlineWatchSeq += 1;
+    this.slWatch = {
+      ownerId: options.ownerId,
+      id: `bases-structure-outline-${nextOutlineWatchSeq}`,
+    };
+    this.watchSuperchargedLinks();
+  }
+
+  /** D1: mirrors `GraphRenderer`'s identical method — see its own doc comment. Watched once here,
+   * against `outlineEl` (stable across every `update()`; only its `listEl` child is rebuilt). */
+  private watchSuperchargedLinks(): void {
+    try {
+      hookSuperchargedLinks(
+        this.nodeCtx.app,
+        this.slWatch,
+        this.outlineEl,
+        'a.bases-structure-title',
+        'bases-structure-node',
+      );
+    } catch (error) {
+      console.error('[bases-structure]', error);
+    }
+  }
+
+  private unwatchSuperchargedLinks(): void {
+    try {
+      unhookSuperchargedLinks(this.nodeCtx.app, this.slWatch);
+    } catch (error) {
+      console.error('[bases-structure]', error);
+    }
   }
 
   update(input: RenderInput): void {
@@ -237,6 +287,7 @@ export class OutlineRenderer implements StructureRenderer {
   }
 
   destroy(): void {
+    this.unwatchSuperchargedLinks();
     this.outlineEl.removeEventListener('click', this.handleToggleClick);
     this.containerEl.removeEventListener('scroll', this.handleScroll);
     this.disposeInteractions();

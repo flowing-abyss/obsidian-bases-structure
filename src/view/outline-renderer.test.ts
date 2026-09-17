@@ -4,6 +4,7 @@ import { note, snapshot } from '../core/__tests__/notes.js';
 import { parseSchema } from '../core/schema.js';
 import type { Structure } from '../core/structure.js';
 import { buildStructure } from '../core/structure.js';
+import * as superchargedLinksModule from '../obsidian/supercharged-links.js';
 import type { NodeElementContext } from './node-element.js';
 import { OutlineRenderer } from './outline-renderer.js';
 import { clearUiState, getUiState } from './view-state.js';
@@ -865,6 +866,87 @@ describe('OutlineRenderer', () => {
       const rebuiltChildEl = container.querySelector<HTMLElement>('[data-path="child.md"]');
       expect(rebuiltChildEl).not.toBe(childEl);
       expect(otherDoc.activeElement).toBe(rebuiltChildEl);
+    });
+  });
+
+  describe('Supercharged Links (D1)', () => {
+    it('hooks the outline container once at construction, and unhooks it once on destroy', () => {
+      const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+      const unhookSpy = vi.spyOn(superchargedLinksModule, 'unhookSuperchargedLinks');
+      const container = createDiv();
+      const ctx = makeCtx();
+
+      const renderer = new OutlineRenderer(container, ctx, { ownerId: 'bases-structure' });
+
+      expect(hookSpy).toHaveBeenCalledExactlyOnceWith(
+        ctx.app,
+        expect.objectContaining({ ownerId: 'bases-structure' }),
+        outlineEl(container),
+        'a.bases-structure-title',
+        'bases-structure-node',
+      );
+
+      renderer.destroy();
+
+      expect(unhookSpy).toHaveBeenCalledExactlyOnceWith(
+        ctx.app,
+        expect.objectContaining({ ownerId: 'bases-structure' }),
+      );
+    });
+
+    it('re-rendering does not hook again (no duplicate observers)', () => {
+      const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+      const { schema } = parseSchema(makeRead({ parent: 'up' }));
+      const snap = snapshot([note('root.md')]);
+      const structure = buildStructure(schema, snap);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(container, makeCtx({ snapshot: snap }));
+      hookSpy.mockClear();
+
+      renderer.update({
+        schema,
+        snapshot: snap,
+        structure,
+        state: getUiState('outline-sl-rerender'),
+      });
+      renderer.update({
+        schema,
+        snapshot: snap,
+        structure,
+        state: getUiState('outline-sl-rerender'),
+      });
+
+      expect(hookSpy).not.toHaveBeenCalled();
+    });
+
+    it('logs and continues when hooking throws instead of breaking construction', () => {
+      vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks').mockImplementation(() => {
+        throw new Error('unexpected shape');
+      });
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const container = createDiv();
+      let renderer: OutlineRenderer | undefined;
+
+      expect(() => {
+        renderer = new OutlineRenderer(container, makeCtx());
+      }).not.toThrow();
+      expect(renderer).toBeDefined();
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+    });
+
+    it('logs and continues when unhooking throws, still finishing destroy()', () => {
+      vi.spyOn(superchargedLinksModule, 'unhookSuperchargedLinks').mockImplementation(() => {
+        throw new Error('unexpected shape');
+      });
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const container = createDiv();
+      const renderer = new OutlineRenderer(container, makeCtx());
+
+      expect(() => {
+        renderer.destroy();
+      }).not.toThrow();
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+      expect(container.childElementCount).toBe(0);
     });
   });
 });

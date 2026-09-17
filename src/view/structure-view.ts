@@ -318,8 +318,8 @@ export class StructureView extends BasesView {
       this.renderer?.destroy();
       this.renderer =
         layout === 'outline'
-          ? new OutlineRenderer(this.bodyEl, ctx)
-          : new GraphRenderer(this.bodyEl, ctx);
+          ? new OutlineRenderer(this.bodyEl, ctx, { ownerId: this.plugin.manifest.id })
+          : new GraphRenderer(this.bodyEl, ctx, { ownerId: this.plugin.manifest.id });
       this.rendererLayout = layout;
       this.dragDispose = this.attachNodeDrag();
       this.keyboardDispose = this.attachStructureKeyboard(this.renderer);

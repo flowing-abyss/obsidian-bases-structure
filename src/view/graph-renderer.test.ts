@@ -1,9 +1,10 @@
 import { App, Component } from 'obsidian-test-mocks/obsidian';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { note, snapshot } from '../core/__tests__/notes.js';
 import type { Size } from '../core/layout.js';
 import { parseSchema } from '../core/schema.js';
 import type { Structure } from '../core/structure.js';
+import * as superchargedLinksModule from '../obsidian/supercharged-links.js';
 import { GraphRenderer } from './graph-renderer.js';
 import type { NodeElementContext } from './node-element.js';
 import type { RenderInput } from './structure-view.js';
@@ -1234,5 +1235,77 @@ describe('GraphRenderer — background pan (M7)', () => {
     document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 100 }));
 
     expect(graphEl.classList.contains('is-panning')).toBe(false);
+  });
+});
+
+describe('GraphRenderer — Supercharged Links (D1)', () => {
+  it('hooks the nodes container once at construction, and unhooks it once on destroy', () => {
+    const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+    const unhookSpy = vi.spyOn(superchargedLinksModule, 'unhookSuperchargedLinks');
+    const container = createDiv();
+    const ctx = makeCtx();
+
+    const renderer = new GraphRenderer(container, ctx, {
+      measure: fixedMeasure,
+      ownerId: 'bases-structure',
+    });
+
+    const nodesEl = must(container.querySelector<HTMLElement>('.bases-structure-nodes'));
+    expect(hookSpy).toHaveBeenCalledExactlyOnceWith(
+      ctx.app,
+      expect.objectContaining({ ownerId: 'bases-structure' }),
+      nodesEl,
+      'a.bases-structure-title',
+      'bases-structure-node',
+    );
+
+    renderer.destroy();
+
+    expect(unhookSpy).toHaveBeenCalledExactlyOnceWith(
+      ctx.app,
+      expect.objectContaining({ ownerId: 'bases-structure' }),
+    );
+  });
+
+  it('re-rendering does not hook again (no duplicate observers)', () => {
+    const hookSpy = vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks');
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    hookSpy.mockClear();
+
+    renderer.update(makeInput());
+    renderer.update(makeInput());
+
+    expect(hookSpy).not.toHaveBeenCalled();
+  });
+
+  it('logs and continues when hooking throws instead of breaking construction', () => {
+    vi.spyOn(superchargedLinksModule, 'hookSuperchargedLinks').mockImplementation(() => {
+      throw new Error('unexpected shape');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const container = createDiv();
+    let renderer: GraphRenderer | undefined;
+
+    expect(() => {
+      renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    }).not.toThrow();
+    expect(renderer).toBeDefined();
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+  });
+
+  it('logs and continues when unhooking throws, still finishing destroy()', () => {
+    vi.spyOn(superchargedLinksModule, 'unhookSuperchargedLinks').mockImplementation(() => {
+      throw new Error('unexpected shape');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+
+    expect(() => {
+      renderer.destroy();
+    }).not.toThrow();
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+    expect(container.childElementCount).toBe(0);
   });
 });

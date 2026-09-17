@@ -163,6 +163,28 @@ describe('createNodeElement', () => {
     );
   });
 
+  it('gives the title the Supercharged Links classes (D1)', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode());
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.classList.contains('data-link-icon')).toBe(true);
+    expect(title?.classList.contains('data-link-icon-after')).toBe(true);
+    expect(title?.classList.contains('data-link-text')).toBe(true);
+  });
+
+  it("stamps the title with data-link-* attributes from the note's own frontmatter (D1)", () => {
+    const app = App.createConfigured__();
+    app.metadataCache.setCache__('a.md', { frontmatter: { type: 'book' } });
+    const ctx = makeCtx({ app: app.asOriginalType__() });
+
+    const el = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+
+    const title = el.querySelector('.bases-structure-title');
+    expect(title?.getAttribute('data-link-type')).toBe('book');
+  });
+
   it('always includes a touch-only node-menu button, after the "+" (I10)', () => {
     const ctx = makeCtx();
 
