@@ -457,6 +457,39 @@ describe('GraphRenderer', () => {
     expect(container.querySelector('.bases-structure-zoom-label')?.textContent).toBe('110%');
   });
 
+  it('sizes the canvas wrapper to layout size × zoom, so the scroll area matches the visible graph (M6)', () => {
+    // `transform: scale()` never changes an element's own layout box/scroll size — only its
+    // visual rendering — so scaling `.bases-structure-canvas` directly (as before this fix) left
+    // `.bases-structure-graph` (the actual `overflow: auto` scroll container) still reporting the
+    // *unscaled* canvas size as scrollable content, however small the zoomed-out graph actually
+    // looked. A separate wrapper sized to `layout size × zoom`, with the scaled canvas positioned
+    // inside it at its own full unscaled size, is what makes the scroll area track what's visible.
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState();
+    renderer.update(makeInput({ state }));
+    const wrap = container.querySelector<HTMLElement>('.bases-structure-canvas-wrap');
+    const canvas = container.querySelector<HTMLElement>('.bases-structure-canvas');
+    if (wrap === null || canvas === null) throw new Error('missing canvas/wrap elements');
+    const baseWidth = parseFloat(wrap.style.width);
+    const baseHeight = parseFloat(wrap.style.height);
+    expect(baseWidth).toBeGreaterThan(0);
+    expect(baseHeight).toBeGreaterThan(0);
+    expect(parseFloat(canvas.style.width)).toBeCloseTo(baseWidth);
+    expect(parseFloat(canvas.style.height)).toBeCloseTo(baseHeight);
+
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(parseFloat(wrap.style.width)).toBeCloseTo(baseWidth * 1.1);
+    expect(parseFloat(wrap.style.height)).toBeCloseTo(baseHeight * 1.1);
+    // The visually-scaled canvas itself keeps its own full, unscaled layout size — only the
+    // wrapper (what actually determines the scroll area) shrinks/grows with zoom.
+    expect(parseFloat(canvas.style.width)).toBeCloseTo(baseWidth);
+    expect(parseFloat(canvas.style.height)).toBeCloseTo(baseHeight);
+  });
+
   it('zoom out steps down and clamps at the minimum', () => {
     const container = createDiv();
     const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
@@ -631,8 +664,11 @@ describe('GraphRenderer', () => {
     const emptyEl = container.querySelector('.bases-structure-empty');
     expect(emptyEl?.classList.contains('is-hidden')).toBe(false);
     expect(emptyEl?.textContent).toBe('Nothing to show yet');
+    // M6: the canvas now sits inside `.bases-structure-canvas-wrap`, which is what's actually
+    // hidden (and is what's sized to the zoomed layout — hiding it, not just the canvas nested
+    // inside it, keeps an empty structure from leaving a stale, non-empty scroll area behind).
     expect(
-      container.querySelector('.bases-structure-canvas')?.classList.contains('is-hidden'),
+      container.querySelector('.bases-structure-canvas-wrap')?.classList.contains('is-hidden'),
     ).toBe(true);
     expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(0);
   });

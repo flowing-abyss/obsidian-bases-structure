@@ -42,6 +42,13 @@ interface ToolbarElements {
 }
 
 interface CanvasElements {
+  /** Sized to `layout size × zoom` (see `applyZoom`) — the element `.bases-structure-graph`'s
+   * `overflow: auto` actually measures for scrolling. `canvasEl` itself keeps its own full,
+   * unscaled layout size and is visually scaled with `transform` inside this wrapper (M6:
+   * `transform: scale()` never changes an element's own layout/scroll size, so scaling `canvasEl`
+   * directly — with nothing else sized to the zoomed result — left the scroll area always
+   * matching the *unscaled* graph, regardless of how small zooming out made it look). */
+  readonly wrapEl: HTMLElement;
   readonly canvasEl: HTMLElement;
   readonly svgEl: SVGSVGElement;
   readonly defsEl: SVGDefsElement;
@@ -133,7 +140,8 @@ function buildToolbar(graphEl: HTMLElement): ToolbarElements {
 }
 
 function buildCanvas(graphEl: HTMLElement): CanvasElements {
-  const canvasEl = graphEl.createDiv('bases-structure-canvas');
+  const wrapEl = graphEl.createDiv('bases-structure-canvas-wrap');
+  const canvasEl = wrapEl.createDiv('bases-structure-canvas');
   const svgEl = createSvgEl('svg');
   svgEl.classList.add('bases-structure-edges');
   const defsEl = createSvgEl('defs');
@@ -142,7 +150,7 @@ function buildCanvas(graphEl: HTMLElement): CanvasElements {
   svgEl.appendChild(defsEl);
   canvasEl.appendChild(svgEl);
   const nodesEl = canvasEl.createDiv('bases-structure-nodes');
-  return { canvasEl, svgEl, defsEl, nodesEl };
+  return { wrapEl, canvasEl, svgEl, defsEl, nodesEl };
 }
 
 /** Every node reachable from `forestTops` (the structure's tops plus its orphans, so both render
@@ -197,6 +205,7 @@ export class GraphRenderer implements StructureRenderer {
   private readonly zoomInBtn: HTMLButtonElement;
   private readonly fitBtn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
+  private readonly wrapEl: HTMLElement;
   private readonly canvasEl: HTMLElement;
   private readonly svgEl: SVGSVGElement;
   private readonly defsEl: SVGDefsElement;
@@ -239,6 +248,7 @@ export class GraphRenderer implements StructureRenderer {
       text: EMPTY_MESSAGE,
     });
     const canvas = buildCanvas(this.graphEl);
+    this.wrapEl = canvas.wrapEl;
     this.canvasEl = canvas.canvasEl;
     this.svgEl = canvas.svgEl;
     this.defsEl = canvas.defsEl;
@@ -510,14 +520,18 @@ export class GraphRenderer implements StructureRenderer {
   private showEmpty(): void {
     this.emptyEl.removeClass('is-hidden');
     this.toolbarEl.addClass('is-hidden');
-    this.canvasEl.addClass('is-hidden');
+    // Hides `wrapEl` (M6), not `canvasEl` directly — `canvasEl` now sits inside `wrapEl`, so
+    // hiding the wrapper hides it too, and — since `wrapEl` is what's sized to the last zoomed
+    // layout (see `applyZoom`) — also avoids leaving a stale, non-empty scroll area behind for
+    // the graph's own `overflow: auto` to still report while nothing is actually shown.
+    this.wrapEl.addClass('is-hidden');
     this.nodesEl.empty();
   }
 
   private showContent(): void {
     this.emptyEl.addClass('is-hidden');
     this.toolbarEl.removeClass('is-hidden');
-    this.canvasEl.removeClass('is-hidden');
+    this.wrapEl.removeClass('is-hidden');
   }
 
   private currentZoom(): number {
@@ -534,9 +548,19 @@ export class GraphRenderer implements StructureRenderer {
     this.applyZoom(clamped);
   }
 
+  /** `canvasEl` itself is only ever visually scaled (`transform` doesn't change an element's own
+   * layout/scroll size) — `wrapEl`, sized here to `lastLayoutSize × zoom`, is what actually
+   * determines how much the graph's `overflow: auto` container can scroll (M6). Called both from
+   * `update()` (after `lastLayoutSize` is freshly set for this render) and from every zoom
+   * handler (`setZoom`, wheel, fit), which only change `zoom` itself — `lastLayoutSize` is already
+   * current in that case too, so re-reading it here (rather than taking it as a parameter) keeps
+   * every caller's job to just "apply this zoom level," without each having to know or re-pass the
+   * layout size along too. */
   private applyZoom(zoom: number): void {
     this.canvasEl.style.transform = `scale(${zoom})`;
     this.zoomLabelEl.textContent = `${Math.round(zoom * 100)}%`;
+    this.wrapEl.style.width = `${this.lastLayoutSize.width * zoom}px`;
+    this.wrapEl.style.height = `${this.lastLayoutSize.height * zoom}px`;
   }
 
   /** Fits the whole graph into the viewport exactly once, the first time a layout with content

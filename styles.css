@@ -423,9 +423,18 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   text-align: center;
 }
 
-.bases-structure-canvas {
+/* M6: sized in `graph-renderer.ts`'s `applyZoom` to `layout size × zoom` — a flex item (so
+   `.bases-structure-graph`'s `overflow: auto` measures it, not the visually-scaled canvas inside,
+   for how much there is to scroll) containing the canvas at its own full, unscaled size. */
+.bases-structure-canvas-wrap {
   position: relative;
   flex: 0 0 auto;
+}
+
+.bases-structure-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   transform-origin: 0 0;
 }
 
