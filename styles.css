@@ -453,6 +453,15 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   flex-direction: column;
   max-height: 70vh;
   overflow: auto;
+
+  /* M7: grab-to-pan on the empty background (see `pan.ts`) — `grabbing` only while a pan is
+     actually in progress (`.is-panning`, toggled by `pan.ts` itself), so a plain hover still
+     shows the open-hand affordance. */
+  cursor: grab;
+}
+
+.bases-structure-graph.is-panning {
+  cursor: grabbing;
 }
 
 /* Icon-only toolbar (no text labels) plus a muted zoom percentage — the whole panel is invisible

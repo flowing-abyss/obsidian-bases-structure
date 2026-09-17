@@ -19,6 +19,7 @@ import {
   findNodeElement,
   focusActiveNode,
 } from './node-element.js';
+import { attachPan } from './pan.js';
 import type { RenderInput, StructureRenderer } from './structure-view.js';
 import type { ViewUiState } from './view-state.js';
 
@@ -57,6 +58,11 @@ interface CanvasElements {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NODE_SELECTOR = '.bases-structure-node';
+// M7: what a background pan (`pan.ts`) must never start on — every node (which has its own
+// click/drag), the toolbar's zoom/fit controls, and the same interactive elements `drag.ts`
+// itself already excludes a node-drag from starting on.
+const PAN_IGNORE_SELECTOR =
+  '.bases-structure-node, .bases-structure-toolbar, [data-action], .bases-structure-toggle, .bases-structure-draft, input, button';
 const TREE_ARROW_MARKER_ID = 'bases-structure-arrow-tree';
 const TREE_ARROW_MARKER_URL = `url(#${TREE_ARROW_MARKER_ID})`;
 const EXTRA_ARROW_MARKER_ID = 'bases-structure-arrow-extra';
@@ -221,6 +227,7 @@ export class GraphRenderer implements StructureRenderer {
   private readonly defsEl: SVGDefsElement;
   private readonly nodesEl: HTMLElement;
   private readonly disposeNodeInteractions: () => void;
+  private readonly disposePan: () => void;
   private state: ViewUiState | null = null;
   private lastInput: RenderInput | null = null;
   private lastLayoutSize: Size = { width: 0, height: 0 };
@@ -265,6 +272,10 @@ export class GraphRenderer implements StructureRenderer {
     this.nodesEl = canvas.nodesEl;
 
     this.disposeNodeInteractions = attachNodeInteractions(this.ctx, this.nodesEl);
+    // M7: pan by dragging the background — the graph itself (`this.graphEl`) is what actually
+    // scrolls (`overflow: auto`), so that's what owns `scrollLeft`/`scrollTop` for `attachPan` to
+    // read/write, same element `handleScroll` below already reads them from.
+    this.disposePan = attachPan({ container: this.graphEl, ignoreSelector: PAN_IGNORE_SELECTOR });
     this.attachListeners();
   }
 
@@ -354,6 +365,7 @@ export class GraphRenderer implements StructureRenderer {
 
   destroy(): void {
     this.disposeNodeInteractions();
+    this.disposePan();
     this.nodesEl.removeEventListener('click', this.handleNodesClick);
     this.nodesEl.removeEventListener('mouseover', this.handleNodesMouseOver);
     this.nodesEl.removeEventListener('mouseout', this.handleNodesMouseOut);

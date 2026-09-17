@@ -943,3 +943,67 @@ describe('GraphRenderer — pop-out window (M3)', () => {
     expect(otherDoc.activeElement).toBe(rebuiltAEl);
   });
 });
+
+describe('GraphRenderer — background pan (M7)', () => {
+  function pointerEvent(
+    type: string,
+    init: { x?: number; y?: number; target?: EventTarget } = {},
+  ): PointerEvent {
+    const event = new PointerEvent(type, {
+      pointerId: 1,
+      clientX: init.x ?? 0,
+      clientY: init.y ?? 0,
+      button: 0,
+      pointerType: 'mouse',
+      bubbles: true,
+      cancelable: true,
+    });
+    if (init.target !== undefined) {
+      Object.defineProperty(event, 'target', { value: init.target, configurable: true });
+    }
+    return event;
+  }
+
+  it('dragging the empty background scrolls the graph element', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const graphEl = must(container.querySelector<HTMLElement>('.bases-structure-graph'));
+
+    graphEl.dispatchEvent(pointerEvent('pointerdown', { x: 100, y: 100, target: graphEl }));
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 100 }));
+
+    expect(graphEl.classList.contains('is-panning')).toBe(true);
+    expect(graphEl.scrollLeft).toBe(50);
+  });
+
+  it('does not pan when the pointerdown lands on a node', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const graphEl = must(container.querySelector<HTMLElement>('.bases-structure-graph'));
+    const nodeEl = must(container.querySelector<HTMLElement>('[data-path="root.md"]'));
+
+    nodeEl.dispatchEvent(pointerEvent('pointerdown', { x: 100, y: 100, target: nodeEl }));
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 100 }));
+
+    expect(graphEl.classList.contains('is-panning')).toBe(false);
+    expect(graphEl.scrollLeft).toBe(0);
+  });
+
+  it('stops panning once the renderer is destroyed', () => {
+    const container = createDiv();
+    document.body.appendChild(container);
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    renderer.update(makeInput());
+    const graphEl = must(container.querySelector<HTMLElement>('.bases-structure-graph'));
+
+    renderer.destroy();
+    graphEl.dispatchEvent(pointerEvent('pointerdown', { x: 100, y: 100, target: graphEl }));
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 100 }));
+
+    expect(graphEl.classList.contains('is-panning')).toBe(false);
+  });
+});

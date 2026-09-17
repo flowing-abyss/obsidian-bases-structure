@@ -357,6 +357,16 @@ describe('attachKeyboard — m / t / Mod+Z', () => {
     expect(h.deps.undo).not.toHaveBeenCalled();
   });
 
+  it('Mod+Z calls undo even with no active node, as long as focus is inside the view (M7)', () => {
+    const h = makeHarness(makeStructure(), null);
+    const event = keyEvent('z', { ctrlKey: true });
+
+    h.container.dispatchEvent(event);
+
+    expect(h.deps.undo).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('m/t with a modifier held do not act (plain letters only)', () => {
     const h = makeHarness(makeStructure(), 'a.md');
 

@@ -320,9 +320,15 @@ const KEY_HANDLERS: Record<string, KeyHandler> = {
   'Shift+Enter': handleShiftEnter,
   m: handleMove,
   t: handleRetype,
-  'Mod+z': handleUndo,
   Escape: handleEscape,
 };
+
+/** M7: `Mod+z` is deliberately outside `KEY_HANDLERS`/`resolveActiveCtx` — every other binding
+ * needs an active node (`ActiveCtx`) to act on, but undo doesn't; gating it on one anyway (as an
+ * ordinary entry in the map used to) meant Mod+Z silently did nothing whenever focus was in the
+ * view but nothing happened to be active (e.g. right after Escape, or a fresh view nothing has
+ * clicked into yet). Checked before `resolveActiveCtx` in `onKeyDown` for exactly that reason. */
+const UNDO_BINDING = 'Mod+z';
 
 /** `undefined` means `state.active` names a path the structure no longer has (the node was moved,
  * retyped away, or deleted out from under an active keyboard session) — rather than leaving that
@@ -396,11 +402,17 @@ export function attachKeyboard(deps: KeyboardDeps): () => void {
     if (isTypingTarget(event.target)) {
       return;
     }
+    const key = bindingKey(event);
+    if (key === UNDO_BINDING) {
+      event.preventDefault();
+      handleUndo(deps);
+      return;
+    }
     const ctx = resolveActiveCtx(deps);
     if (ctx === null) {
       return;
     }
-    const handler = KEY_HANDLERS[bindingKey(event)];
+    const handler = KEY_HANDLERS[key];
     if (handler === undefined) {
       return;
     }
