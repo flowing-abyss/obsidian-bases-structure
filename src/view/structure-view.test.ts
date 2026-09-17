@@ -238,6 +238,49 @@ describe('StructureView — create wiring', () => {
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('a render error on the refresh after a successful commit shows the render failure, not "could not apply the change" (M11)', async () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    // Fails only the *next* render (the commit's own post-apply `refresh()`), not the one that
+    // already drew the draft above.
+    vi.spyOn(GraphRenderer.prototype, 'update').mockImplementationOnce(() => {
+      throw new Error('render boom');
+    });
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+
+    // M11: `refresh` goes through `safeRender()`, so a render failure lands in the body exactly
+    // like `onDataUpdated`'s own failures do — not wrapped in `commitAndNotify`'s generic
+    // "could not apply the change" Notice, which only ever meant to cover `commitPlan` itself
+    // throwing, not whatever the following render does.
+    await vi.waitFor(() => {
+      expect(parentEl.querySelector('.bases-structure-body')?.textContent).toBe(
+        'Structure view failed: render boom',
+      );
+    });
+    expect(
+      NoticeMock.instances.some(
+        (notice) =>
+          typeof notice.message === 'string' && notice.message.includes('could not apply'),
+      ),
+    ).toBe(false);
+  });
+
   it('destroys the create actions (and any open draft) on unload', () => {
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
     const { view } = createView(app, [mustFile(app, 'cat.md')]);

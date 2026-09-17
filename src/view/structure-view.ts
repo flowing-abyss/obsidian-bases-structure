@@ -269,8 +269,12 @@ export class StructureView extends BasesView {
       getInput,
       freshInput: () => this.readFreshInput(),
       hostPath,
+      // M11: the safe path, not a bare `this.render()` — a render error after a successful commit
+      // (or undo) must show up as the render's own failure message, not get swallowed into
+      // `commitAndNotify`'s generic "could not apply the change" catch (which only wraps
+      // `commitPlan` itself throwing, not whatever `refresh()` does afterward).
       refresh: () => {
-        this.render();
+        this.safeRender();
       },
       onDraftClosed: () => {
         this.flushPendingRender();
