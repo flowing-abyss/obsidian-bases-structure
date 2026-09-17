@@ -52,6 +52,21 @@ export const DEFAULT_LAYOUT_OPTIONS: LayoutOptions = {
   topGap: 32,
 };
 
+/** Options for `layoutTreeVertical` (`direction: 'down'`, see `Schema.direction`). `columnGap`
+ * and `rowGap` keep the same *roles* they have in `layoutTree` — `columnGap` spaces depth,
+ * `rowGap` spaces siblings — but under the swap-then-transpose trick those roles end up applying
+ * to the opposite screen axis: `columnGap` becomes the vertical depth gap (~40px reads better
+ * downward than the horizontal default's 72px), `rowGap` becomes the horizontal sibling gap
+ * (~16px, a bit more breathing room than 12px now that it separates side-by-side columns rather
+ * than stacked rows). `groupPadding`/`topGap` aren't called out by the growth axis the same way,
+ * so they keep the horizontal defaults. */
+export const DEFAULT_VERTICAL_LAYOUT_OPTIONS: LayoutOptions = {
+  columnGap: 40,
+  rowGap: 16,
+  groupPadding: 12,
+  topGap: 32,
+};
+
 /** A visible node, as discovered by `collectVisible`: `depth` and `children` are fixed at
  * construction (`children` only ever grows during that same walk); `x` starts at a placeholder
  * and is filled in by `computeColumns` before anything reads it. */
@@ -326,4 +341,29 @@ export function layoutTree(input: LayoutInput, options: LayoutOptions): LayoutRe
   placeAllTops(state, forest);
   const extent = computeExtent(state);
   return { boxes: state.boxes, groups: state.groups, width: extent.width, height: extent.height };
+}
+
+function swapSize(size: Size): Size {
+  return { width: size.height, height: size.width };
+}
+
+function transposeBox(box: Box): Box {
+  return { x: box.y, y: box.x, width: box.height, height: box.width };
+}
+
+/** `direction: 'down'` (see `Schema.direction`): depth grows top to bottom instead of left to
+ * right, siblings spread horizontally instead of vertically. `layoutTree` itself stays the one
+ * placement algorithm for both directions — this only feeds it each node's width/height swapped
+ * (so "columns spread by width, siblings by height" ends up measuring the axis this direction
+ * actually wants spread) and transposes every box/group (and the overall extent) back afterwards.
+ * `input.sizeOf` itself is never mutated; only the input object handed to `layoutTree` wraps it. */
+export function layoutTreeVertical(input: LayoutInput, options: LayoutOptions): LayoutResult {
+  const swappedInput: LayoutInput = { ...input, sizeOf: (path) => swapSize(input.sizeOf(path)) };
+  const result = layoutTree(swappedInput, options);
+  const boxes = new Map<string, Box>();
+  for (const [path, box] of result.boxes) {
+    boxes.set(path, transposeBox(box));
+  }
+  const groups = result.groups.map((group) => ({ path: group.path, box: transposeBox(group.box) }));
+  return { boxes, groups, width: result.height, height: result.width };
 }

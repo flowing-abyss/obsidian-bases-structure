@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { Box } from './layout.js';
 import {
   DEFAULT_LAYOUT_OPTIONS,
+  DEFAULT_VERTICAL_LAYOUT_OPTIONS,
   layoutTree,
+  layoutTreeVertical,
   type LayoutInput,
   type LayoutOptions,
   type Size,
@@ -302,5 +305,98 @@ describe('DEFAULT_LAYOUT_OPTIONS', () => {
       groupPadding: 12,
       topGap: 32,
     });
+  });
+});
+
+describe('DEFAULT_VERTICAL_LAYOUT_OPTIONS', () => {
+  it('matches the documented defaults (depth gap ~40, sibling gap ~16)', () => {
+    expect(DEFAULT_VERTICAL_LAYOUT_OPTIONS).toStrictEqual({
+      columnGap: 40,
+      rowGap: 16,
+      groupPadding: 12,
+      topGap: 32,
+    });
+  });
+});
+
+/** `x ↔ y`, `width ↔ height` — the same transform `layoutTreeVertical` applies to every box and
+ * group it hands back. A local, independent copy (not imported from `layout.ts`) so these tests
+ * can't pass merely by sharing a buggy transform with the implementation. */
+function transposeBox(box: Box): Box {
+  return { x: box.y, y: box.x, width: box.height, height: box.width };
+}
+
+describe('layoutTreeVertical — transposition', () => {
+  it('places a single node at the origin, in its own (unswapped) size', () => {
+    const input = treeInput(['a'], { a: { size: { width: 50, height: 20 } } });
+
+    const result = layoutTreeVertical(input, opts);
+
+    expect(result.boxes.get('a')).toStrictEqual({ x: 0, y: 0, width: 50, height: 20 });
+    expect(result.width).toBe(50);
+    expect(result.height).toBe(20);
+  });
+
+  it('matches layoutTree run on independently pre-swapped sizes, transposed back', () => {
+    // Same tree/opts as the "groups" describe block above (already-verified horizontal geometry
+    // exists for it), but the equivalence checked here isn't against that horizontal result —
+    // `layoutTreeVertical` feeds `layoutTree` each node's width/height *swapped* before running
+    // the same placement algorithm, so what it must match is `layoutTree` run on a separately
+    // hand-authored tree with those sizes already swapped (not the implementation's own
+    // `swapSize`, so this can't pass merely by sharing a buggy swap with it), transposed back.
+    const input = treeInput(['r'], {
+      r: { children: ['a', 'b'], size: { width: 10, height: 10 } },
+      a: { children: ['a1'], size: { width: 30, height: 10 } },
+      a1: { size: { width: 20, height: 10 } },
+      b: { children: ['b1'], size: { width: 30, height: 10 } },
+      b1: { size: { width: 20, height: 10 } },
+    });
+    const preSwapped = treeInput(['r'], {
+      r: { children: ['a', 'b'], size: { width: 10, height: 10 } },
+      a: { children: ['a1'], size: { width: 10, height: 30 } },
+      a1: { size: { width: 10, height: 20 } },
+      b: { children: ['b1'], size: { width: 10, height: 30 } },
+      b1: { size: { width: 10, height: 20 } },
+    });
+    const expected = layoutTree(preSwapped, opts);
+
+    const vertical = layoutTreeVertical(input, opts);
+
+    for (const [path, box] of expected.boxes) {
+      expect(vertical.boxes.get(path)).toStrictEqual(transposeBox(box));
+    }
+    expect(vertical.groups).toStrictEqual(
+      expected.groups.map((group) => ({ path: group.path, box: transposeBox(group.box) })),
+    );
+    expect(vertical.width).toBe(expected.height);
+    expect(vertical.height).toBe(expected.width);
+    // Concretely: a child sits strictly below its parent, siblings spread along x (not y), and
+    // every node keeps its own original (unswapped) width/height.
+    const rBox = vertical.boxes.get('r');
+    const aBox = vertical.boxes.get('a');
+    const bBox = vertical.boxes.get('b');
+    expect(rBox).toBeDefined();
+    expect(aBox).toBeDefined();
+    expect(bBox).toBeDefined();
+    if (rBox === undefined || aBox === undefined || bBox === undefined)
+      throw new Error('unreachable');
+    expect(aBox.y).toBeGreaterThan(rBox.y);
+    expect(bBox.y).toBeGreaterThan(rBox.y);
+    expect(aBox.x).not.toBe(bBox.x);
+    expect(aBox.y).toBe(bBox.y);
+    expect(aBox).toMatchObject({ width: 30, height: 10 });
+    expect(bBox).toMatchObject({ width: 30, height: 10 });
+  });
+
+  it('does not mutate the caller-supplied LayoutInput', () => {
+    const input = treeInput(['p'], {
+      p: { children: ['c'], size: { width: 40, height: 20 } },
+      c: { size: { width: 10, height: 30 } },
+    });
+
+    layoutTreeVertical(input, opts);
+
+    // sizeOf is a plain function — calling layoutTreeVertical must not have swapped it in place.
+    expect(input.sizeOf('p')).toStrictEqual({ width: 40, height: 20 });
   });
 });
