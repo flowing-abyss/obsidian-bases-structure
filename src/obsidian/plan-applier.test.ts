@@ -583,6 +583,32 @@ describe('commitPlan', () => {
     );
   });
 
+  it('shows the exact I5 concurrency wording, without the generic "could not apply all changes" wrapper (round 2 minor 6)', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\nstatus: changed-by-someone-else\n---\n' },
+    });
+    const undo = new UndoManager(app.asOriginalType__());
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        { path: 'note.md', writes: [{ key: 'status', value: { kind: 'literal', value: 'new' } }] },
+      ],
+    };
+    const expected = snapshot([note('note.md', { frontmatter: { status: 'active' } })]);
+
+    const result = await commitPlan(app.asOriginalType__(), undo, {
+      plan,
+      label: 'Concurrent',
+      expected,
+    });
+
+    expect(result).toBe(false);
+    expect(noticeMock).toHaveBeenCalledWith(
+      'Structure: "note" changed while applying; nothing else was written',
+    );
+  });
+
   it('does not push the transaction when the plan produces no steps', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());

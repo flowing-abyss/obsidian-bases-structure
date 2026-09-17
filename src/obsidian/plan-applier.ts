@@ -36,6 +36,14 @@ export interface ApplyOutcome {
   readonly error: unknown;
 }
 
+/** Thrown when the I5 optimistic-concurrency check finds a note has changed since the plan's
+ * snapshot was read. Its own subclass so `commitPlan` can show its `message` verbatim (round 2
+ * minor 6: the notice text is exactly `Structure: "<name>" changed while applying; nothing else
+ * was written`, not wrapped in the generic "could not apply all changes" wording every other
+ * failure gets). Not exported — only `applyChange` throws it and only `commitPlan` checks for it,
+ * both in this module. */
+class ConcurrentEditError extends Error {}
+
 /** Creates every path segment of `folderPath` that doesn't already exist, parent-first, recording
  * a `'createFolder'` step for each one actually created — so a folder this step (a create or a
  * move) had to make gets cleaned up on undo, not left behind as an orphan (M2). A no-op for the
@@ -222,7 +230,9 @@ async function applyChange(
   });
   steps.push(...pendingSteps);
   if (outcome.conflict) {
-    throw new Error(`"${file.basename}" changed while applying; nothing else was written`);
+    throw new ConcurrentEditError(
+      `"${file.basename}" changed while applying; nothing else was written`,
+    );
   }
 }
 
@@ -329,6 +339,10 @@ export async function commitPlan(
     return true;
   }
   console.error('[bases-structure]', outcome.error);
-  new Notice(`Structure: could not apply all changes. ${errorMessage(outcome.error)}`);
+  const notice =
+    outcome.error instanceof ConcurrentEditError
+      ? `Structure: ${outcome.error.message}`
+      : `Structure: could not apply all changes. ${errorMessage(outcome.error)}`;
+  new Notice(notice);
   return false;
 }
