@@ -177,7 +177,17 @@ function tryApplyChangeWrite(args: ChangeWriteArgs): boolean {
  * was built from saw for that key) via `tryApplyChangeWrite`. On a mismatch, stops applying *this
  * and every later* write and throws — `applyPlan`'s outer `try` already stops the whole walk there
  * and keeps whatever completed earlier as undoable, exactly what "nothing else was written"
- * requires (I5). */
+ * requires (I5).
+ *
+ * Round 2 minor 5: steps are collected into `pendingSteps`, local to this call, and only merged
+ * into the caller's `steps` *after* `processFrontMatter` returns without throwing. Computing a
+ * write's new value can itself throw (`linktextFor`, when a link target no longer exists) — and
+ * real Obsidian discards every frontmatter mutation a throwing callback made, not just the one
+ * write that failed. Pushing straight into the shared `steps` per write, as before, would leave
+ * "phantom" steps recorded for writes that never actually persisted. A conflict (the I5 check
+ * above) is different: the callback returns normally there (the loop just stops early), so
+ * whatever it already wrote genuinely persisted, and `pendingSteps` is flushed before the
+ * conflict is turned into a thrown error. */
 async function applyChange(
   app: App,
   change: Plan['changes'][number],
@@ -190,6 +200,7 @@ async function applyChange(
     checkedKeys: new Set(),
   };
   const outcome = { conflict: false };
+  const pendingSteps: TransactionStep[] = [];
   await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
     for (const write of change.writes) {
       if (outcome.conflict) {
@@ -202,13 +213,14 @@ async function applyChange(
         path: change.path,
         creating: ctx.creating,
         state,
-        steps,
+        steps: pendingSteps,
       });
       if (!applied) {
         outcome.conflict = true;
       }
     }
   });
+  steps.push(...pendingSteps);
   if (outcome.conflict) {
     throw new Error(`"${file.basename}" changed while applying; nothing else was written`);
   }

@@ -264,6 +264,39 @@ describe('applyPlan — changes', () => {
   });
 });
 
+describe('applyPlan — phantom steps (round 2 minor 5)', () => {
+  it('records no steps at all for a note when a later write throws, even though an earlier write in the same note already applied', async () => {
+    const app = App.createConfigured__({
+      files: { 'note.md': '---\nstatus: active\n---\n' },
+    });
+    const plan: Plan = {
+      ...emptyPlan(),
+      changes: [
+        {
+          path: 'note.md',
+          writes: [
+            { key: 'status', value: { kind: 'literal', value: 'new' } },
+            // "gone.md" doesn't exist and isn't being created by this plan — linktextFor throws
+            // (I5), which real Obsidian's processFrontMatter surfaces by discarding *every*
+            // mutation the callback made this call, not just the one that failed.
+            { key: 'meta', value: { kind: 'links', remove: [], add: ['gone.md'], list: false } },
+          ],
+        },
+      ],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Phantom step', emptySnapshot());
+
+    expect(errorMessage(outcome.error)).toBe('Cannot link to "gone.md": it no longer exists');
+    // Before round 2 minor 5, the "status" write's step was pushed straight into the shared steps
+    // array as each write ran, so it would still show up here even though the note's real
+    // frontmatter never actually changed (a "phantom" step undo could never actually reverse).
+    expect(outcome.transaction.steps).toStrictEqual([]);
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'note.md'));
+    expect(cache?.frontmatter?.['status']).toBe('active');
+  });
+});
+
 describe('applyPlan — optimistic concurrency check (I5)', () => {
   it('aborts the whole change and every later one when a note no longer matches what the plan expected, leaving both notes untouched', async () => {
     const app = App.createConfigured__({
