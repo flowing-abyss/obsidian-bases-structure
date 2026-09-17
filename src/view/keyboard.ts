@@ -126,11 +126,12 @@ function bindingKey(event: KeyboardEvent): string {
 }
 
 /** Every `.bases-structure-node` under `root` whose `data-path` is `path` — the same linear scan
- * `node-element.ts`'s own `findNodeElement` and `actions-ui.ts`'s private copy use (a note path
- * can contain characters a CSS attribute selector would need escaping). Kept as a local copy
- * (rather than importing the shared one) since this is the only other thing in the module that
- * still only needs `KeyboardDeps` — `setActive` below does reach into `node-element.ts` for the
- * two functions that actually own drawing `.is-active`. */
+ * `actions-ui.ts`'s own private copy uses (a note path can contain characters a CSS attribute
+ * selector would need escaping). Kept as a local copy: `node-element.ts` no longer exports one to
+ * share (both renderers moved to reconciling elements by path instead of querying for them), and
+ * this is the only other thing in the module that still only needs `KeyboardDeps` — `setActive`
+ * below does reach into `node-element.ts` for the two functions that actually own drawing
+ * `.is-active`. */
 function findNodeElement(root: HTMLElement, path: string): HTMLElement | null {
   for (const el of Array.from(root.querySelectorAll<HTMLElement>(NODE_SELECTOR))) {
     if (el.getAttribute('data-path') === path) {
@@ -177,8 +178,10 @@ function edgeOf(ctx: ActiveCtx, edge: 'first' | 'last'): string | null {
  * nothing is active so it can be tabbed into, -1 once a node owns focus) and applies
  * `.is-active`/per-node tabindex/focus/scroll straight to the *current* DOM via
  * `node-element.ts`'s `applyActiveNode`/`focusActiveNode` — deliberately not a `deps.renderCollapse()`.
- * A render (even the cheap `renderCollapse()` path) rebuilds every node element wholesale, which is
- * both unnecessary for a pure "move focus among already-rendered nodes" change and actively wrong
+ * A render (even the cheap `renderCollapse()` path) still re-measures and repositions every
+ * visible node — reconciling elements by path (task 1) means it reuses them rather than rebuilding
+ * each one from scratch, but the layout pass itself is still wholesale — which is both unnecessary
+ * for a pure "move focus among already-rendered nodes" change and actively wrong
  * when the click that triggered it also landed on a collapse toggle or the "+" button: those
  * already re-render themselves before this handler runs (their listener is on a nearer ancestor,
  * so it fires first during bubbling) — a second one on top would be redundant work and once made

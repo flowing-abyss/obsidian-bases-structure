@@ -11,9 +11,10 @@ import { retypeOptions } from '../core/plan-retype.js';
 import type { Action, Plan, PlanEnv } from '../core/plan-types.js';
 import { childOptions, planAction } from '../core/planner.js';
 import type { EdgeRule, Schema } from '../core/schema.js';
+import { applyPlan } from '../core/simulate.js';
 import { displayName, folderOf, lastSegmentBasename, type Snapshot } from '../core/snapshot.js';
 import type { Structure } from '../core/structure.js';
-import type { Transaction } from '../obsidian/plan-applier.js';
+import type { CommitOutcome, Transaction } from '../obsidian/plan-applier.js';
 import { commitPlan } from '../obsidian/plan-applier.js';
 import type { UndoBlockedResult, UndoManager, UndoResult } from '../obsidian/undo-manager.js';
 import { reportOpenFailure } from './open-note.js';
@@ -41,6 +42,14 @@ export interface ActionsDeps {
   readonly freshInput: () => FreshInput;
   readonly hostPath: string;
   readonly refresh: () => void;
+  /** I11: shows `snapshot` — the exact result of simulating the plan `commitWithOptimism` just
+   * verified (`applyPlan`, never a second, independent guess) — immediately, before the real write
+   * lands. Called again with the pre-plan snapshot if the commit itself throws, undoing the
+   * prediction; a plan that fails gracefully (`commitPlan`'s own `applied: false`, already shown
+   * its own Notice) is left alone, since a partial write can leave the vault somewhere `applyPlan`
+   * never predicted at all. `StructureView` renders from the shown snapshot until the next real
+   * `onDataUpdated` clears it — real data always wins once Bases reports it. */
+  readonly showOptimistic: (snapshot: Snapshot) => void;
   /** Called whenever an open draft closes for good — cancel (Escape/blur), a successful or failed
    * commit, or `destroy()` — see `cancelDraft`. Superseding one draft with another (a new "+"
    * while one is already open) does *not* fire this: it's a single continuous draft session from
@@ -556,13 +565,32 @@ export class StructureActions {
     );
   }
 
+  /** I11: shows the plan's simulated result (`applyPlan(snapshot, plan)`, the exact snapshot
+   * `planAction` just verified against) via `showOptimistic`, then commits — reverting to
+   * `snapshot` itself if `commitPlan` throws, so a prediction nothing ever wrote never lingers.
+   * Shared by every planned action (`commitAndNotify` for move/retype, `runCommit` for create) so
+   * they can't drift on when the prediction shows or unwinds. */
+  private async commitWithOptimism(
+    snapshot: Snapshot,
+    plan: Plan,
+    label: string,
+  ): Promise<CommitOutcome> {
+    this.deps.showOptimistic(applyPlan(snapshot, plan));
+    try {
+      return await commitPlan(this.deps.app, this.deps.undo, { plan, label, expected: snapshot });
+    } catch (error) {
+      this.deps.showOptimistic(snapshot);
+      throw error;
+    }
+  }
+
   /** Shared commit tail for `startMove`/`commitRetype`: apply, refresh regardless of outcome, and
    * only show the success notice when the plan actually applied cleanly (a failed apply already
    * shows its own Notice — see `commitPlan`). `expected` is the same fresh snapshot the caller just
-   * planned against, passed straight through to `commitPlan`'s optimistic check (I5). Always clears
-   * `committing`, however the commit resolves. */
+   * planned against, passed straight through to `commitPlan`'s optimistic-concurrency check (I5).
+   * Always clears `committing`, however the commit resolves. */
   private commitAndNotify(expected: Snapshot, plan: Plan, label: string, message: string): void {
-    commitPlan(this.deps.app, this.deps.undo, { plan, label, expected })
+    this.commitWithOptimism(expected, plan, label)
       .then((outcome) => {
         this.committing = false;
         this.deps.refresh();
@@ -753,11 +781,7 @@ export class StructureActions {
       draft.inputEl.select();
       return;
     }
-    const outcome = await commitPlan(this.deps.app, this.deps.undo, {
-      plan: result.plan,
-      label: `Create "${name}"`,
-      expected: snapshot,
-    });
+    const outcome = await this.commitWithOptimism(snapshot, result.plan, `Create "${name}"`);
     this.committing = false;
     // Captured before this method's own cleanup below touches `this.draft`: if the user cancelled
     // this draft (Escape/blur) or opened a different one while the commit was in flight, `draft`

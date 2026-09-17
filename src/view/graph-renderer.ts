@@ -354,6 +354,10 @@ export class GraphRenderer implements StructureRenderer {
   // focus/scroll nobody asked for on that render.
   private lastActivePath: string | null = null;
   private hasRenderedOnce = false;
+  // Task 3 (scroll anchoring): the previous `update()`/`relayout()` call's own `layoutResult.boxes`
+  // — read by `anchorScrollToActive` to find the active node's box *before* this render's layout,
+  // so its delta from the box *after* can be folded into scroll. `null` before the first layout.
+  private lastBoxes: ReadonlyMap<string, Box> | null = null;
   // Persists across `update()` calls (perf task): a node that stays reuses its element — same
   // title instance, so Supercharged Links state on it survives — instead of every render
   // destroying and rebuilding all of them. `getNodeElement` reads straight from this map, which
@@ -476,25 +480,63 @@ export class GraphRenderer implements StructureRenderer {
 
     const direction = this.lastDirection;
     const layoutCtx: LayoutContext = { entries, input, forestTops, direction };
-    const { elementsByPath, labels, labelElementsByChild, layoutResult } =
-      this.computeLayout(layoutCtx);
-
-    this.positionNodes(entries, elementsByPath, layoutResult);
-    this.applyCanvasSize(layoutResult);
-    this.drawSvg(entries, layoutResult, direction);
-    this.positionLabels(labels, labelElementsByChild, layoutResult, direction);
-    this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
-    this.applyAutoFit(input.state, layoutResult.boxes.get(forestTops[0] ?? ''));
-    this.applyZoom(input.state.zoom);
-    this.graphEl.scrollLeft = input.state.scrollLeft;
-    this.graphEl.scrollTop = input.state.scrollTop;
-    this.applyActiveState(input.state.active, hadFocus);
+    const computed = this.computeLayout(layoutCtx);
+    this.applyLayoutResult(layoutCtx, computed, hadFocus);
     // D3: reconciling a node's `data-link-*` attributes to current frontmatter
     // (`refreshSuperchargedLinkAttributes`, above, inside `computeLayout`) is itself a
     // `data-link-*` mutation, but it's this renderer's own normal render, not Supercharged Links
     // deciding something new — draining it here keeps a plain re-render from scheduling a
     // redundant re-layout of itself.
     this.nodesObserver.takeRecords();
+  }
+
+  /** The drawing half of `update()` — positions nodes/edges/labels from an already-computed
+   * layout, then everything that depends on the *final* layout size/boxes (fit, scroll anchoring,
+   * zoom, active state). Split out purely to stay inside this project's `max-statements` budget. */
+  private applyLayoutResult(
+    ctx: LayoutContext,
+    computed: {
+      readonly elementsByPath: ReadonlyMap<string, HTMLElement>;
+      readonly labels: readonly PlacedLabel[];
+      readonly labelElementsByChild: ReadonlyMap<string, HTMLElement>;
+      readonly layoutResult: LayoutResult;
+    },
+    hadFocus: boolean,
+  ): void {
+    const { entries, direction, forestTops, input } = ctx;
+    const { elementsByPath, labels, labelElementsByChild, layoutResult } = computed;
+    this.positionNodes(entries, elementsByPath, layoutResult);
+    this.applyCanvasSize(layoutResult);
+    this.drawSvg(entries, layoutResult, direction);
+    this.positionLabels(labels, labelElementsByChild, layoutResult, direction);
+    this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
+    this.applyAutoFit(input.state, layoutResult.boxes.get(forestTops[0] ?? ''));
+    this.anchorScrollToActive(input.state, layoutResult);
+    this.applyZoom(input.state.zoom);
+    this.graphEl.scrollLeft = input.state.scrollLeft;
+    this.graphEl.scrollTop = input.state.scrollTop;
+    this.applyActiveState(input.state.active, hadFocus);
+    this.lastBoxes = layoutResult.boxes;
+  }
+
+  /** Task 3: keeps the active node visually still when its own layout position shifts for a
+   * reason that has nothing to do with the user's own scrolling — e.g. a sibling created above it
+   * pushes its row down. Folds the box delta into both the persisted `state` and the DOM (the
+   * final `graphEl.scrollLeft`/`scrollTop` assignment right after this reads the updated `state`).
+   * Skipped when nothing is active, or the active node wasn't part of `lastBoxes` — the layout
+   * this renderer already had before this call — since there is then nothing to anchor against
+   * (first render, or a node that only just appeared). */
+  private anchorScrollToActive(state: ViewUiState, layoutResult: LayoutResult): void {
+    if (state.active === null) {
+      return;
+    }
+    const before = this.lastBoxes?.get(state.active);
+    const after = layoutResult.boxes.get(state.active);
+    if (before === undefined || after === undefined) {
+      return;
+    }
+    state.scrollLeft += (after.x - before.x) * state.zoom;
+    state.scrollTop += (after.y - before.y) * state.zoom;
   }
 
   /** Re-derives `.is-active`/roving tabindex from `state.active` on every render (task 16) —
@@ -727,6 +769,10 @@ export class GraphRenderer implements StructureRenderer {
     this.lastLayoutSize = { width: layoutResult.width, height: layoutResult.height };
     this.applyZoom(this.currentZoom());
     this.positioning = false;
+    // Keeps `lastBoxes` current so the next `update()`'s own scroll anchoring (task 3) diffs
+    // against this relayout's positions, not stale ones from before Supercharged Links resized a
+    // node — `relayout` itself doesn't anchor scroll; only `update()` does.
+    this.lastBoxes = layoutResult.boxes;
   }
 
   /** `nodesObserver`'s callback (D3): reacts only to a `data-link-*` attribute changing somewhere

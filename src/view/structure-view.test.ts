@@ -266,7 +266,9 @@ describe('StructureView — create wiring', () => {
     await vi.waitFor(() => {
       expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
     });
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    // I11: one render for the plan's own optimistic prediction (shown before the write lands),
+    // one for the commit's own refresh afterward — not a third, wasted one.
+    expect(updateSpy).toHaveBeenCalledTimes(2);
   });
 
   it('a render error on the refresh after a successful commit shows the render failure, not "could not apply the change" (M11)', async () => {
@@ -282,15 +284,17 @@ describe('StructureView — create wiring', () => {
       throw new Error('Test setup error: draft input did not open');
     }
     input.value = 'New Leaf';
-    // Fails only the *next* render (the commit's own post-apply `refresh()`), not the one that
-    // already drew the draft above.
-    vi.spyOn(GraphRenderer.prototype, 'update').mockImplementationOnce(() => {
-      throw new Error('render boom');
-    });
 
     input.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     );
+    // The synchronous prefix above already ran the plan's own optimistic render (I11) — this fails
+    // only the *next* one (the commit's own post-apply `refresh()`), not the one that already drew
+    // the draft, nor the optimistic one just above.
+    vi.spyOn(GraphRenderer.prototype, 'update').mockImplementationOnce(() => {
+      throw new Error('render boom');
+    });
+
     await vi.waitFor(() => {
       expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
     });
@@ -323,6 +327,84 @@ describe('StructureView — create wiring', () => {
     view.unload();
 
     expect(destroySpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// I11: the planner already verifies a plan by simulating it before this ever writes to the vault
+// (`applyPlan`, see `src/core/simulate.ts`) — `StructureActions` shows that exact result through
+// `ActionsDeps.showOptimistic` right after planning succeeds, and `StructureView` renders it until
+// the next real `onDataUpdated` (from Bases) replaces it.
+describe('StructureView — optimistic rendering (I11)', () => {
+  const typesConfig = { Cat: { tag: 'cat', children: { Leaf: 'up' } }, Leaf: { tag: 'leaf' } };
+
+  it('shows the planned create result immediately, before the vault write lands or Bases reports it', () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+    const updateSpy = vi.spyOn(GraphRenderer.prototype, 'update');
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+
+    // Nothing async has run yet (no `await`, no `onDataUpdated`) — this is the plan's own
+    // simulated result, shown synchronously right after it verified.
+    expect(parentEl.querySelector('[data-path="New Leaf.md"]')).not.toBeNull();
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+
+    return vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+  });
+
+  it('onDataUpdated discards the optimistic prediction once real data arrives, even mid-commit', async () => {
+    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
+    view.config.set('types', typesConfig);
+    view.onDataUpdated();
+    parentEl
+      .querySelector('.bases-structure-add')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const input = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    if (input === null) {
+      throw new Error('Test setup error: draft input did not open');
+    }
+    input.value = 'New Leaf';
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    expect(parentEl.querySelector('[data-path="New Leaf.md"]')).not.toBeNull();
+
+    await vi.waitFor(() => {
+      expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
+    });
+    // The commit's own refresh already ran, but Bases' own `view.data` hasn't caught up yet — the
+    // prediction is still what's shown.
+    expect(parentEl.querySelector('[data-path="New Leaf.md"]')).not.toBeNull();
+
+    // The Enter chain (U5) reopens a sibling draft immediately after commit — close it first so
+    // the next onDataUpdated below isn't deferred by an unrelated open draft.
+    parentEl
+      .querySelector<HTMLInputElement>('.bases-structure-draft-input')
+      ?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+
+    // Bases finally pushes — still without the new note in its own result set (`view.data` is
+    // unchanged) — proving the render that follows is real data, not a lingering prediction.
+    view.onDataUpdated();
+
+    expect(parentEl.querySelector('[data-path="New Leaf.md"]')).toBeNull();
   });
 });
 
@@ -405,27 +487,29 @@ describe('StructureView — deferred render while a create draft is open', () =>
     });
     // Enter-mode's sibling chain only needs its own *parent* (`cat.md`), which already exists —
     // unlike a Tab chain (which reopens ON the new node itself, and so still has to wait for a
-    // render that actually contains it), this reopens on the very first render after commit.
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    // render that actually contains it), this reopens on the very first render after commit. One
+    // render for the optimistic prediction (I11), one for the commit's own refresh.
+    expect(updateSpy).toHaveBeenCalledTimes(2);
     const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
     expect(reopenedInput).not.toBeNull();
     expect(reopenedInput).not.toBe(input);
 
-    // `is-new` itself still waits for Bases to actually catch up with the new note (I7) — and,
-    // since the reopened draft above is itself now open, that later update is deferred until it
+    // Since the reopened draft above is itself now open, a later update is deferred until it
     // closes, same as any other open draft (see the "defers a data update" test above).
     view.data = {
       data: [mustFile(app, 'cat.md'), mustFile(app, 'New Leaf.md')].map((file) => ({ file })),
     } as unknown as BasesQueryResult;
     view.onDataUpdated();
 
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('the commit → Tab-chain flow reopens on the new node only once a render actually contains it (I7)', async () => {
-    // Unlike Enter's own chain (U5, above), Tab reopens *on* the newly created node itself —
-    // which, unlike the parent, genuinely doesn't exist in the render right after commit — so it
-    // still has to wait for a later render that actually contains it, same as before U5.
+  it('the commit → Tab-chain flow reopens on the new node right away, from the optimistic prediction (I11 supersedes I7’s own wait)', async () => {
+    // Unlike Enter's own chain (U5, above), Tab reopens *on* the newly created node itself — which
+    // used to genuinely not exist in the render right after commit, so this had to wait for a
+    // later render with real data (I7). Optimistic rendering (I11) removes that wait: the render
+    // right after commit already shows the plan's own simulated result, which already contains the
+    // new node.
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
     view.config.set('types', {
@@ -451,19 +535,21 @@ describe('StructureView — deferred render while a create draft is open', () =>
     await vi.waitFor(() => {
       expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
     });
-    expect(updateSpy).toHaveBeenCalledTimes(1);
-    expect(parentEl.querySelector('.bases-structure-draft-input')).toBeNull();
+    // One render for the optimistic prediction, one for the commit's own refresh — both already
+    // contain the new node, so the chain reopens on this first pass instead of waiting for Bases.
+    expect(updateSpy).toHaveBeenCalledTimes(2);
+    const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
+    expect(reopenedInput).not.toBeNull();
+    expect(reopenedInput?.placeholder).toBe('Sub');
 
-    // Simulates Bases' own `onDataUpdated` catching up with the new note.
+    // A later real onDataUpdated (Bases finally catching up) is deferred by the reopened draft,
+    // same as any other open draft — it doesn't need to do anything here (already reopened above).
     view.data = {
       data: [mustFile(app, 'cat.md'), mustFile(app, 'New Leaf.md')].map((file) => ({ file })),
     } as unknown as BasesQueryResult;
     view.onDataUpdated();
 
     expect(updateSpy).toHaveBeenCalledTimes(2);
-    const reopenedInput = parentEl.querySelector<HTMLInputElement>('.bases-structure-draft-input');
-    expect(reopenedInput).not.toBeNull();
-    expect(reopenedInput?.placeholder).toBe('Sub');
   });
 
   it('merges a flushed deferred render with the commit’s own refresh into one, not two (I6)', async () => {
@@ -486,12 +572,13 @@ describe('StructureView — deferred render while a create draft is open', () =>
       expect(app.vault.getFileByPath('New Leaf.md')).not.toBeNull();
     });
 
-    // Before this fix: closing the draft flushed the deferred render (1), and `runCommit`'s own
-    // explicit `refresh()` ran again immediately after (2) — same schema/snapshot/structure both
-    // times (nothing else runs in between), pure waste. I6 skips the second one. The Enter chain
-    // reopening a sibling draft (U5) straight after doesn't call `update()` again either — it's
-    // pure DOM, not a render — so this still stays at exactly one.
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    // Before I6: closing the draft flushed the deferred render, and `runCommit`'s own explicit
+    // `refresh()` ran again immediately after — same schema/snapshot/structure both times (nothing
+    // else runs in between), pure waste. I6 skips the second one. The Enter chain reopening a
+    // sibling draft (U5) straight after doesn't call `update()` again either — it's pure DOM, not a
+    // render. So this stays at exactly two: one for the optimistic prediction (I11), one for the
+    // merged flush/refresh — not three.
+    expect(updateSpy).toHaveBeenCalledTimes(2);
     expect(parentEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
   });
 

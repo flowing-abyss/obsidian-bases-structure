@@ -8,6 +8,7 @@ import type * as ObsidianModule from 'obsidian';
 import { App, Menu, Modal, type TFile } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseSchema, type Schema } from '../core/schema.js';
+import type { Snapshot } from '../core/snapshot.js';
 import { buildStructure } from '../core/structure.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
 import { UndoManager } from '../obsidian/undo-manager.js';
@@ -101,6 +102,7 @@ interface Harness {
   readonly undo: UndoManager;
   readonly refresh: ReturnType<typeof vi.fn>;
   readonly onDraftClosed: ReturnType<typeof vi.fn>;
+  readonly showOptimistic: ReturnType<typeof vi.fn>;
   readonly root: HTMLElement;
   readonly nodes: Map<string, HTMLElement>;
   getInput(): RenderInput;
@@ -202,6 +204,7 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
 
   const undo = new UndoManager(app.asOriginalType__());
   const onDraftClosed = vi.fn();
+  const showOptimistic = vi.fn();
   const deps: ActionsDeps = {
     app: app.asOriginalType__(),
     undo,
@@ -209,6 +212,7 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
     freshInput,
     hostPath: options.hostPath ?? '',
     refresh,
+    showOptimistic,
     onDraftClosed,
   };
   const actions = new StructureActions(deps);
@@ -220,6 +224,7 @@ function makeHarness(files: Record<string, string>, options: HarnessOptions = {}
     undo,
     refresh,
     onDraftClosed,
+    showOptimistic,
     root,
     nodes,
     getInput,
@@ -1606,6 +1611,79 @@ describe('commitAndNotify — unexpected failure', () => {
           notice.message === 'Structure: could not apply the change. push boom',
       ),
     ).toBe(true);
+  });
+});
+
+// I11: the planner already verifies a plan by simulating it (`applyPlan`) before this ever calls
+// `commitPlan` — showing that exact, already-computed result immediately (rather than waiting for
+// the real write, and Bases' own later re-query, to land) is free. `showOptimistic` is what
+// `structure-view.ts` renders from until the next real `onDataUpdated`.
+describe('optimistic rendering (I11)', () => {
+  it('shows the planned move result via showOptimistic synchronously, before the commit settles', () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    h.actions.startMove('meta.md', 'cat2.md');
+
+    expect(h.showOptimistic).toHaveBeenCalledTimes(1);
+    const optimistic = h.showOptimistic.mock.calls[0]?.[0] as Snapshot;
+    expect(optimistic.notes.get('meta.md')?.frontmatter['category']).toBe('[[cat2]]');
+  });
+
+  it('reverts to the original snapshot when the move commit itself throws (plus the existing error notice)', async () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    vi.spyOn(h.undo, 'push').mockImplementation(() => {
+      throw new Error('push boom');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    h.actions.startMove('meta.md', 'cat2.md');
+
+    await vi.waitFor(() => {
+      expect(h.showOptimistic).toHaveBeenCalledTimes(2);
+    });
+    const optimistic = h.showOptimistic.mock.calls[0]?.[0] as Snapshot;
+    const reverted = h.showOptimistic.mock.calls[1]?.[0] as Snapshot;
+    expect(optimistic.notes.get('meta.md')?.frontmatter['category']).toBe('[[cat2]]');
+    expect(reverted.notes.get('meta.md')?.frontmatter['category']).toBe('[[cat1]]');
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+  });
+
+  it('shows the planned create result via showOptimistic synchronously, before the note is written', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+
+    pressKey(draftInput(h.root), 'Enter');
+
+    expect(h.showOptimistic).toHaveBeenCalledTimes(1);
+    const optimistic = h.showOptimistic.mock.calls[0]?.[0] as Snapshot;
+    expect(optimistic.notes.has('New Sub.md')).toBe(true);
+    expect(optimistic.notes.get('New Sub.md')?.tags).toContain('sub');
+  });
+
+  it('reverts to the original snapshot when the create commit itself throws (plus the existing error notice)', async () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    vi.spyOn(h.undo, 'push').mockImplementation(() => {
+      throw new Error('push boom');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.actions.startCreate('leaf.md', leafEl);
+    draftInput(h.root).value = 'New Sub';
+
+    pressKey(draftInput(h.root), 'Enter');
+
+    await vi.waitFor(() => {
+      expect(h.showOptimistic).toHaveBeenCalledTimes(2);
+    });
+    const optimistic = h.showOptimistic.mock.calls[0]?.[0] as Snapshot;
+    const reverted = h.showOptimistic.mock.calls[1]?.[0] as Snapshot;
+    expect(optimistic.notes.has('New Sub.md')).toBe(true);
+    expect(reverted.notes.has('New Sub.md')).toBe(false);
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
   });
 });
 

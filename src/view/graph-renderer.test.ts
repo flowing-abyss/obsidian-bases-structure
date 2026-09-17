@@ -1980,3 +1980,50 @@ describe('GraphRenderer — re-measure after Supercharged Links changes a node (
     expect(container.querySelectorAll('.bases-structure-node')).toHaveLength(0);
   });
 });
+
+describe('GraphRenderer — scroll anchoring on the active node (task 3)', () => {
+  it('folds the active node’s layout shift into scroll, keeping it visually still', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'b.md' });
+    renderer.update(flatInput(['a.md', 'b.md'], { state }));
+    const before = must(renderer.getNodeElement('b.md')).style.top;
+
+    // A new top inserted before b.md pushes its row down — a layout shift with nothing to do with
+    // the user's own scroll position.
+    renderer.update(flatInput(['a.md', 'a2.md', 'b.md'], { state }));
+
+    const after = must(renderer.getNodeElement('b.md')).style.top;
+    const delta = parseFloat(after) - parseFloat(before);
+    expect(delta).not.toBe(0); // sanity: the raw layout position actually moved
+    expect(state.scrollTop).toBeCloseTo(delta);
+    const graphEl = must(container.querySelector<HTMLElement>('.bases-structure-graph'));
+    expect(graphEl.scrollTop).toBeCloseTo(delta);
+  });
+
+  it('does not touch scroll when nothing is active', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState();
+    renderer.update(flatInput(['a.md', 'b.md'], { state }));
+
+    renderer.update(flatInput(['a.md', 'a2.md', 'b.md'], { state }));
+
+    expect(state.scrollLeft).toBe(0);
+    expect(state.scrollTop).toBe(0);
+  });
+
+  it('does not anchor an active node that only just appeared (not rendered before)', () => {
+    const container = createDiv();
+    const renderer = new GraphRenderer(container, makeCtx(), { measure: fixedMeasure });
+    const state = makeState({ active: 'a.md' });
+    renderer.update(flatInput(['a.md'], { state }));
+
+    // b.md becomes active on the very render it first appears — nothing to anchor it against yet.
+    state.active = 'b.md';
+    renderer.update(flatInput(['a.md', 'b.md'], { state }));
+
+    expect(state.scrollLeft).toBe(0);
+    expect(state.scrollTop).toBe(0);
+  });
+});

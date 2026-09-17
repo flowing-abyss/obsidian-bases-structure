@@ -4,8 +4,9 @@
 // running — so the two child elements are created in the constructor, before any data arrives.
 //
 // `onDataUpdated` can fire at any time, including while a create draft is open (see
-// `actions-ui.ts`'s `StructureActions`) — both renderers rebuild every node on every render, which
-// would otherwise wipe the draft's DOM, typed value and focus out from under the user. While
+// `actions-ui.ts`'s `StructureActions`) — both renderers reconcile node elements by path rather
+// than rebuilding every one, but a render that ran mid-draft would still hand the draft's own
+// parent node a fresh `Structure` while the user is typing into it. While
 // `StructureActions.hasOpenDraft` is true, a data-driven render is deferred (`pendingRender`)
 // instead of run immediately, and flushed exactly once when the draft closes for any reason —
 // cancel, commit, or the view unloading — via `ActionsDeps.onDraftClosed`.
@@ -131,6 +132,12 @@ export class StructureView extends BasesView {
    * the class doc comment's carried-over fix); flushed by `flushPendingRender` once the draft
    * closes, however it closes — cancel, commit, or the view unloading. */
   private pendingRender = false;
+  /** I11: the plan's own simulated result, shown by `resolveActions`'s `showOptimistic` dep right
+   * after a plan verifies — `render()` builds from this instead of the real vault data until
+   * `onDataUpdated` clears it again (real data always wins once Bases actually reports it), or a
+   * failed commit reverts it back to the pre-plan snapshot (see `actions-ui.ts`'s
+   * `commitWithOptimism`). */
+  private optimistic: Snapshot | null = null;
 
   constructor(controller: QueryController, parentEl: HTMLElement, plugin: StructureViewPlugin) {
     super(controller);
@@ -153,10 +160,13 @@ export class StructureView extends BasesView {
 
   /** Bases can call this at any time, including while the user has a create draft open and is
    * mid-keystroke (e.g. a metadata plugin filling in fields on the note the draft is about to
-   * chain from) — both renderers rebuild every node on `update()`, which would otherwise destroy
-   * the draft's DOM, typed value and focus. Routes through `deferrableRender` for exactly that
-   * reason. */
+   * chain from) — both renderers reconcile node elements by path rather than rebuilding every
+   * one, but a render mid-draft would still hand its own parent node a fresh `Structure` out from
+   * under the typed input. Routes through `deferrableRender` for exactly that reason. Clears
+   * `optimistic` first (I11) — a data-driven render always shows real data, never a lingering
+   * prediction. */
   override onDataUpdated(): void {
+    this.optimistic = null;
     this.deferrableRender();
   }
 
@@ -164,16 +174,18 @@ export class StructureView extends BasesView {
    * (`flushPendingRender`, run from inside `onDraftClosed` — see its own doc comment) must go
    * through: while `hasOpenDraft` is true, defer — remember that a render is owed and let
    * `flushPendingRender` run it once the draft actually closes. Rendering immediately here instead
-   * would rebuild every node's DOM (including the open draft's own wrapper/input) without going
-   * through `teardownDraft` first — the only path that detaches the input's own blur listener
-   * before removing it. Skipping that silently loses the typed name, and in a real browser the
-   * synchronous `blur` a detached-but-still-listening input fires can even re-enter
-   * `cancelDraft`/`teardownDraft` mid-removal (`removeChild` on a node "moved in a 'blur' event
-   * handler"). Wired as `ActionsDeps.refresh` (used by every action that isn't the create commit
-   * closing its own draft: `commitAndNotify` for move/retype, `undoLast`, and the notice button's
-   * own `runUndoFromNotice`) so none of them can rebuild the DOM out from under an unrelated open
-   * draft either — e.g. dragging a node while a create draft is open elsewhere, or an older
-   * notice's undo settling after a new draft opened. */
+   * would run a full render over the open draft's own parent node without going through
+   * `teardownDraft` first — the only path that detaches the input's own blur listener before
+   * removing it, and reconciliation (see `graph-renderer.ts`'s/`outline-renderer.ts`'s own file
+   * comments) only preserves an element that stays part of the *new* render's own output, not one
+   * an unrelated draft merely happens to be attached to. Skipping `teardownDraft` silently loses
+   * the typed name, and in a real browser the synchronous `blur` a detached-but-still-listening
+   * input fires can even re-enter `cancelDraft`/`teardownDraft` mid-removal (`removeChild` on a
+   * node "moved in a 'blur' event handler"). Wired as `ActionsDeps.refresh` (used by every action
+   * that isn't the create commit closing its own draft: `commitAndNotify` for move/retype,
+   * `undoLast`, and the notice button's own `runUndoFromNotice`) so none of them can run a render
+   * out from under an unrelated open draft either — e.g. dragging a node while a create draft is
+   * open elsewhere, or an older notice's undo settling after a new draft opened. */
   private deferrableRender(): void {
     if (this.actions?.hasOpenDraft === true) {
       this.pendingRender = true;
@@ -245,7 +257,14 @@ export class StructureView extends BasesView {
   }
 
   private render(): void {
-    const { schema, issues, host, snapshot, structure } = this.computeCurrentData();
+    const {
+      schema,
+      issues,
+      host,
+      snapshot: realSnapshot,
+      structure: realStructure,
+    } = this.computeCurrentData();
+    const { snapshot, structure } = this.resolveDisplayData(schema, realSnapshot, realStructure);
     this.renderIssues(issues, structure.issues, snapshot);
     const state = getUiState(this.resolveStateKey(host));
     const input: RenderInput = { schema, snapshot, structure, state };
@@ -272,6 +291,22 @@ export class StructureView extends BasesView {
     // `structure` yet on that first pass — this only actually completes it once a later render
     // (from `onDataUpdated`) does contain it.
     actions.completePending(structure, this.bodyEl);
+  }
+
+  /** I11: `render()`'s own snapshot/structure — the plan's simulated result while `optimistic` is
+   * showing (set by the `showOptimistic` dep below, right after a plan verifies), the real,
+   * freshly-read data otherwise. Never predicts independently: `buildStructure` here only turns
+   * the exact snapshot `showOptimistic` was given into a `Structure`, the same computation a later
+   * real `onDataUpdated` runs once Bases actually reports that data. */
+  private resolveDisplayData(
+    schema: Schema,
+    realSnapshot: Snapshot,
+    realStructure: Structure,
+  ): { readonly snapshot: Snapshot; readonly structure: Structure } {
+    if (this.optimistic === null) {
+      return { snapshot: realSnapshot, structure: realStructure };
+    }
+    return { snapshot: this.optimistic, structure: buildStructure(schema, this.optimistic) };
   }
 
   /** `ActionsDeps.freshInput()` — re-reads the vault right now, independent of when the last
@@ -302,6 +337,16 @@ export class StructureView extends BasesView {
       // defers the same way a Bases-driven `onDataUpdated` already does — see its own doc comment.
       refresh: () => {
         this.deferrableRender();
+      },
+      // I11: bypasses `deferrableRender`'s own open-draft gate, deliberately — this is called
+      // while the very draft that's about to close is still technically open (mid-commit, before
+      // `closeCommittedDraft` runs), and the whole point is to show the prediction *before* that
+      // settles. Safe to render straight through: reconciliation (see `graph-renderer.ts`'s/
+      // `outline-renderer.ts`'s own file comments) reuses the draft's own parent node element
+      // rather than rebuilding it, so the open draft's DOM survives untouched.
+      showOptimistic: (snapshot) => {
+        this.optimistic = snapshot;
+        this.safeRender();
       },
       onDraftClosed: () => this.flushPendingRender(),
     });
