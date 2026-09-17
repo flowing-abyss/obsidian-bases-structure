@@ -218,7 +218,7 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
   const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
   const changes =
     nWrites.length > 0 ? [{ path: action.node, writes: nWrites }, ...subtreeWrites] : subtreeWrites;
-  const plan: Plan = { creations: [], changes, appends: [], moves: [] };
+  const plan: Plan = { creations: [], changes, appends: [], moves: [], bodyLinkRemovals: [] };
   const failure = verifyMove({
     schema,
     snapshot,

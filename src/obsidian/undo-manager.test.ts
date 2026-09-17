@@ -45,6 +45,7 @@ describe('UndoManager', () => {
       changes: [{ path: 'existing.md', writes: [{ key: 'status', value: null }] }],
       appends: [{ path: 'append-target.md', target: 'parent.md' }],
       moves: [{ from: 'movable.md', to: 'moved/movable.md' }],
+      bodyLinkRemovals: [],
     };
     const expected = snapshot([note('existing.md', { frontmatter: { status: 'active' } })]);
     const outcome = await applyPlan(app.asOriginalType__(), plan, 'Round trip', expected);
@@ -261,6 +262,99 @@ describe('UndoManager', () => {
     expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('# Parent\nsomething else\n');
   });
 
+  it('reinserts a whole removed line at its recorded index, exactly', async () => {
+    const app = App.createConfigured__({ files: { 'note.md': '# H\n\n- [[Other]]\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit',
+      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 5 }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit', skipped: [] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe(
+      '# H\n\n- [[Child]]\n- [[Other]]\n',
+    );
+  });
+
+  it('reinserts a removed line at index 0, exactly', async () => {
+    const app = App.createConfigured__({ files: { 'note.md': '- [[Other]]\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit',
+      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 0 }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit', skipped: [] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('- [[Child]]\n- [[Other]]\n');
+  });
+
+  it('reinserts a removed bare mid-sentence mention at its recorded index, exactly', async () => {
+    const app = App.createConfigured__({ files: { 'note.md': 'See for details.\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit',
+      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '[[Child]] ', index: 4 }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit', skipped: [] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('See [[Child]] for details.\n');
+  });
+
+  it('appends the removed line at the end and reports the note skipped once the seam has drifted', async () => {
+    // The recorded index (5) used to be a line boundary right after a blank line; that blank
+    // line is gone now, so splicing "removed" back in there would land mid-line instead.
+    const app = App.createConfigured__({ files: { 'note.md': '# H\n- [[Other]]\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit drift',
+      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 5 }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit drift', skipped: ['note.md'] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('# H\n- [[Other]]\n- [[Child]]\n');
+  });
+
+  it('appends the removed text at the end when the recorded index is now out of bounds', async () => {
+    const app = App.createConfigured__({ files: { 'note.md': 'X\n' } });
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit oob',
+      steps: [{ kind: 'bodyEdit', path: 'note.md', removed: '- [[Child]]\n', index: 50 }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit oob', skipped: ['note.md'] });
+    expect(await app.vault.read(mustFile(app, 'note.md'))).toBe('X\n- [[Child]]\n');
+  });
+
+  it('skips a bodyEdit step when the note it targeted no longer exists', async () => {
+    const app = App.createConfigured__({});
+    const undo = new UndoManager(app.asOriginalType__());
+    const transaction: Transaction = {
+      label: 'Body edit gone',
+      steps: [{ kind: 'bodyEdit', path: 'gone.md', removed: '- [[Child]]\n', index: 0 }],
+    };
+    undo.push(transaction);
+
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Body edit gone', skipped: ['gone.md'] });
+  });
+
   it('skips a frontmatter step when the note it targeted no longer exists', async () => {
     const app = App.createConfigured__({});
     const undo = new UndoManager(app.asOriginalType__());
@@ -402,6 +496,7 @@ describe('UndoManager', () => {
       changes: [],
       appends: [],
       moves: [],
+      bodyLinkRemovals: [],
     };
     const outcome = await applyPlan(app.asOriginalType__(), plan, 'Create nested', snapshot([]));
     expect(outcome.error).toBeNull();

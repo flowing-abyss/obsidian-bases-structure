@@ -849,6 +849,7 @@ describe('planAction — retype: the untyped root, and a child of one', () => {
         ],
         appends: [],
         moves: [],
+        bodyLinkRemovals: [],
       },
     });
   });

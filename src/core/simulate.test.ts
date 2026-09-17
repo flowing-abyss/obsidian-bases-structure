@@ -4,7 +4,7 @@ import type { KeyWrite, Plan } from './plan-types.js';
 import { applyPlan } from './simulate.js';
 
 function emptyPlan(overrides: Partial<Plan> = {}): Plan {
-  return { creations: [], changes: [], appends: [], moves: [], ...overrides };
+  return { creations: [], changes: [], appends: [], moves: [], bodyLinkRemovals: [], ...overrides };
 }
 
 describe('applyPlan — creations', () => {
@@ -338,6 +338,46 @@ describe('applyPlan — appends', () => {
     const result = applyPlan(snap, plan);
 
     expect(result.notes.has('missing.md')).toBe(false);
+  });
+});
+
+describe('applyPlan — bodyLinkRemovals', () => {
+  it('drops the target from links when nothing else holds it', () => {
+    const snap = snapshot([note('parent.md', { links: ['a.md', 'b.md'] })]);
+    const plan = emptyPlan({ bodyLinkRemovals: [{ path: 'parent.md', target: 'b.md' }] });
+
+    const result = applyPlan(snap, plan);
+
+    expect(result.notes.get('parent.md')?.links).toStrictEqual(['a.md']);
+  });
+
+  it('keeps the target in links when a property link still holds it', () => {
+    const snap = snapshot([
+      note('parent.md', { propertyLinks: { up: ['b.md'] }, links: ['a.md', 'b.md'] }),
+    ]);
+    const plan = emptyPlan({ bodyLinkRemovals: [{ path: 'parent.md', target: 'b.md' }] });
+
+    const result = applyPlan(snap, plan);
+
+    expect(result.notes.get('parent.md')?.links).toStrictEqual(['a.md', 'b.md']);
+  });
+
+  it('does nothing when the note is not in the snapshot', () => {
+    const snap = snapshot([note('a.md')]);
+    const plan = emptyPlan({ bodyLinkRemovals: [{ path: 'missing.md', target: 'x.md' }] });
+
+    const result = applyPlan(snap, plan);
+
+    expect(result.notes.has('missing.md')).toBe(false);
+  });
+
+  it('does nothing when the target was never in links', () => {
+    const snap = snapshot([note('parent.md', { links: ['a.md'] })]);
+    const plan = emptyPlan({ bodyLinkRemovals: [{ path: 'parent.md', target: 'b.md' }] });
+
+    const result = applyPlan(snap, plan);
+
+    expect(result.notes.get('parent.md')?.links).toStrictEqual(['a.md']);
   });
 });
 

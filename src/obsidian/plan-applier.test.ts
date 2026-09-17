@@ -39,7 +39,7 @@ function errorMessage(error: unknown): string {
 }
 
 function emptyPlan(): Plan {
-  return { creations: [], changes: [], appends: [], moves: [] };
+  return { creations: [], changes: [], appends: [], moves: [], bodyLinkRemovals: [] };
 }
 
 /** No notes at all — the optimistic-concurrency check (I5) is a no-op for every path, since
@@ -587,6 +587,105 @@ describe('applyPlan — appends', () => {
   });
 });
 
+describe('applyPlan — body link removals', () => {
+  it('removes the mention from the note text and records a bodyEdit step', async () => {
+    const app = App.createConfigured__({
+      files: { 'parent.md': '- [[Child]]\n- [[Other]]\n', 'child.md': '' },
+    });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'parent.md', target: 'child.md' }],
+    };
+
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      plan,
+      'Remove mention',
+      emptySnapshot(),
+    );
+
+    expect(outcome.error).toBeNull();
+    expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('- [[Other]]\n');
+    expect(outcome.transaction.steps).toStrictEqual([
+      { kind: 'bodyEdit', path: 'parent.md', removed: '- [[Child]]\n', index: 0 },
+    ]);
+  });
+
+  it('matches a bare mention, not just a bullet, and undo restores it exactly (round trip)', async () => {
+    const app = App.createConfigured__({
+      files: { 'parent.md': 'See [[Child]] for details.\n', 'child.md': '' },
+    });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'parent.md', target: 'child.md' }],
+    };
+
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      plan,
+      'Remove mention',
+      emptySnapshot(),
+    );
+    expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('See for details.\n');
+
+    const undo = new UndoManager(app.asOriginalType__());
+    undo.push(outcome.transaction);
+    const result = await undo.undo();
+
+    expect(result).toStrictEqual({ label: 'Remove mention', skipped: [] });
+    expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('See [[Child]] for details.\n');
+  });
+
+  it('errors for a removal targeting a missing note', async () => {
+    const app = App.createConfigured__({ files: { 'parent.md': '- [[Child]]\n' } });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'parent.md', target: 'missing.md' }],
+    };
+
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      plan,
+      'Remove missing',
+      emptySnapshot(),
+    );
+
+    expect(errorMessage(outcome.error)).toBe('Note not found: missing.md');
+  });
+
+  it('errors for a removal from a missing note', async () => {
+    const app = App.createConfigured__({ files: { 'child.md': '' } });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'missing.md', target: 'child.md' }],
+    };
+
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      plan,
+      'Remove missing',
+      emptySnapshot(),
+    );
+
+    expect(errorMessage(outcome.error)).toBe('Note not found: missing.md');
+  });
+
+  it('rejects when the note no longer mentions the target', async () => {
+    const app = App.createConfigured__({
+      files: { 'parent.md': '- [[Other]]\n', 'child.md': '' },
+    });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'parent.md', target: 'child.md' }],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Remove absent', emptySnapshot());
+
+    expect(errorMessage(outcome.error)).toBe('No mention of "child" found in "parent"');
+    expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('- [[Other]]\n');
+  });
+});
+
 describe('applyPlan — moves', () => {
   it('creates the missing target folder and renames the file, recording the step', async () => {
     const app = App.createConfigured__({ files: { 'source.md': 'Body\n' } });
@@ -619,6 +718,7 @@ describe('applyPlan — missing notes', () => {
       ],
       appends: [],
       moves: [],
+      bodyLinkRemovals: [],
     };
 
     const outcome = await applyPlan(app.asOriginalType__(), plan, 'Partial', emptySnapshot());
@@ -685,6 +785,7 @@ describe('commitPlan', () => {
       ],
       appends: [],
       moves: [],
+      bodyLinkRemovals: [],
     };
 
     const result = await commitPlan(app.asOriginalType__(), undo, {

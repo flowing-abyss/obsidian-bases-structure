@@ -651,7 +651,7 @@ export function planRetype(
 
   const moves = folderTo !== null ? [{ from: action.node, to: folderTo }] : [];
   const focus = folderTo ?? action.node;
-  const plan: Plan = { creations: [], changes, appends: [], moves };
+  const plan: Plan = { creations: [], changes, appends: [], moves, bodyLinkRemovals: [] };
   const failure = verifyRetype({ schema, snapshot, plan, before: structure, action, nNode, focus });
   if (failure !== null) {
     return { ok: false, reason: failure };

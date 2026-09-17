@@ -49,6 +49,9 @@ export interface Plan {
   readonly changes: ReadonlyArray<{ readonly path: string; readonly writes: readonly KeyWrite[] }>;
   readonly appends: ReadonlyArray<{ readonly path: string; readonly target: string }>;
   readonly moves: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  /** A body-text mention of `target` to cut from `path`'s note — the write half of a
+   * `file.backlinks` schema edge (see `body-link.ts`). */
+  readonly bodyLinkRemovals: ReadonlyArray<{ readonly path: string; readonly target: string }>;
 }
 
 export type PlanResult =

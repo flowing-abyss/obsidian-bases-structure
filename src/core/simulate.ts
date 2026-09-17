@@ -347,6 +347,26 @@ function applyAppends(state: SimState, appends: Plan['appends']): void {
   }
 }
 
+/** Drops `target` from `path`'s `links` — unless some property still holds it, in which case the
+ * note's link is still real (`resolvedLinks` doesn't distinguish a body mention from a property
+ * link) and nothing changes. */
+function applyBodyLinkRemovals(state: SimState, removals: Plan['bodyLinkRemovals']): void {
+  for (const removal of removals) {
+    const existing = state.notes.get(removal.path);
+    if (existing?.links.includes(removal.target) !== true) {
+      continue;
+    }
+    const stillHeld = Object.values(existing.propertyLinks).flat().includes(removal.target);
+    if (stillHeld) {
+      continue;
+    }
+    state.notes.set(removal.path, {
+      ...existing,
+      links: existing.links.filter((link) => link !== removal.target),
+    });
+  }
+}
+
 function replaceTarget(list: readonly string[], from: string, to: string): readonly string[] {
   return list.includes(from) ? list.map((item) => (item === from ? to : item)) : list;
 }
@@ -397,6 +417,7 @@ export function applyPlan(snapshot: Snapshot, plan: Plan): Snapshot {
   applyCreations(state, plan.creations);
   applyChanges(state, plan.changes);
   applyAppends(state, plan.appends);
+  applyBodyLinkRemovals(state, plan.bodyLinkRemovals);
   applyMoves(state, plan.moves);
   return { notes: state.notes, results: state.results, host: state.host };
 }

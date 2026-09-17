@@ -122,7 +122,7 @@ export function planFixInherit(
   recordAllOverrides(ctx, action.node, nWrites);
   const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
   const changes = [{ path: action.node, writes: nWrites }, ...subtreeWrites];
-  const plan: Plan = { creations: [], changes, appends: [], moves: [] };
+  const plan: Plan = { creations: [], changes, appends: [], moves: [], bodyLinkRemovals: [] };
   const failure = verifyFixInherit(schema, snapshot, plan, action.node);
   if (failure !== null) {
     return { ok: false, reason: failure };

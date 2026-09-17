@@ -5,9 +5,10 @@
 
 import type { App, TFile } from 'obsidian';
 import { Notice } from 'obsidian';
+import { removeBodyLink } from '../core/body-link.js';
 import { deepEqual } from '../core/deep-equal.js';
 import type { KeyWrite, Plan } from '../core/plan-types.js';
-import { folderOf, type Snapshot } from '../core/snapshot.js';
+import { folderOf, lastSegmentBasename, type Snapshot } from '../core/snapshot.js';
 import { applyLinksWrite, applyListItemWrite, linkLine } from './link-writer.js';
 import type { UndoManager } from './undo-manager.js';
 
@@ -24,7 +25,13 @@ export type TransactionStep =
   | { readonly kind: 'create'; readonly path: string; readonly content: string }
   | { readonly kind: 'createFolder'; readonly path: string }
   | { readonly kind: 'append'; readonly path: string; readonly text: string }
-  | { readonly kind: 'rename'; readonly from: string; readonly to: string };
+  | { readonly kind: 'rename'; readonly from: string; readonly to: string }
+  | {
+      readonly kind: 'bodyEdit';
+      readonly path: string;
+      readonly removed: string;
+      readonly index: number;
+    };
 
 export interface Transaction {
   readonly label: string;
@@ -252,6 +259,45 @@ async function applyAppend(
   steps.push({ kind: 'append', path: append.path, text });
 }
 
+/** Both linktexts a body mention of `target` could be written under: the file's current rendered
+ * form (matching a link `fileToLinktext` itself would produce) and its bare basename (matching a
+ * shorter mention typed by hand). */
+function linktextsFor(app: App, target: string, sourcePath: string): readonly string[] {
+  const targetFile = requireFile(app, target);
+  return [
+    app.metadataCache.fileToLinktext(targetFile, sourcePath, true),
+    lastSegmentBasename(target),
+  ];
+}
+
+async function applyBodyLinkRemoval(
+  app: App,
+  removal: Plan['bodyLinkRemovals'][number],
+  steps: TransactionStep[],
+): Promise<void> {
+  const file = requireFile(app, removal.path);
+  const linktexts = linktextsFor(app, removal.target, removal.path);
+  // A plain `let` reassigned only inside the closure below keeps TypeScript's outer-scope
+  // narrowing pinned to its initial value; a wrapper object sidesteps that (`no-unnecessary-
+  // condition`/`no-unsafe-assignment` false positives).
+  const outcome: { cut: ReturnType<typeof removeBodyLink> } = { cut: null };
+  await app.vault.process(file, (data: string) => {
+    outcome.cut = removeBodyLink(data, linktexts);
+    return outcome.cut === null ? data : outcome.cut.text;
+  });
+  if (outcome.cut === null) {
+    throw new Error(
+      `No mention of "${lastSegmentBasename(removal.target)}" found in "${file.basename}"`,
+    );
+  }
+  steps.push({
+    kind: 'bodyEdit',
+    path: removal.path,
+    removed: outcome.cut.removed,
+    index: outcome.cut.index,
+  });
+}
+
 async function applyMove(
   app: App,
   move: Plan['moves'][number],
@@ -268,7 +314,7 @@ interface ApplyContext {
   readonly creating: ReadonlySet<string>;
 }
 
-/** Applies every part of `plan` in order (creations, changes, appends, moves), recording one
+/** Applies every part of `plan` in order (creations, changes, appends, moves, bodyLinkRemovals), recording one
  * `TransactionStep` per primitive write. Stops at the first failing operation and returns the
  * steps completed so far with `error` set — `null` when everything succeeded. `expected` is the
  * snapshot the plan was built from (the view's `freshInput()`, read immediately before planning):
@@ -297,6 +343,9 @@ export async function applyPlan(
     }
     for (const move of plan.moves) {
       await applyMove(app, move, steps);
+    }
+    for (const removal of plan.bodyLinkRemovals) {
+      await applyBodyLinkRemoval(app, removal, steps);
     }
     return { transaction: { label, steps }, error: null };
   } catch (error) {

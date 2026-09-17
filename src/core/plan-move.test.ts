@@ -205,6 +205,7 @@ describe('planAction — move: keeps extra values in the same edge property', ()
         ],
         appends: [],
         moves: [],
+        bodyLinkRemovals: [],
       },
     });
   });

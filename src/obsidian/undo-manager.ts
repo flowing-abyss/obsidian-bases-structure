@@ -41,6 +41,7 @@ type AppendStep = Extract<TransactionStep, { kind: 'append' }>;
 type FrontmatterStep = Extract<TransactionStep, { kind: 'frontmatter' }>;
 type CreateStep = Extract<TransactionStep, { kind: 'create' }>;
 type CreateFolderStep = Extract<TransactionStep, { kind: 'createFolder' }>;
+type BodyEditStep = Extract<TransactionStep, { kind: 'bodyEdit' }>;
 
 /** `true` when reverted, `false` when skipped — never throws (callers catch around it). */
 async function revertRename(app: App, step: RenameStep): Promise<boolean> {
@@ -107,6 +108,45 @@ async function revertAppend(app: App, step: AppendStep): Promise<boolean> {
     return replaced;
   });
   return handled;
+}
+
+/** Whether `step.removed` can be spliced back into `data` at `step.index`: the index must still
+ * be inside the file, and — for a removal that took the whole line (`removed` ends in `"\n"`) —
+ * it must still sit at a real line boundary, not somewhere a later edit joined into the middle of
+ * another line. An inline (mid-sentence) removal has no comparably strong invariant to check
+ * beyond staying in bounds. */
+function seamIntact(data: string, step: BodyEditStep): boolean {
+  if (step.index > data.length) {
+    return false;
+  }
+  if (!step.removed.endsWith('\n')) {
+    return true;
+  }
+  return step.index === 0 || data[step.index - 1] === '\n';
+}
+
+/** `removed` as the last thing in the file — the fallback once the seam it was cut from no
+ * longer lines up. Never loses the text; `revertBodyEdit` still reports the note as skipped so
+ * the user knows it landed somewhere other than where it started. */
+function appendRemoved(data: string, removed: string): string {
+  const prefix = data === '' || data.endsWith('\n') ? '' : '\n';
+  const suffix = removed.endsWith('\n') ? '' : '\n';
+  return `${data}${prefix}${removed}${suffix}`;
+}
+
+async function revertBodyEdit(app: App, step: BodyEditStep): Promise<boolean> {
+  const file = app.vault.getFileByPath(step.path);
+  if (file === null) {
+    return false;
+  }
+  let intact = false;
+  await app.vault.process(file, (data: string) => {
+    intact = seamIntact(data, step);
+    return intact
+      ? data.slice(0, step.index) + step.removed + data.slice(step.index)
+      : appendRemoved(data, step.removed);
+  });
+  return intact;
 }
 
 async function revertFrontmatter(app: App, step: FrontmatterStep): Promise<boolean> {
@@ -182,6 +222,8 @@ function revertStep(
       return revertFrontmatter(app, step);
     case 'create':
       return revertCreate(app, step);
+    case 'bodyEdit':
+      return revertBodyEdit(app, step);
   }
 }
 

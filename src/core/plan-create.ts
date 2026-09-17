@@ -213,7 +213,13 @@ export function planCreate(
   const writes = buildWrites(ctx, childType, rule);
   const bodyLinks = rule.kind === 'links' ? [action.parent] : [];
   const appends = rule.kind === 'backlinks' ? [{ path: action.parent, target: path }] : [];
-  const plan: Plan = { creations: [{ path, writes, bodyLinks }], changes: [], appends, moves: [] };
+  const plan: Plan = {
+    creations: [{ path, writes, bodyLinks }],
+    changes: [],
+    appends,
+    moves: [],
+    bodyLinkRemovals: [],
+  };
   const failure = verifyCreate(schema, snapshot, plan, {
     path,
     type: action.type,
