@@ -59,8 +59,9 @@ export function textLinkReason(
  * `'backlinks'` writes to the parent's own body (the parent mentions the child), `'links'` writes
  * to the node's own body (the child mentions the parent) — mirrors `textLinkReason`'s ordering.
  * Keyed off the *new* rule's own kind — see `textEdgeRemoval` for the old-side counterpart, which
- * must be keyed off the *old* edge's kind instead, since the two can differ. */
-export function textEdgeAppend(
+ * must be keyed off the *old* edge's kind instead, since the two can differ. Only `buildTextEdgeChanges`
+ * calls this directly; every planner goes through that instead. */
+function textEdgeAppend(
   kind: 'links' | 'backlinks',
   node: string,
   newParent: string,
@@ -75,8 +76,9 @@ export function textEdgeAppend(
  * the new rule's — a node's possible parent types can mix property and text-kind rules, so a move
  * can freely cross from one kind to the other; conflating the two here would either remove nothing
  * (old edge was actually `'property'`) or target a mention that was never written (old edge was
- * the other text kind). */
-export function textEdgeRemoval(
+ * the other text kind). Only `buildTextEdgeChanges` calls this directly; every planner goes
+ * through that instead. */
+function textEdgeRemoval(
   kind: 'links' | 'backlinks',
   node: string,
   oldParent: string,

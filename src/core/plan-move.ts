@@ -1,7 +1,7 @@
 // Move planning: turns a `'move'` `Action` into a verified `Plan` that reparents a node and
 // cascades link updates to its descendants, or a rejection with a stable, user-facing reason. A
 // `'property'`-kind edge patches a frontmatter key; a `'backlinks'`/`'links'`-kind edge instead
-// appends/removes a body mention (see `textEdgeAppend`/`textEdgeRemoval` in plan-shared.ts). The
+// appends/removes a body mention (see `buildTextEdgeChanges` in plan-shared.ts). The
 // new edge's own write is keyed off the *new* rule's kind; the old edge's cleanup is keyed off the
 // *old* edge's own kind — the two are independent, since a node's possible parent types can mix
 // property and text-kind rules. No Obsidian imports.
