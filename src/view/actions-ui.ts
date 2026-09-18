@@ -5,7 +5,7 @@
 // time, appended inside the parent node's own element) and the menu/chaining UX around it.
 
 import type { App, FuzzyMatch, PaneType } from 'obsidian';
-import { FuzzySuggestModal, Keymap, Menu, Notice } from 'obsidian';
+import { FuzzySuggestModal, Menu, Notice } from 'obsidian';
 import type { Diagnostic } from '../core/diagnostics.js';
 import { convertOptions, type ConvertContext } from '../core/plan-convert.js';
 import { moveTargets } from '../core/plan-move.js';
@@ -152,6 +152,14 @@ function findNodeElement(root: HTMLElement, path: string): HTMLElement | null {
  * back to `anchorEl`'s position, same as every other caller without a mouse event). */
 function asMouseEvent(evt: MouseEvent | KeyboardEvent): MouseEvent | undefined {
   return evt instanceof MouseEvent ? evt : undefined;
+}
+
+/** Just below `el`'s own rect, with a small 4px gap so a menu doesn't touch the element it opened
+ * from — shared by every menu positioned from a clicked element rather than a mouse event
+ * (`showMenuAt`'s no-event branch, `openNodeMenuFromButton`'s touch-only button). */
+function positionBelow(el: HTMLElement): { x: number; y: number } {
+  const rect = el.getBoundingClientRect();
+  return { x: rect.left, y: rect.bottom + 4 };
 }
 
 const MAX_SKIPPED_NAMES_SHOWN = 3;
@@ -556,39 +564,51 @@ export class StructureActions {
     this.showMenuAt(menu, anchorEl, event);
   }
 
-  /** The node context menu: `Open`/`Open in new tab`, then the same actions available elsewhere
-   * (add child, move, retype), then `Undo last change` when there's something to undo. `anchorEl`
-   * is resolved from the triggering event's own target (the real DOM node the user right-clicked),
-   * not passed separately — matches the decisions' two-argument signature. */
-  openNodeMenu(node: string, event: MouseEvent): void {
-    const anchorEl =
-      event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(NODE_SELECTOR) : null;
-    const menu = this.buildNodeMenu(node, anchorEl);
-    menu.showAtMouseEvent(event);
-  }
-
-  /** I10: the touch-only node-menu button's click — the identical menu `openNodeMenu`
-   * (`contextmenu`) builds, but positioned from the button itself (U1), not a mouse event (a
-   * touch device has no right-click to anchor one to). */
-  openNodeMenuFromButton(node: string, nodeEl: HTMLElement, buttonEl: HTMLElement): void {
-    const menu = this.buildNodeMenu(node, nodeEl);
-    this.showMenuAt(menu, buttonEl);
-  }
-
-  private buildNodeMenu(node: string, anchorEl: HTMLElement | null): Menu {
+  /** The one node menu every entry point (a title right-click, the touch-only node-menu button)
+   * shows: the native link menu first — Obsidian core's own items plus every other plugin's (e.g.
+   * Supercharged Links'), via the same `'file-menu'`/`'link-context-menu'` event a note's own
+   * in-text link menu fires — then this plugin's own actions (add/move/retype[/fix inheritance]),
+   * then `Undo last change` when there's something to undo. `event` positions the menu: a real
+   * `MouseEvent` (the right click) opens at the cursor; `{x, y}` (`openNodeMenuFromButton`, U1)
+   * opens at a fixed point instead, since a touch device has no click to anchor one to. */
+  showNodeMenu(
+    path: string,
+    event: MouseEvent | { x: number; y: number },
+    anchorEl: HTMLElement,
+  ): void {
     const menu = new Menu();
-    this.buildOpenItems(menu, node);
-    menu.addSeparator();
-    this.buildEditItems(menu, node, anchorEl);
-    if (this.deps.undo.canUndo) {
-      menu.addSeparator();
-      menu.addItem((item) => {
-        item.setTitle('Undo last change').onClick(() => {
-          this.undoLast();
-        });
-      });
+    const file = this.deps.app.vault.getAbstractFileByPath(path);
+    if (file !== null) {
+      this.deps.app.workspace.trigger('file-menu', menu, file, 'link-context-menu');
     }
-    return menu;
+    menu.addSeparator();
+    this.buildEditItems(menu, path, anchorEl);
+    this.addUndoItem(menu);
+    if (event instanceof MouseEvent) {
+      menu.showAtMouseEvent(event);
+      return;
+    }
+    // Pop-out convention (M3): `anchorEl.doc` — its own owner document — not the bare global.
+    menu.showAtPosition(event, anchorEl.doc);
+  }
+
+  /** I10: the touch-only node-menu button's click — the identical menu `showNodeMenu` (a right
+   * click) builds, positioned from the button itself (U1), not a mouse event (a touch device has
+   * no right-click to anchor one to). */
+  openNodeMenuFromButton(node: string, nodeEl: HTMLElement, buttonEl: HTMLElement): void {
+    this.showNodeMenu(node, positionBelow(buttonEl), nodeEl);
+  }
+
+  private addUndoItem(menu: Menu): void {
+    if (!this.deps.undo.canUndo) {
+      return;
+    }
+    menu.addSeparator();
+    menu.addItem((item) => {
+      item.setTitle('Undo last change').onClick(() => {
+        this.undoLast();
+      });
+    });
   }
 
   /** Awaits the shared undo stack, refreshes the view, then shows exactly the notice the plugin's
@@ -619,26 +639,13 @@ export class StructureActions {
     this.cancelDraft();
   }
 
-  private buildOpenItems(menu: Menu, node: string): void {
-    menu.addItem((item) => {
-      item.setTitle('Open').onClick(() => {
-        this.openNode(node, false);
-      });
-    });
-    menu.addItem((item) => {
-      item.setTitle('Open in new tab').onClick((evt) => {
-        const mod = Keymap.isModEvent(evt);
-        this.openNode(node, mod === false ? 'tab' : mod);
-      });
-    });
-  }
-
-  private buildEditItems(menu: Menu, node: string, anchorEl: HTMLElement | null): void {
+  /** Native items first, this plugin's own after (see `showNodeMenu`) — so `anchorEl` is always a
+   * real node element by the time this runs, never the `| null` a keyboard-triggered/unresolved
+   * target used to need a guard for. */
+  private buildEditItems(menu: Menu, node: string, anchorEl: HTMLElement): void {
     menu.addItem((item) => {
       item.setTitle('Add child').onClick((evt) => {
-        if (anchorEl !== null) {
-          this.startCreate(node, anchorEl, undefined, asMouseEvent(evt));
-        }
+        this.startCreate(node, anchorEl, undefined, asMouseEvent(evt));
       });
     });
     menu.addItem((item) => {
@@ -648,9 +655,7 @@ export class StructureActions {
     });
     menu.addItem((item) => {
       item.setTitle('Change type').onClick((evt) => {
-        if (anchorEl !== null) {
-          this.startRetype(node, anchorEl, asMouseEvent(evt));
-        }
+        this.startRetype(node, anchorEl, asMouseEvent(evt));
       });
     });
     if (hasInheritMismatch(this.deps.getInput().diagnostics, node)) {
@@ -666,8 +671,9 @@ export class StructureActions {
     }
   }
 
-  /** Public (task 16): the keyboard's `Enter`/`Mod+Enter` open the active node the same way the
-   * context menu's "Open"/"Open in new tab" items do — see `keyboard.ts`'s `open` dep, wired in
+  /** Public (task 16): the keyboard's `Enter`/`Mod+Enter` open the active node the same way a
+   * title click (or the node menu's native "Open"/"Open in new tab", now supplied by
+   * `'file-menu'` — see `showNodeMenu`) does — see `keyboard.ts`'s `open` dep, wired in
    * `structure-view.ts`. */
   openNode(node: string, newLeaf: boolean | PaneType): void {
     this.deps.app.workspace
@@ -747,8 +753,7 @@ export class StructureActions {
       menu.showAtMouseEvent(event);
       return;
     }
-    const rect = positionEl.getBoundingClientRect();
-    menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 }, positionEl.doc);
+    menu.showAtPosition(positionBelow(positionEl), positionEl.doc);
   }
 
   private showTypeMenu(

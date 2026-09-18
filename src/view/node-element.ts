@@ -32,6 +32,12 @@ export interface NodeElementContext {
    * this button (visible only under `(hover: none)` — see `styles.css`) is the only way to reach
    * it there. */
   readonly onMenu: (path: string, nodeEl: HTMLElement, buttonEl: HTMLElement) => void;
+  /** Task 11: invoked with a node's own path, the triggering `contextmenu` `MouseEvent`, and the
+   * node's element, on a right click landing anywhere on the card (not just the title) — wired to
+   * `StructureActions.showNodeMenu` by `structure-view.ts`, the same builder `onMenu` reaches.
+   * The delegated listener below only calls `preventDefault()` once this fires, so a right click
+   * that misses every node keeps the browser's own menu. */
+  readonly onContextMenu: (path: string, event: MouseEvent, nodeEl: HTMLElement) => void;
 }
 
 /** Flags that depend on where a node sits in the forest rather than on the node itself (a
@@ -66,6 +72,7 @@ export interface MutableNodeElementContext {
   snapshot: Snapshot;
   onAdd: (path: string, anchorEl: HTMLElement, buttonEl: HTMLElement) => void;
   onMenu: (path: string, nodeEl: HTMLElement, buttonEl: HTMLElement) => void;
+  onContextMenu: (path: string, event: MouseEvent, nodeEl: HTMLElement) => void;
 }
 
 export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeElementContext {
@@ -76,6 +83,7 @@ export function cloneNodeElementContext(ctx: NodeElementContext): MutableNodeEle
     snapshot: ctx.snapshot,
     onAdd: ctx.onAdd,
     onMenu: ctx.onMenu,
+    onContextMenu: ctx.onContextMenu,
   };
 }
 
@@ -461,10 +469,28 @@ function readTitlePath(event: MouseEvent): { title: HTMLElement; path: string } 
   return { title, path };
 }
 
-interface ButtonHit {
+interface NodeHit {
   readonly nodeEl: HTMLElement;
-  readonly buttonEl: HTMLElement;
   readonly path: string;
+}
+
+interface ButtonHit extends NodeHit {
+  readonly buttonEl: HTMLElement;
+}
+
+/** `el`'s own `.bases-structure-node` ancestor (or itself) and its `data-path` — `null` when
+ * there isn't one. Shared by every hit-test below that ultimately needs "which node is this
+ * part of", once the caller has already confirmed there's a real element to start from. */
+function resolveNodeHit(el: HTMLElement): NodeHit | null {
+  const nodeEl = el.closest<HTMLElement>(NODE_SELECTOR);
+  if (nodeEl === null) {
+    return null;
+  }
+  const path = nodeEl.getAttribute('data-path');
+  if (path === null) {
+    return null;
+  }
+  return { nodeEl, path };
 }
 
 /** The node whose button (matching `selector`) was clicked, its own path, and the button itself
@@ -480,15 +506,8 @@ function readButtonHit(event: MouseEvent, selector: string): ButtonHit | null {
   if (buttonEl === null) {
     return null;
   }
-  const nodeEl = buttonEl.closest<HTMLElement>(NODE_SELECTOR);
-  if (nodeEl === null) {
-    return null;
-  }
-  const path = nodeEl.getAttribute('data-path');
-  if (path === null) {
-    return null;
-  }
-  return { nodeEl, buttonEl, path };
+  const hit = resolveNodeHit(buttonEl);
+  return hit === null ? null : { ...hit, buttonEl };
 }
 
 function readAddHit(event: MouseEvent): ButtonHit | null {
@@ -499,9 +518,21 @@ function readMenuHit(event: MouseEvent): ButtonHit | null {
   return readButtonHit(event, MENU_SELECTOR);
 }
 
-/** One delegated `click` and one delegated `mouseover` listener on `container`, matching the
+/** Task 11: the node a `contextmenu` landed on, anywhere on the card (not just the title) — same
+ * shape `readButtonHit` resolves to, just without requiring a button. `null` for a right click
+ * that misses every node (e.g. empty canvas), so the delegated listener below knows to leave the
+ * browser's own menu alone. */
+function readNodeHit(event: MouseEvent): NodeHit | null {
+  if (!(event.target instanceof HTMLElement)) {
+    return null;
+  }
+  return resolveNodeHit(event.target);
+}
+
+/** One delegated `click`, `contextmenu` and `mouseover` listener on `container`, matching the
  * design spec's "Представления" node behaviour: click opens the link (Mod+click into a new
- * pane), mouseover previews it. Returns a disposer that removes both listeners. */
+ * pane), right click opens the node menu (task 11), mouseover previews it. Returns a disposer
+ * that removes all three listeners. */
 export function attachNodeInteractions(
   ctx: NodeElementContext,
   container: HTMLElement,
@@ -530,6 +561,14 @@ export function attachNodeInteractions(
         reportOpenFailure(ctx.snapshot, hit.path, error);
       });
   };
+  const handleContextMenu = (event: MouseEvent): void => {
+    const hit = readNodeHit(event);
+    if (hit === null) {
+      return;
+    }
+    event.preventDefault();
+    ctx.onContextMenu(hit.path, event, hit.nodeEl);
+  };
   const handleMouseOver = (event: MouseEvent): void => {
     const hit = readTitlePath(event);
     if (hit === null) {
@@ -545,9 +584,11 @@ export function attachNodeInteractions(
     });
   };
   container.addEventListener('click', handleClick);
+  container.addEventListener('contextmenu', handleContextMenu);
   container.addEventListener('mouseover', handleMouseOver);
   return () => {
     container.removeEventListener('click', handleClick);
+    container.removeEventListener('contextmenu', handleContextMenu);
     container.removeEventListener('mouseover', handleMouseOver);
   };
 }

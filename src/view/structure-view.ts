@@ -36,8 +36,6 @@ import { OutlineRenderer } from './outline-renderer.js';
 import type { ViewUiState } from './view-state.js';
 import { getUiState } from './view-state.js';
 
-const NODE_SELECTOR = '.bases-structure-node';
-
 /** Fallback `Structure`/`ViewUiState` for `attachStructureKeyboard`'s deps closures, for the
  * (never actually reached in practice — `render()` always sets `lastInput` before the keyboard
  * handler is attached, see `resolveRenderer`) case the type system still has to account for.
@@ -158,9 +156,6 @@ export class StructureView extends BasesView {
     this.containerEl = parentEl.createDiv('bases-structure');
     this.issuesEl = this.containerEl.createDiv('bases-structure-issues');
     this.bodyEl = this.containerEl.createDiv('bases-structure-body');
-    this.registerDomEvent(this.containerEl, 'contextmenu', (event) => {
-      this.handleContextMenu(event);
-    });
     this.register(() => {
       this.dragDispose?.();
       this.keyboardDispose?.();
@@ -297,6 +292,11 @@ export class StructureView extends BasesView {
       },
       onMenu: (path, nodeEl, buttonEl) => {
         actions.openNodeMenuFromButton(path, nodeEl, buttonEl);
+      },
+      // Task 11: the same menu `onMenu` opens, from a right click landing on a node instead of
+      // the touch-only button — see `node-element.ts`'s own delegated `contextmenu` listener.
+      onContextMenu: (path, event, nodeEl) => {
+        actions.showNodeMenu(path, event, nodeEl);
       },
     };
     const renderer = this.resolveRenderer(schema.layout, ctx);
@@ -529,19 +529,6 @@ export class StructureView extends BasesView {
     }
     const parentAnchor = this.renderer?.getNodeElement(parent) ?? anchorEl;
     this.actions?.startCreate(parent, parentAnchor);
-  }
-
-  private handleContextMenu(event: MouseEvent): void {
-    if (!(event.target instanceof HTMLElement)) {
-      return;
-    }
-    const nodeEl = event.target.closest<HTMLElement>(NODE_SELECTOR);
-    const path = nodeEl?.getAttribute('data-path') ?? null;
-    if (path === null || this.actions === null) {
-      return;
-    }
-    event.preventDefault();
-    this.actions.openNodeMenu(path, event);
   }
 
   private renderIssues(

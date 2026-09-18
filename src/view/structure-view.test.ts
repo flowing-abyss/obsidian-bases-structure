@@ -1045,21 +1045,21 @@ describe('StructureView — drag wiring', () => {
   });
 });
 
-describe('StructureView — context menu wiring', () => {
-  it('delegated contextmenu resolves the node path, calls openNodeMenu, and prevents default', () => {
+describe('StructureView — context menu wiring (Task 11)', () => {
+  it('a right click on a node reaches showNodeMenu with the node path, event and element, and prevents default', () => {
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
     view.config.set('parent', 'note.parent');
     view.onDataUpdated();
-    const openNodeMenuSpy = vi
-      .spyOn(StructureActions.prototype, 'openNodeMenu')
+    const showNodeMenuSpy = vi
+      .spyOn(StructureActions.prototype, 'showNodeMenu')
       .mockImplementation(() => undefined);
     const nodeEl = findNode(parentEl, 'cat.md');
     const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
 
     nodeEl.dispatchEvent(event);
 
-    expect(openNodeMenuSpy).toHaveBeenCalledExactlyOnceWith('cat.md', event);
+    expect(showNodeMenuSpy).toHaveBeenCalledExactlyOnceWith('cat.md', event, nodeEl);
     expect(event.defaultPrevented).toBe(true);
   });
 
@@ -1067,8 +1067,8 @@ describe('StructureView — context menu wiring', () => {
     const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
     const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
     view.onDataUpdated();
-    const openNodeMenuSpy = vi
-      .spyOn(StructureActions.prototype, 'openNodeMenu')
+    const showNodeMenuSpy = vi
+      .spyOn(StructureActions.prototype, 'showNodeMenu')
       .mockImplementation(() => undefined);
     const bases = parentEl.querySelector('.bases-structure');
     if (bases === null) throw new Error('missing view root');
@@ -1076,26 +1076,7 @@ describe('StructureView — context menu wiring', () => {
 
     bases.dispatchEvent(event);
 
-    expect(openNodeMenuSpy).not.toHaveBeenCalled();
-    expect(event.defaultPrevented).toBe(false);
-  });
-
-  it('ignores a contextmenu whose target is not an HTMLElement (e.g. an SVG edge in the graph)', () => {
-    const app = App.createConfigured__({ files: { 'cat.md': '---\ntags: [cat]\n---\n' } });
-    const { view, parentEl } = createView(app, [mustFile(app, 'cat.md')]);
-    view.onDataUpdated();
-    const openNodeMenuSpy = vi
-      .spyOn(StructureActions.prototype, 'openNodeMenu')
-      .mockImplementation(() => undefined);
-    const bases = parentEl.querySelector('.bases-structure');
-    if (bases === null) throw new Error('missing view root');
-    const svgEl = createSvg('path');
-    bases.appendChild(svgEl);
-    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
-
-    svgEl.dispatchEvent(event);
-
-    expect(openNodeMenuSpy).not.toHaveBeenCalled();
+    expect(showNodeMenuSpy).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 });

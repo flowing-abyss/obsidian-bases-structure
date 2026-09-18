@@ -61,6 +61,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     snapshot: snapshot([note('a.md')]),
     onAdd: () => undefined,
     onMenu: () => undefined,
+    onContextMenu: () => undefined,
     ...overrides,
   };
 }
@@ -625,6 +626,69 @@ describe('attachNodeInteractions', () => {
     expect(outerHandler).not.toHaveBeenCalled();
   });
 
+  it('calls onContextMenu with the path, event and node element on a right click landing on the node, and prevents default (Task 11)', () => {
+    const app = App.createConfigured__();
+    const onContextMenu = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onContextMenu });
+    const container = createDiv();
+    const nodeEl = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    container.appendChild(nodeEl);
+    attachNodeInteractions(ctx, container);
+    const title = container.querySelector('.bases-structure-title');
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'target', { value: title, configurable: true });
+
+    container.dispatchEvent(event);
+
+    expect(onContextMenu).toHaveBeenCalledExactlyOnceWith('a.md', event, nodeEl);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('calls onContextMenu for a right click anywhere on the card, not just the title', () => {
+    const app = App.createConfigured__();
+    const onContextMenu = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onContextMenu });
+    const container = createDiv();
+    const nodeEl = createNodeElement(ctx, makeNode({ path: 'a.md' }));
+    container.appendChild(nodeEl);
+    attachNodeInteractions(ctx, container);
+
+    nodeEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+
+    expect(onContextMenu).toHaveBeenCalledExactlyOnceWith('a.md', expect.anything(), nodeEl);
+  });
+
+  it('does not call onContextMenu and leaves the default alone when the right click misses every node', () => {
+    const app = App.createConfigured__();
+    const onContextMenu = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onContextMenu });
+    const container = createDiv();
+    attachNodeInteractions(ctx, container);
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+
+    container.dispatchEvent(event);
+
+    expect(onContextMenu).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('ignores a contextmenu whose target is not an HTMLElement (e.g. an SVG edge in the graph)', () => {
+    const app = App.createConfigured__();
+    const onContextMenu = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onContextMenu });
+    const container = createDiv();
+    attachNodeInteractions(ctx, container);
+    const textNode = document.createTextNode('stray');
+    container.appendChild(textNode);
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'target', { value: textNode, configurable: true });
+
+    textNode.dispatchEvent(event);
+
+    expect(onContextMenu).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it('ignores a mouseover that does not land on the title', () => {
     const app = App.createConfigured__();
     const trigger = vi.spyOn(app.workspace, 'trigger');
@@ -674,11 +738,12 @@ describe('attachNodeInteractions', () => {
     expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "a"');
   });
 
-  it('the disposer removes both listeners from the container', () => {
+  it('the disposer removes all three listeners from the container', () => {
     const app = App.createConfigured__();
     const openLinkText = vi.spyOn(app.workspace, 'openLinkText').mockResolvedValue();
     const trigger = vi.spyOn(app.workspace, 'trigger');
-    const ctx = makeCtx({ app: app.asOriginalType__() });
+    const onContextMenu = vi.fn();
+    const ctx = makeCtx({ app: app.asOriginalType__(), onContextMenu });
     const container = createDiv();
     container.appendChild(createNodeElement(ctx, makeNode()));
     const dispose = attachNodeInteractions(ctx, container);
@@ -687,9 +752,11 @@ describe('attachNodeInteractions', () => {
     const title = container.querySelector('.bases-structure-title');
     title?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     title?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    title?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
 
     expect(openLinkText).not.toHaveBeenCalled();
     expect(trigger).not.toHaveBeenCalled();
+    expect(onContextMenu).not.toHaveBeenCalled();
   });
 });
 

@@ -1964,7 +1964,7 @@ describe('committing guard — ignores a new action while one is still applying 
   });
 });
 
-describe('openNodeMenu', () => {
+describe('showNodeMenu', () => {
   function targetEvent(target: HTMLElement): MouseEvent {
     const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'target', { value: target, configurable: true });
@@ -1977,18 +1977,45 @@ describe('openNodeMenu', () => {
     });
   }
 
-  it('lists Open, Open in new tab, Add child, Move to…, Change type — no Undo when nothing can be undone', () => {
+  it('triggers the native file-menu with the resolved file and "link-context-menu" first', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const triggerSpy = vi.spyOn(h.app.workspace, 'trigger');
+    mockShowAtMouseEvent();
+
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
+
+    expect(triggerSpy).toHaveBeenCalledWith(
+      'file-menu',
+      expect.any(Menu),
+      mustFile(h.app, 'leaf.md'),
+      'link-context-menu',
+    );
+  });
+
+  it('does not trigger file-menu for a path with no resolvable file', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const triggerSpy = vi.spyOn(h.app.workspace, 'trigger');
+    mockShowAtMouseEvent();
+
+    h.actions.showNodeMenu('missing.md', targetEvent(leafEl), leafEl);
+
+    expect(triggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('lists Add child, Move to…, Change type after the native items — no Undo when nothing can be undone', () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
     const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
 
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
     expect(menu.items__.map((item) => item.title__)).toStrictEqual([
-      'Open',
-      'Open in new tab',
       'Add child',
       'Move to…',
       'Change type',
@@ -2002,12 +2029,10 @@ describe('openNodeMenu', () => {
     vi.spyOn(h.undo, 'canUndo', 'get').mockReturnValue(true);
     const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
 
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
     expect(menu.items__.map((item) => item.title__)).toStrictEqual([
-      'Open',
-      'Open in new tab',
       'Add child',
       'Move to…',
       'Change type',
@@ -2015,102 +2040,44 @@ describe('openNodeMenu', () => {
     ]);
   });
 
-  it('"Open" opens the node in the current pane (no forced new leaf)', () => {
+  it('opens at the cursor via showAtMouseEvent when given a real MouseEvent', () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
     const showAtMouseEventSpy = mockShowAtMouseEvent();
-    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
+    const event = targetEvent(leafEl);
 
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    h.actions.showNodeMenu('leaf.md', event, leafEl);
+
+    expect(showAtMouseEventSpy).toHaveBeenCalledExactlyOnceWith(event);
+  });
+
+  it('opens at a fixed position (with the anchor’s own document — pop-out convention) when given {x, y}', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.showNodeMenu('leaf.md', { x: 10, y: 20 }, leafEl);
+
+    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith({ x: 10, y: 20 }, leafEl.doc);
+  });
+
+  it('"Add child" opens a draft anchored to the given node', () => {
+    const h = makeHarness(baseFiles());
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
+    const showAtMouseEventSpy = mockShowAtMouseEvent();
+
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
     menu.items__[0]?.onClick__?.(new MouseEvent('click'));
 
-    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', false);
-  });
-
-  it('logs and shows a Notice with the note\'s display name when "Open" fails', async () => {
-    const h = makeHarness(baseFiles());
-    const leafEl = h.nodes.get('leaf.md');
-    if (leafEl === undefined) throw new Error('missing leaf element');
-    const showAtMouseEventSpy = mockShowAtMouseEvent();
-    const error = new Error('boom');
-    vi.spyOn(h.app.workspace, 'openLinkText').mockRejectedValue(error);
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
-    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
-
-    await vi.waitFor(() => {
-      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', error);
-    });
-    expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "leaf"');
-  });
-
-  it('"Open in new tab" defaults to a new tab when no modifier is held', () => {
-    const h = makeHarness(baseFiles());
-    const leafEl = h.nodes.get('leaf.md');
-    if (leafEl === undefined) throw new Error('missing leaf element');
-    const showAtMouseEventSpy = mockShowAtMouseEvent();
-    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
-
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
-    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[1]?.onClick__?.(new MouseEvent('click'));
-
-    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'tab');
-  });
-
-  it('"Open in new tab" escalates to split/window via extra modifiers (mod-aware)', () => {
-    const h = makeHarness(baseFiles());
-    const leafEl = h.nodes.get('leaf.md');
-    if (leafEl === undefined) throw new Error('missing leaf element');
-    const showAtMouseEventSpy = mockShowAtMouseEvent();
-    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
-    // Mod (either Ctrl or Meta, platform-independent here) + Alt, no Shift → 'split' per
-    // `Keymap.isModEvent` — proves `mod` (not the `'tab'` literal) is what gets forwarded.
-    const modClick = new MouseEvent('click', { ctrlKey: true, metaKey: true, altKey: true });
-
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
-    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[1]?.onClick__?.(modClick);
-
-    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'split');
-  });
-
-  it('logs and shows a Notice with the note\'s display name when "Open in new tab" fails', async () => {
-    const h = makeHarness(baseFiles());
-    const leafEl = h.nodes.get('leaf.md');
-    if (leafEl === undefined) throw new Error('missing leaf element');
-    const showAtMouseEventSpy = mockShowAtMouseEvent();
-    const error = new Error('boom');
-    vi.spyOn(h.app.workspace, 'openLinkText').mockRejectedValue(error);
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
-    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[1]?.onClick__?.(new MouseEvent('click'));
-
-    await vi.waitFor(() => {
-      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', error);
-    });
-    expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "leaf"');
-  });
-
-  it('falls back to no anchor (Add child / Change type become no-ops) when the event target is not an HTMLElement', () => {
-    const h = makeHarness(baseFiles());
-    const showAtMouseEventSpy = mockShowAtMouseEvent();
-    const target = document.createTextNode('x');
-    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'target', { value: target, configurable: true });
-
-    h.actions.openNodeMenu('leaf.md', event);
-    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[2]?.onClick__?.(new MouseEvent('click')); // Add child
-    menu.items__[4]?.onClick__?.(new MouseEvent('click')); // Change type
-
-    expect(NoticeMock.instances).toHaveLength(0);
+    expect(leafEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
   });
 
   it('"Add child" positions the type menu at the anchor (not the mouse) when activated via keyboard', () => {
@@ -2124,26 +2091,13 @@ describe('openNodeMenu', () => {
         return this;
       });
 
-    h.actions.openNodeMenu('cat.md', targetEvent(catEl));
+    h.actions.showNodeMenu('cat.md', targetEvent(catEl), catEl);
     const contextMenu = showAtMouseEventSpy.mock.contexts[0] as Menu;
     // A keyboard "activate" (not a real click) reaches the same onClick callback; only a real
     // MouseEvent is a sensible anchor for the follow-up type menu's own `showAtMouseEvent`.
-    contextMenu.items__[2]?.onClick__?.(new KeyboardEvent('keydown', { key: 'Enter' }));
+    contextMenu.items__[0]?.onClick__?.(new KeyboardEvent('keydown', { key: 'Enter' }));
 
     expect(showAtPositionSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('"Add child" opens a draft anchored to the right-clicked node', () => {
-    const h = makeHarness(baseFiles());
-    const leafEl = h.nodes.get('leaf.md');
-    if (leafEl === undefined) throw new Error('missing leaf element');
-    const showAtMouseEventSpy = mockShowAtMouseEvent();
-
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
-    const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[2]?.onClick__?.(new MouseEvent('click'));
-
-    expect(leafEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
   });
 
   it('"Move to…" reaches startMovePicker', () => {
@@ -2155,9 +2109,9 @@ describe('openNodeMenu', () => {
     // `leaf.md` has no compatible move target under `SCHEMA_CONFIG` (its only Leaf-accepting
     // parent is its own current one), so the picker's own "nowhere to move" Notice is proof
     // enough that the click reached `startMovePicker`.
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[3]?.onClick__?.(new MouseEvent('click'));
+    menu.items__[1]?.onClick__?.(new MouseEvent('click'));
 
     expect(NoticeMock.instances[0]?.message).toBe('Structure: nowhere to move "leaf"');
   });
@@ -2170,9 +2124,9 @@ describe('openNodeMenu', () => {
 
     // `leaf.md` has no compatible retype option under `SCHEMA_CONFIG` either, so this only
     // proves the click reached `startRetype`, via its own "cannot change type" Notice.
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[4]?.onClick__?.(new MouseEvent('click'));
+    menu.items__[2]?.onClick__?.(new MouseEvent('click'));
 
     expect(NoticeMock.instances[0]?.message).toBe('Structure: "leaf" cannot change type here');
   });
@@ -2185,9 +2139,9 @@ describe('openNodeMenu', () => {
     const undoSpy = vi.spyOn(h.undo, 'undo').mockResolvedValue({ label: null, skipped: [] });
     const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-    h.actions.openNodeMenu('leaf.md', targetEvent(leafEl));
+    h.actions.showNodeMenu('leaf.md', targetEvent(leafEl), leafEl);
     const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
-    menu.items__[5]?.onClick__?.(new MouseEvent('click'));
+    menu.items__[3]?.onClick__?.(new MouseEvent('click'));
 
     await vi.waitFor(() => {
       expect(undoSpy).toHaveBeenCalledTimes(1);
@@ -2201,12 +2155,10 @@ describe('openNodeMenu', () => {
       if (badEl === undefined) throw new Error('missing bad element');
       const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-      h.actions.openNodeMenu('bad.md', targetEvent(badEl));
+      h.actions.showNodeMenu('bad.md', targetEvent(badEl), badEl);
 
       const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
       expect(menu.items__.map((item) => item.title__)).toStrictEqual([
-        'Open',
-        'Open in new tab',
         'Add child',
         'Move to…',
         'Change type',
@@ -2220,7 +2172,7 @@ describe('openNodeMenu', () => {
       if (okEl === undefined) throw new Error('missing ok element');
       const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-      h.actions.openNodeMenu('ok.md', targetEvent(okEl));
+      h.actions.showNodeMenu('ok.md', targetEvent(okEl), okEl);
 
       const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
       expect(menu.items__.some((item) => item.title__ === 'Fix inheritance')).toBe(false);
@@ -2232,7 +2184,7 @@ describe('openNodeMenu', () => {
       if (badEl === undefined) throw new Error('missing bad element');
       const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-      h.actions.openNodeMenu('bad.md', targetEvent(badEl));
+      h.actions.showNodeMenu('bad.md', targetEvent(badEl), badEl);
       const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
       const fixItem = menu.items__.find((item) => item.title__ === 'Fix inheritance');
       fixItem?.onClick__?.(new MouseEvent('click'));
@@ -2254,7 +2206,7 @@ describe('openNodeMenu', () => {
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const showAtMouseEventSpy = mockShowAtMouseEvent();
 
-      h.actions.openNodeMenu('bad.md', targetEvent(badEl));
+      h.actions.showNodeMenu('bad.md', targetEvent(badEl), badEl);
       const menu = showAtMouseEventSpy.mock.contexts[0] as Menu;
       const fixItem = menu.items__.find((item) => item.title__ === 'Fix inheritance');
       fixItem?.onClick__?.(new MouseEvent('click'));
@@ -2279,7 +2231,7 @@ describe('openNodeMenu', () => {
 });
 
 describe('openNodeMenuFromButton (I10 — touch-only node-menu button)', () => {
-  it('lists the identical items openNodeMenu (contextmenu) does', () => {
+  it('lists the identical items showNodeMenu (a right click) does', () => {
     const h = makeHarness(baseFiles());
     const leafEl = h.nodes.get('leaf.md');
     if (leafEl === undefined) throw new Error('missing leaf element');
@@ -2294,8 +2246,6 @@ describe('openNodeMenuFromButton (I10 — touch-only node-menu button)', () => {
 
     const menu = showAtPositionSpy.mock.contexts[0] as Menu;
     expect(menu.items__.map((item) => item.title__)).toStrictEqual([
-      'Open',
-      'Open in new tab',
       'Add child',
       'Move to…',
       'Change type',
@@ -2321,10 +2271,7 @@ describe('openNodeMenuFromButton (I10 — touch-only node-menu button)', () => {
     h.actions.openNodeMenuFromButton('leaf.md', leafEl, buttonEl);
 
     expect(showAtMouseEventSpy).not.toHaveBeenCalled();
-    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith(
-      { x: 30, y: 44 },
-      buttonEl.ownerDocument,
-    );
+    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith({ x: 30, y: 44 }, leafEl.doc);
   });
 
   it('"Add child" from the touch node menu opens a draft anchored to the node', () => {
@@ -2340,9 +2287,46 @@ describe('openNodeMenuFromButton (I10 — touch-only node-menu button)', () => {
 
     h.actions.openNodeMenuFromButton('leaf.md', leafEl, buttonEl);
     const menu = showAtPositionSpy.mock.contexts[0] as Menu;
-    menu.items__[2]?.onClick__?.(new MouseEvent('click'));
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
 
     expect(leafEl.querySelector('.bases-structure-draft-input')).not.toBeNull();
+  });
+});
+
+// `openNode` used to be exercised only through the context menu's own "Open"/"Open in new tab"
+// items; those are now the native menu's (see `showNodeMenu`), so this covers it directly instead
+// — it's still the keyboard's own Enter/Mod+Enter path (see `structure-view.ts`'s `open` dep).
+describe('openNode', () => {
+  it('opens the node in the current pane (no forced new leaf)', () => {
+    const h = makeHarness(baseFiles());
+    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
+
+    h.actions.openNode('leaf.md', false);
+
+    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', false);
+  });
+
+  it('opens the node in a new tab when asked to', () => {
+    const h = makeHarness(baseFiles());
+    const openLinkTextSpy = vi.spyOn(h.app.workspace, 'openLinkText').mockResolvedValue();
+
+    h.actions.openNode('leaf.md', 'tab');
+
+    expect(openLinkTextSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', '', 'tab');
+  });
+
+  it("logs and shows a Notice with the note's display name when opening fails", async () => {
+    const h = makeHarness(baseFiles());
+    const error = new Error('boom');
+    vi.spyOn(h.app.workspace, 'openLinkText').mockRejectedValue(error);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    h.actions.openNode('leaf.md', false);
+
+    await vi.waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', error);
+    });
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: could not open "leaf"');
   });
 });
 

@@ -23,6 +23,7 @@ function makeCtx(overrides: Partial<NodeElementContext> = {}): NodeElementContex
     snapshot: snapshot([]),
     onAdd: () => undefined,
     onMenu: () => undefined,
+    onContextMenu: () => undefined,
     ...overrides,
   };
 }
