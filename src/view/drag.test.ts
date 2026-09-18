@@ -58,6 +58,7 @@ function shiftKeyEvent(type: 'keydown' | 'keyup'): KeyboardEvent {
 interface Harness {
   readonly container: HTMLElement;
   readonly onDrop: ReturnType<typeof vi.fn>;
+  readonly onInvalidDrop: ReturnType<typeof vi.fn>;
   readonly elementAt: ReturnType<typeof vi.fn>;
   readonly targetsFor: ReturnType<typeof vi.fn>;
   readonly descendantsOf: ReturnType<typeof vi.fn>;
@@ -89,6 +90,7 @@ function makeHarness(
   const container = createDiv();
   document.body.appendChild(container);
   const onDrop = vi.fn();
+  const onInvalidDrop = vi.fn();
   const elementAt = vi.fn<(x: number, y: number) => Element | null>(() => null);
   const targetsFor = vi.fn(options.targetsFor ?? ((): ReadonlySet<string> => targets));
   const descendantsOf = vi.fn(options.descendantsOf ?? ((): readonly string[] => []));
@@ -97,12 +99,14 @@ function makeHarness(
     targetsFor,
     descendantsOf,
     onDrop,
+    onInvalidDrop,
     elementAt,
   };
   const dispose = attachDrag(deps);
   return {
     container,
     onDrop,
+    onInvalidDrop,
     elementAt,
     targetsFor,
     descendantsOf,
@@ -257,7 +261,7 @@ describe('attachDrag — valid drop', () => {
 });
 
 describe('attachDrag — invalid drop', () => {
-  it('does not call onDrop when released over a node that is not a valid target', () => {
+  it('does not call onDrop, and calls onInvalidDrop with the source/target paths, when released over a node that is not a valid target', () => {
     const source = makeNode('source.md');
     const other = makeNode('other.md');
     const h = makeHarness(new Set(['parent.md']));
@@ -268,9 +272,23 @@ describe('attachDrag — invalid drop', () => {
     document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
     expect(h.onDrop).not.toHaveBeenCalled();
+    expect(h.onInvalidDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'other.md', 'move');
   });
 
-  it('does not call onDrop when released over empty space', () => {
+  it('reports the mode current at drop time to onInvalidDrop', () => {
+    const source = makeNode('source.md');
+    const other = makeNode('other.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, other);
+
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, other);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: true }));
+
+    expect(h.onInvalidDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'other.md', 'convert');
+  });
+
+  it('does not call onDrop or onInvalidDrop when released over empty space', () => {
     const source = makeNode('source.md');
     const h = makeHarness(new Set(['parent.md']));
     h.container.appendChild(source);
@@ -280,6 +298,20 @@ describe('attachDrag — invalid drop', () => {
     document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
     expect(h.onDrop).not.toHaveBeenCalled();
+    expect(h.onInvalidDrop).not.toHaveBeenCalled();
+  });
+
+  it('does not call onInvalidDrop for a plain click that never started a drag', () => {
+    const source = makeNode('source.md');
+    const other = makeNode('other.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, other);
+
+    h.down(source);
+    h.moveTo(1, 1, other);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 1, y: 1 }));
+
+    expect(h.onInvalidDrop).not.toHaveBeenCalled();
   });
 
   it('cleans up every class and the ghost after a drop', () => {
@@ -782,6 +814,7 @@ describe('attachDrag — pop-out window (M3)', () => {
       targetsFor: () => new Set(['parent.md']),
       descendantsOf: () => [],
       onDrop,
+      onInvalidDrop: vi.fn(),
       elementAt,
     });
 
@@ -810,6 +843,7 @@ describe('attachDrag — pop-out window (M3)', () => {
       targetsFor: () => new Set(),
       descendantsOf: () => [],
       onDrop: vi.fn(),
+      onInvalidDrop: vi.fn(),
     });
 
     source.dispatchEvent(pointerEvent('pointerdown', { target: source }));

@@ -18,6 +18,11 @@ export interface DragDeps {
    * highlight that shows the whole branch is coming along with the drag. */
   readonly descendantsOf: (path: string) => readonly string[];
   readonly onDrop: (node: string, parent: string, mode: DragMode, event: PointerEvent) => void;
+  /** A completed drag (past the threshold) released over a node that *is* in the structure but
+   * isn't one of `targets` — every other early-out in `handlePointerUp` (never started, released
+   * over empty space) stays silent, but landing on a specific, wrong node is exactly the "nothing
+   * happened" the user hit — see `structure-view.ts`'s wiring for what explains it. */
+  readonly onInvalidDrop: (node: string, parent: string, mode: DragMode) => void;
   readonly elementAt?: (x: number, y: number) => Element | null;
 }
 
@@ -367,8 +372,17 @@ export function attachDrag(deps: DragDeps): () => void {
     }
     const { started, hoveredEl, sourcePath, targets, mode } = current;
     endSession(box, deps.container);
+    if (!started) {
+      return;
+    }
     const targetPath = hoveredEl?.getAttribute('data-path') ?? null;
-    if (!started || targetPath === null || !targets.has(targetPath)) {
+    // Released over empty space (no node at all) stays silent — there was never a specific "this
+    // one" the user was aiming for, unlike landing on a real, wrong node below.
+    if (targetPath === null) {
+      return;
+    }
+    if (!targets.has(targetPath)) {
+      deps.onInvalidDrop(sourcePath, targetPath, mode);
       return;
     }
     deps.onDrop(sourcePath, targetPath, mode, event);

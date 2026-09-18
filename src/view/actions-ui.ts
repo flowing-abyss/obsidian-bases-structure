@@ -19,6 +19,7 @@ import type { Structure } from '../core/structure.js';
 import type { CommitOutcome, Transaction } from '../obsidian/plan-applier.js';
 import { commitPlan } from '../obsidian/plan-applier.js';
 import type { UndoBlockedResult, UndoManager, UndoResult } from '../obsidian/undo-manager.js';
+import type { DragMode } from './drag.js';
 import { reportOpenFailure } from './open-note.js';
 import type { RenderInput } from './structure-view.js';
 
@@ -135,6 +136,21 @@ function notifyError(message: string): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** `"<node>" has no type that fits under "<parent>"` — `startConvert`'s own empty-options notice,
+ * shared with `StructureActions.explainInvalidDrop` (a Shift-drag dropped on a node that offers no
+ * fitting type is exactly that same situation, reached by a different path) so the two can never
+ * drift apart. */
+function noTypeFitsMessage(snapshot: Snapshot, node: string, parent: string): string {
+  return `"${displayName(snapshot, node)}" has no type that fits under "${displayName(snapshot, parent)}"`;
+}
+
+/** `"<node>" cannot go under "<parent>"` — the generic fallback `explainInvalidDrop` shows when
+ * there's no single obvious action to blame (planning the attempted move surprisingly succeeded,
+ * a stale-data race per I5) — never expected in normal use, but never silent either. */
+function cannotGoUnderMessage(snapshot: Snapshot, node: string, parent: string): string {
+  return `"${displayName(snapshot, node)}" cannot go under "${displayName(snapshot, parent)}"`;
 }
 
 /** Every `.bases-structure-node` under `root` whose `data-path` is `path` — a linear scan instead
@@ -484,7 +500,7 @@ export class StructureActions {
     const options = convertOptions(context, node, parent);
     const name = displayName(snapshot, node);
     if (options.length === 0) {
-      notifyError(`"${name}" has no type that fits under "${displayName(snapshot, parent)}"`);
+      notifyError(noTypeFitsMessage(snapshot, node, parent));
       return;
     }
     const menu = new Menu();
@@ -518,6 +534,37 @@ export class StructureActions {
     const message = `Converted "${name}" to "${type}" under "${displayName(snapshot, parent)}"`;
     this.committing = true;
     this.commitAndNotify(snapshot, result.plan, label, message);
+  }
+
+  /** `DragDeps.onInvalidDrop`'s own handler (task: a drop that lands on a node outside the
+   * highlighted target set must never be silent — that's exactly the reported bug). Asks the core
+   * once, on drop, rather than precomputing a reason for every node up front: a plain move always
+   * has one well-defined action to plan, so its rejection reason is shown directly; a Shift-drag
+   * has no single type to plan for (that's what the menu is for), so it reuses `startConvert`'s own
+   * "no type fits" wording instead of inventing new copy. Read-only — never plans/writes anything
+   * beyond the listing itself. */
+  explainInvalidDrop(node: string, parent: string, mode: DragMode): void {
+    if (mode === 'convert') {
+      this.explainInvalidConvert(node, parent);
+      return;
+    }
+    this.explainInvalidMove(node, parent);
+  }
+
+  private explainInvalidMove(node: string, parent: string): void {
+    const { schema, snapshot } = this.deps.getInput();
+    const result = planAction(schema, snapshot, { kind: 'move', node, parent }, this.planEnv());
+    notifyError(result.ok ? cannotGoUnderMessage(snapshot, node, parent) : result.reason);
+  }
+
+  private explainInvalidConvert(node: string, parent: string): void {
+    const { schema, snapshot, structure } = this.deps.getInput();
+    const context: ConvertContext = { schema, snapshot, structure, env: this.planEnv() };
+    if (convertOptions(context, node, parent).length > 0) {
+      notifyError(cannotGoUnderMessage(snapshot, node, parent));
+      return;
+    }
+    notifyError(noTypeFitsMessage(snapshot, node, parent));
   }
 
   /** Plans and commits a `'fix-inherit'` action: rewrites `node`'s own inherit-key values and

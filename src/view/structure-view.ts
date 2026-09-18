@@ -480,6 +480,9 @@ export class StructureView extends BasesView {
         }
         this.actions?.startMove(node, parent);
       },
+      onInvalidDrop: (node, parent, mode) => {
+        this.actions?.explainInvalidDrop(node, parent, mode);
+      },
     });
   }
 

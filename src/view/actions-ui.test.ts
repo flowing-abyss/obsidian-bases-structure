@@ -1686,6 +1686,59 @@ describe('startConvert', () => {
   });
 });
 
+describe('explainInvalidDrop', () => {
+  it('move mode: shows the exact planner rejection reason a startMove of the same pair would show, and writes nothing', () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    h.actions.explainInvalidDrop('meta.md', 'meta.md', 'move');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: Cannot move "meta" into itself or its own branch',
+    );
+    expect(h.undo.canUndo).toBe(false);
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('move mode: falls back to a plain "cannot go under" notice on the rare race where the attempted move actually plans, and still writes nothing', () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+
+    // "meta.md" -> "cat2.md" is a *valid* move (same pair the "startMove" describe block commits
+    // successfully) — reached here only because drag.ts's own target set had gone stale, so there
+    // is no single rejection reason to show; the generic fallback covers it instead of staying
+    // silent or inventing a reason that was never actually true.
+    h.actions.explainInvalidDrop('meta.md', 'cat2.md', 'move');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "meta" cannot go under "cat2"');
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('convert mode: reuses the exact "has no type that fits" notice startConvert shows for the same pair, and writes nothing', () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+
+    h.actions.explainInvalidDrop('leaf.md', 'leaf.md', 'convert');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: "leaf" has no type that fits under "leaf"',
+    );
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('convert mode: falls back to a plain "cannot go under" notice on the rare race where a type actually fits, and still writes nothing', () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+
+    // "b.md" -> "solo.md" has exactly one fitting type (see the "startConvert" describe block) —
+    // reached here only because drag.ts's own target set had gone stale.
+    h.actions.explainInvalidDrop('b.md', 'solo.md', 'convert');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "b" cannot go under "solo"');
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+});
+
 describe('fixInherit', () => {
   it('commits the fix, cascades to the child, refreshes and shows an undo notice', async () => {
     const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });

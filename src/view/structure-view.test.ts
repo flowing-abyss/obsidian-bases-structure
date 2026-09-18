@@ -944,6 +944,21 @@ describe('StructureView — drag wiring', () => {
     );
   });
 
+  it('wires onInvalidDrop to StructureActions.explainInvalidDrop with the source/target paths and mode', () => {
+    const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
+    const { view } = twoParentsView();
+    view.onDataUpdated();
+    const deps = attachDragSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachDrag was not called');
+    const explainSpy = vi
+      .spyOn(StructureActions.prototype, 'explainInvalidDrop')
+      .mockImplementation(() => undefined);
+
+    deps.onInvalidDrop('leaf.md', 'other.md', 'convert');
+
+    expect(explainSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', 'other.md', 'convert');
+  });
+
   it('targetsFor(mode: "convert") only highlights parents where operationTargets finds a fitting type', () => {
     const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
     const { view } = twoParentsView();
