@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
-import { convertOptions, operationTargets } from './plan-convert.js';
+import { convertOptions, operationTargets, type ConvertContext } from './plan-convert.js';
 import { moveTargets } from './plan-move.js';
 import type { Action } from './plan-types.js';
 import { planAction } from './planner.js';
+import type { Schema } from './schema.js';
 import { parseSchema } from './schema.js';
 import { applyPlan } from './simulate.js';
+import type { Snapshot } from './snapshot.js';
 import { buildStructure } from './structure.js';
 
 function makeRead(config: Record<string, unknown>): (key: string) => unknown {
@@ -20,6 +22,13 @@ const noEnv = { defaultFolder: '', exists: (): boolean => false };
 
 function convert(node: string, parent: string, type: string): Extract<Action, { kind: 'convert' }> {
   return { kind: 'convert', node, parent, type };
+}
+
+/** `convertOptions`/`operationTargets` bundle everything they need to plan honestly into one
+ * context — built fresh per fixture (`buildStructure` is cheap and each describe block below has
+ * its own schema/snapshot). */
+function contextOf(schema: Schema, snap: Snapshot): ConvertContext {
+  return { schema, structure: buildStructure(schema, snap), snapshot: snap, env: noEnv };
 }
 
 // Category -> Meta-note or Hierarchy (both "category"). Meta-note -> Hierarchy ("meta"). Problem
@@ -49,32 +58,33 @@ const snap = snapshot([
   }),
 ]);
 const structure = buildStructure(schema, snap);
+const context = contextOf(schema, snap);
 
 describe('convertOptions', () => {
   it('lists the types a problem can become under a category, keeping its Hierarchy child', () => {
-    expect(convertOptions(schema, structure, 'p.md', 'cat.md')).toEqual(['Meta-note']);
+    expect(convertOptions(context, 'p.md', 'cat.md')).toEqual(['Meta-note']);
   });
 
   it('excludes a candidate type with no rule to the parent at all', () => {
     // Category has no rule to itself.
-    expect(convertOptions(schema, structure, 'p.md', 'cat.md')).not.toContain('Category');
+    expect(convertOptions(context, 'p.md', 'cat.md')).not.toContain('Category');
   });
 
   it('leaves out a type that would orphan the branch (text-only child rule, unwritable)', () => {
-    expect(convertOptions(schema, structure, 'p.md', 'cat.md')).not.toContain('Hierarchy');
+    expect(convertOptions(context, 'p.md', 'cat.md')).not.toContain('Hierarchy');
   });
 
   it('returns [] for a node missing from the structure', () => {
-    expect(convertOptions(schema, structure, 'ghost.md', 'cat.md')).toStrictEqual([]);
+    expect(convertOptions(context, 'ghost.md', 'cat.md')).toStrictEqual([]);
   });
 
   it('returns [] for a parent missing from the structure', () => {
-    expect(convertOptions(schema, structure, 'p.md', 'ghost.md')).toStrictEqual([]);
+    expect(convertOptions(context, 'p.md', 'ghost.md')).toStrictEqual([]);
   });
 
   it('returns [] when the requested parent is the node itself or its own descendant', () => {
-    expect(convertOptions(schema, structure, 'p.md', 'p.md')).toStrictEqual([]);
-    expect(convertOptions(schema, structure, 'p.md', 'h.md')).toStrictEqual([]);
+    expect(convertOptions(context, 'p.md', 'p.md')).toStrictEqual([]);
+    expect(convertOptions(context, 'p.md', 'h.md')).toStrictEqual([]);
   });
 });
 
@@ -149,7 +159,7 @@ describe('planConvert — the structure root', () => {
   });
 });
 
-describe('planConvert — I4: the old type tag must be rewritable', () => {
+describe('planConvert / convertOptions — I4: the old type tag must be rewritable', () => {
   const tagSchema = schemaFrom({
     types: {
       Cat2: { tag: 'cat2', children: { Alpha: 'up', Beta: 'up' } },
@@ -157,19 +167,26 @@ describe('planConvert — I4: the old type tag must be rewritable', () => {
       Beta: { tag: 'beta' },
     },
   });
+  const tagSnap = snapshot([
+    note('cat2.md', { tags: ['cat2'] }),
+    note('n.md', { tags: ['alpha'], frontmatterTags: [], bodyTags: ['alpha'] }),
+  ]);
+  const tagContext = contextOf(tagSchema, tagSnap);
 
   it('rejects converting when the old type tag lives only in body text', () => {
-    const tagSnap = snapshot([
-      note('cat2.md', { tags: ['cat2'] }),
-      note('n.md', { tags: ['alpha'], frontmatterTags: [], bodyTags: ['alpha'] }),
-    ]);
-
     const result = planAction(tagSchema, tagSnap, convert('n.md', 'cat2.md', 'Beta'), noEnv);
 
     expect(result).toStrictEqual({
       ok: false,
       reason: '"n" keeps the tag "alpha" in its text; remove it there first',
     });
+  });
+
+  it('excludes "Beta" from convertOptions — never offers a type planConvert would reject', () => {
+    // The reviewer's reproduction: a cheap rule/failingChildren pre-filter alone would have let
+    // "Beta" through here (nothing about it strands a child); only actually planning catches I4.
+    expect(convertOptions(tagContext, 'n.md', 'cat2.md')).not.toContain('Beta');
+    expect(convertOptions(tagContext, 'n.md', 'cat2.md')).toStrictEqual([]);
   });
 });
 
@@ -248,17 +265,20 @@ describe('planConvert — keeps a genuine property extra untouched', () => {
   });
 });
 
-describe('planConvert — an untouched higher-priority candidate survives the conversion', () => {
-  // Mirrors plan-move.test.ts's own "still rejects when an untouched higher-priority candidate
-  // survives the move" case: M (level 2) outranks K (level 1) and N (level 0) regardless of which
-  // one the action asks for, so even a successful-looking write to "n_key" still leaves M in
-  // charge — verifyConvert must catch this by simulation, not just by planning the requested edge.
+describe('planConvert / convertOptions — an untouched higher-priority candidate survives the conversion', () => {
+  // M (level 2) outranks K (level 1) and N (level 0) for a NodeT2-typed child regardless of which
+  // one the action asks for — even a successful-looking write to "n_key" still leaves M in charge
+  // once node.md's type becomes NodeT2 (all three parent types recognise it, same as they
+  // recognised its old type NodeT). verifyConvert catches this by simulation; convertOptions must
+  // exclude "NodeT2" for the same reason rather than offering it and letting planConvert reject
+  // it later — the reviewer's second reproduction of the same honesty gap.
   const rivalSchema = schemaFrom({
     types: {
-      N: { tag: 'n', children: { NodeT: 'n_key' } },
-      K: { tag: 'k', children: { NodeT: 'k_key' } },
-      M: { tag: 'm', children: { NodeT: 'm_key' } },
+      N: { tag: 'n', children: { NodeT2: 'n_key' } },
+      K: { tag: 'k', children: { NodeT2: 'k_key' } },
+      M: { tag: 'm', children: { NodeT2: 'm_key' } },
       NodeT: { tag: 'nodet' },
+      NodeT2: { tag: 'nodet2' },
     },
   });
   const rivalSnap = snapshot([
@@ -271,14 +291,89 @@ describe('planConvert — an untouched higher-priority candidate survives the co
       propertyLinks: { m_key: ['M.md'], k_key: ['K.md'] },
     }),
   ]);
+  const rivalContext = contextOf(rivalSchema, rivalSnap);
 
   it('rejects when a stronger untouched candidate still outranks the requested parent', () => {
-    const result = planAction(rivalSchema, rivalSnap, convert('node.md', 'N.md', 'NodeT'), noEnv);
+    const result = planAction(rivalSchema, rivalSnap, convert('node.md', 'N.md', 'NodeT2'), noEnv);
 
     expect(result).toStrictEqual({
       ok: false,
-      reason: '"node" would not become "NodeT" under "N"',
+      reason: '"node" would not become "NodeT2" under "N"',
     });
+  });
+
+  it('excludes "NodeT2" from convertOptions for the same reason', () => {
+    expect(convertOptions(rivalContext, 'node.md', 'N.md')).not.toContain('NodeT2');
+    expect(convertOptions(rivalContext, 'node.md', 'N.md')).toStrictEqual([]);
+  });
+});
+
+describe('planConvert — relocates into the new type’s folder, same as a plain retype would', () => {
+  const folderSchema = schemaFrom({
+    types: {
+      Root: { tag: 'root', children: { Foo: 'up', Bar: 'up' } },
+      Foo: { tag: 'foo' },
+      Bar: { tag: 'bar', folder: 'bar-folder' },
+    },
+  });
+
+  it('produces a moves entry and the new focus', () => {
+    const folderSnap = snapshot([
+      note('root1.md', { tags: ['root'] }),
+      note('root2.md', { tags: ['root'] }),
+      note('n.md', { tags: ['foo'], propertyLinks: { up: ['root1.md'] } }),
+    ]);
+
+    const result = planAction(folderSchema, folderSnap, convert('n.md', 'root2.md', 'Bar'), noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.focus).toBe('bar-folder/n.md');
+    expect(result.plan.moves).toStrictEqual([{ from: 'n.md', to: 'bar-folder/n.md' }]);
+    const after = buildStructure(folderSchema, applyPlan(folderSnap, result.plan));
+    expect(after.nodes.get('bar-folder/n.md')?.parent).toBe('root2.md');
+    expect(after.nodes.get('bar-folder/n.md')?.type).toBe('Bar');
+  });
+
+  it('rejects when a note already exists at the target folder path', () => {
+    const occupiedSnap = snapshot([
+      note('root1.md', { tags: ['root'] }),
+      note('root2.md', { tags: ['root'] }),
+      note('n.md', { tags: ['foo'], propertyLinks: { up: ['root1.md'] } }),
+      note('bar-folder/n.md', { tags: ['bar'] }),
+    ]);
+
+    const result = planAction(
+      folderSchema,
+      occupiedSnap,
+      convert('n.md', 'root2.md', 'Bar'),
+      noEnv,
+    );
+
+    expect(result).toStrictEqual({
+      ok: false,
+      reason: 'A note already exists at "bar-folder/n.md"',
+    });
+  });
+
+  it('does not move when N already lives inside the target folder', () => {
+    const insideSnap = snapshot([
+      note('root1.md', { tags: ['root'] }),
+      note('root2.md', { tags: ['root'] }),
+      note('bar-folder/sub/n.md', { tags: ['foo'], propertyLinks: { up: ['root1.md'] } }),
+    ]);
+
+    const result = planAction(
+      folderSchema,
+      insideSnap,
+      convert('bar-folder/sub/n.md', 'root2.md', 'Bar'),
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.focus).toBe('bar-folder/sub/n.md');
+    expect(result.plan.moves).toStrictEqual([]);
   });
 });
 
@@ -286,19 +381,17 @@ describe('operationTargets', () => {
   it("delegates to moveTargets for 'move'", () => {
     // h.md (Hierarchy) can move straight under cat.md (Category -> Hierarchy is a direct rule) —
     // a non-trivial set, so this actually exercises the delegation rather than two empty sets.
-    expect(operationTargets(schema, structure, 'h.md', 'move')).toStrictEqual(
+    expect(operationTargets(context, 'h.md', 'move')).toStrictEqual(
       moveTargets(schema, structure, 'h.md'),
     );
-    expect(operationTargets(schema, structure, 'h.md', 'move')).toStrictEqual(new Set(['cat.md']));
+    expect(operationTargets(context, 'h.md', 'move')).toStrictEqual(new Set(['cat.md']));
   });
 
   it("offers convert targets only where some type fits, for 'convert'", () => {
-    expect(operationTargets(schema, structure, 'p.md', 'convert')).toStrictEqual(
-      new Set(['cat.md']),
-    );
+    expect(operationTargets(context, 'p.md', 'convert')).toStrictEqual(new Set(['cat.md']));
   });
 
   it("excludes the node's own descendant as a convert target", () => {
-    expect(operationTargets(schema, structure, 'p.md', 'convert')).not.toContain('h.md');
+    expect(operationTargets(context, 'p.md', 'convert')).not.toContain('h.md');
   });
 });

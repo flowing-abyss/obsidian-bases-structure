@@ -101,14 +101,15 @@ export function failingChildren(
   return failures;
 }
 
-type FolderCheck =
+export type FolderCheck =
   | { readonly kind: 'no-move' }
   | { readonly kind: 'move'; readonly to: string }
   | { readonly kind: 'occupied'; readonly to: string };
 
 /** Rejection step 7: whether `newType`'s folder requires relocating N, and whether the target
- * path is already taken. */
-function checkRetypeFolder(
+ * path is already taken. Exported: plan-convert.ts's own retype half needs the exact same
+ * folder-pin behavior a plain retype gets. */
+export function checkRetypeFolder(
   env: PlanEnv,
   snapshot: Snapshot,
   node: string,

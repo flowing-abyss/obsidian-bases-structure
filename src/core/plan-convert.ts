@@ -16,6 +16,7 @@ import {
 import { moveTargets } from './plan-move.js';
 import {
   bodyOnlyTagReason,
+  checkRetypeFolder,
   failingChildren,
   literalRetypeWrites,
   mergeWritesByPath,
@@ -37,6 +38,16 @@ import { displayName, type Snapshot } from './snapshot.js';
 import { buildStructure, type Structure, type StructureNode } from './structure.js';
 
 type ConvertAction = Extract<Action, { kind: 'convert' }>;
+
+/** Everything `convertOptions`/`operationTargets` need to answer honestly (by planning, not just
+ * pre-filtering) — bundled so both stay within the project's 4-param budget, and so the
+ * `planConvert` call inside `convertOptions` doesn't need its own separately-threaded `env`. */
+export interface ConvertContext {
+  readonly schema: Schema;
+  readonly structure: Structure;
+  readonly snapshot: Snapshot;
+  readonly env: PlanEnv;
+}
 
 const EMPTY_MATCH: TypeMatch = { tags: [], folder: null, properties: [] };
 
@@ -64,6 +75,9 @@ interface ConvertFields {
   readonly oldMatch: TypeMatch;
   readonly newType: TypeDef;
   readonly rule: EdgeRule;
+  /** `newType`'s pinned folder, when it requires relocating N and N isn't already there —
+   * `checkRetypeFolder`, the exact mechanism a plain retype uses. `null` = no move needed. */
+  readonly folderTo: string | null;
 }
 
 type ConvertValidationResult =
@@ -139,12 +153,8 @@ function checkConvertParent(
   return { ok: true, rule };
 }
 
-function validateConvert(
-  schema: Schema,
-  snapshot: Snapshot,
-  structure: Structure,
-  action: ConvertAction,
-): ConvertValidationResult {
+function validateConvert(context: ConvertContext, action: ConvertAction): ConvertValidationResult {
+  const { schema, snapshot, structure, env } = context;
   const nodeCheck = checkConvertNode(schema, snapshot, structure, action);
   if (!nodeCheck.ok) {
     return nodeCheck;
@@ -154,7 +164,12 @@ function validateConvert(
     return parentCheck;
   }
   const { nNode, oldMatch, newType } = nodeCheck.fields;
-  return { ok: true, fields: { nNode, oldMatch, newType, rule: parentCheck.rule } };
+  const folderCheck = checkRetypeFolder(env, snapshot, action.node, newType);
+  if (folderCheck.kind === 'occupied') {
+    return { ok: false, reason: `A note already exists at "${folderCheck.to}"` };
+  }
+  const folderTo = folderCheck.kind === 'move' ? folderCheck.to : null;
+  return { ok: true, fields: { nNode, oldMatch, newType, rule: parentCheck.rule, folderTo } };
 }
 
 // -- N's own edge to the new parent (plan-move.ts's glue, over the *new* type/parent) ---------
@@ -272,6 +287,9 @@ interface VerifyConvertInputs {
   readonly plan: Plan;
   readonly before: Structure;
   readonly action: ConvertAction;
+  /** N's post-plan path — `action.node` unless the new type's folder relocated it (see
+   * `ConvertFields.folderTo`), same "focus may rename N" shape `verifyRetype` uses. */
+  readonly focus: string;
 }
 
 /** The reason a specific stranded child produces: whether it ends up parentless, or lands
@@ -292,13 +310,13 @@ function convertChildMismatchReason(
  * new type can no longer carry (reported against N and that child together), or, failing that, an
  * unrelated node the plan touched by mistake. */
 function verifyConvert(inputs: VerifyConvertInputs): string | null {
-  const { schema, snapshot, plan, before, action } = inputs;
+  const { schema, snapshot, plan, before, action, focus } = inputs;
   const after = buildStructure(schema, applyPlan(snapshot, plan));
-  const afterFocus = after.nodes.get(action.node);
+  const afterFocus = after.nodes.get(focus);
   if (afterFocus?.type !== action.type || afterFocus.parent !== action.parent) {
     return `"${displayName(snapshot, action.node)}" would not become "${action.type}" under "${displayName(snapshot, action.parent)}"`;
   }
-  const changed = firstChangedOtherNode(before, after, action.node, action.node);
+  const changed = firstChangedOtherNode(before, after, action.node, focus);
   if (changed === null) {
     return null;
   }
@@ -312,21 +330,64 @@ function verifyConvert(inputs: VerifyConvertInputs): string | null {
 
 // -- planConvert ------------------------------------------------------------------------------
 
-// `env` isn't read: unlike retype, convert never relocates N's folder (no type in this schema
-// pins one, and folder-on-convert is out of scope for this task — see the task report). Kept in
-// the signature for parity with `planAction`'s uniform per-kind call shape.
+interface BuildConvertChangesInputs {
+  readonly ctx: SubtreeContext;
+  readonly oldCtx: SubtreeContext;
+  readonly nNote: ReturnType<Snapshot['notes']['get']>;
+  readonly validation: Extract<ConvertValidationResult, { ok: true }>;
+  readonly action: ConvertAction;
+}
+
+/** N's own writes plus the merged child/subtree cascade, as a single `changes` list — the part of
+ * `planConvert` shared regardless of whether N's folder also moves. */
+function buildConvertChanges(inputs: BuildConvertChangesInputs): Plan['changes'] {
+  const { ctx, oldCtx, nNote, validation, action } = inputs;
+  const { nNode } = validation.fields;
+  const nWrites = buildNWrites({ ctx, oldCtx, nNote, fields: validation.fields, action });
+  recordAllOverrides(ctx, action.node, nWrites);
+
+  const childWrites = retypedChildWrites(ctx.schema, ctx, nNode, {
+    node: action.node,
+    type: action.type,
+  });
+  const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
+  const mergedDescendantWrites = mergeWritesByPath(childWrites, subtreeWrites);
+  return nWrites.length > 0
+    ? [{ path: action.node, writes: nWrites }, ...mergedDescendantWrites]
+    : mergedDescendantWrites;
+}
+
+/** The text-edge halves of the plan (N's own edge is `'property'`-kind or not, handled inside
+ * `buildNWrites`/`buildConvertChanges` already) — the append that establishes the new relationship
+ * and the removal that clears the old one, same rules `planMove` uses. */
+function buildConvertTextEdges(
+  nNode: StructureNode,
+  rule: EdgeRule,
+  action: ConvertAction,
+): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
+  const oldParent = nNode.parent;
+  const oldEdge = nNode.edge;
+  const appends: Plan['appends'] =
+    rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, action.node, action.parent)];
+  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
+    oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
+      ? [textEdgeRemoval(oldEdge.kind, action.node, oldParent)]
+      : [];
+  return { appends, bodyLinkRemovals };
+}
+
 export function planConvert(
   schema: Schema,
   snapshot: Snapshot,
   action: ConvertAction,
-  _env: PlanEnv,
+  env: PlanEnv,
 ): PlanResult {
   const structure = buildStructure(schema, snapshot);
-  const validation = validateConvert(schema, snapshot, structure, action);
+  const validation = validateConvert({ schema, structure, snapshot, env }, action);
   if (!validation.ok) {
     return validation;
   }
-  const { nNode, oldMatch, newType, rule } = validation.fields;
+  const { nNode, oldMatch, newType, rule, folderTo } = validation.fields;
   const nNote = snapshot.notes.get(action.node);
   const tagReason = bodyOnlyTagReason({ snapshot, node: action.node, nNote, oldMatch, newType });
   if (tagReason !== null) {
@@ -341,50 +402,55 @@ export function planConvert(
     linkOverrides: new Map(),
   };
   const oldCtx = bareContext(ctx);
+  const changes = buildConvertChanges({ ctx, oldCtx, nNote, validation, action });
+  const { appends, bodyLinkRemovals } = buildConvertTextEdges(nNode, rule, action);
+  const moves: Plan['moves'] = folderTo !== null ? [{ from: action.node, to: folderTo }] : [];
+  const focus = folderTo ?? action.node;
 
-  const nWrites = buildNWrites({ ctx, oldCtx, nNote, fields: validation.fields, action });
-  recordAllOverrides(ctx, action.node, nWrites);
-
-  const childWrites = retypedChildWrites(schema, ctx, nNode, {
-    node: action.node,
-    type: action.type,
-  });
-  const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
-  const mergedDescendantWrites = mergeWritesByPath(childWrites, subtreeWrites);
-  const changes =
-    nWrites.length > 0
-      ? [{ path: action.node, writes: nWrites }, ...mergedDescendantWrites]
-      : mergedDescendantWrites;
-
-  const oldParent = nNode.parent;
-  const oldEdge = nNode.edge;
-  const appends: Plan['appends'] =
-    rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, action.node, action.parent)];
-  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
-    oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
-      ? [textEdgeRemoval(oldEdge.kind, action.node, oldParent)]
-      : [];
-
-  const plan: Plan = { creations: [], changes, appends, moves: [], bodyLinkRemovals };
-  const failure = verifyConvert({ schema, snapshot, plan, before: structure, action });
+  const plan: Plan = { creations: [], changes, appends, moves, bodyLinkRemovals };
+  const failure = verifyConvert({ schema, snapshot, plan, before: structure, action, focus });
   if (failure !== null) {
     return { ok: false, reason: failure };
   }
-  return { ok: true, plan, focus: action.node };
+  return { ok: true, plan, focus };
 }
 
 // -- convertOptions / operationTargets ---------------------------------------------------------
 
+interface ConvertCandidateCheck {
+  readonly context: ConvertContext;
+  readonly nNode: StructureNode;
+  readonly parentType: string | null;
+  readonly node: string;
+  readonly parent: string;
+}
+
+/** Whether `typeName` is a genuine option for `check.node`: a rule must connect the parent's type
+ * to it and every direct child must survive the retype (`failingChildren`) — two cheap structural
+ * pre-filters — then, only for a candidate that clears both, `planConvert` itself confirms it
+ * (a body-only tag, or an untouched higher-priority candidate surviving the simulation, can each
+ * still reject a candidate neither pre-filter catches). */
+function convertCandidateSurvives(check: ConvertCandidateCheck, typeName: string): boolean {
+  const { context, nNode, parentType, node, parent } = check;
+  const { schema, snapshot, structure, env } = context;
+  if (ruleBetween(schema, parentType, typeName) === null) {
+    return false;
+  }
+  if (failingChildren(schema, structure, nNode, typeName).length > 0) {
+    return false;
+  }
+  const action: ConvertAction = { kind: 'convert', node, parent, type: typeName };
+  return planConvert(schema, snapshot, action, env).ok;
+}
+
 /** Type names N could become while moving under `parent`, filtered to those that keep the whole
- * branch valid: a rule must connect `parent`'s type to the candidate, and every direct child of N
- * must survive the retype (`failingChildren`) — the same two checks `retypeOptions` relies on, so
- * this can't call `planConvert` itself (no `Snapshot` reaches this signature). */
+ * branch valid — see `convertCandidateSurvives` for what "valid" means. */
 export function convertOptions(
-  schema: Schema,
-  structure: Structure,
+  context: ConvertContext,
   node: string,
   parent: string,
 ): readonly string[] {
+  const { schema, structure } = context;
   const nNode = structure.nodes.get(node);
   const parentNode = structure.nodes.get(parent);
   if (nNode === undefined || parentNode === undefined || nNode.type === null) {
@@ -393,37 +459,34 @@ export function convertOptions(
   if (node === structure.root || isSelfOrDescendant(structure, node, parent)) {
     return [];
   }
+  const check: ConvertCandidateCheck = {
+    context,
+    nNode,
+    parentType: parentNode.type,
+    node,
+    parent,
+  };
   const ordered = [...schema.types].sort((a, b) => a.level - b.level);
-  const results: string[] = [];
-  for (const type of ordered) {
-    if (type.name === nNode.type) {
-      continue;
-    }
-    if (ruleBetween(schema, parentNode.type, type.name) === null) {
-      continue;
-    }
-    if (failingChildren(schema, structure, nNode, type.name).length > 0) {
-      continue;
-    }
-    results.push(type.name);
-  }
-  return results;
+  return ordered
+    .map((type) => type.name)
+    .filter((name) => name !== nNode.type && convertCandidateSurvives(check, name));
 }
 
 /** What the UI highlights as valid drop targets for `node`, for either gesture: `moveTargets` for
- * a plain move, or every candidate parent that offers at least one `convertOptions` type. */
+ * a plain move, or every candidate parent that offers at least one `convertOptions` type — the
+ * single source of truth for both, so a target only ever lights up when the whole branch survives
+ * the actual conversion. */
 export function operationTargets(
-  schema: Schema,
-  structure: Structure,
+  context: ConvertContext,
   node: string,
   mode: 'move' | 'convert',
 ): ReadonlySet<string> {
   if (mode === 'move') {
-    return moveTargets(schema, structure, node);
+    return moveTargets(context.schema, context.structure, node);
   }
   const result = new Set<string>();
-  for (const path of structure.nodes.keys()) {
-    if (convertOptions(schema, structure, node, path).length > 0) {
+  for (const path of context.structure.nodes.keys()) {
+    if (convertOptions(context, node, path).length > 0) {
       result.add(path);
     }
   }
