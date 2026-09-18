@@ -1528,10 +1528,33 @@ describe('startMove', () => {
 });
 
 describe('startConvert', () => {
-  it('commits immediately when exactly one type fits, writing the new recipe and parent link, and shows an undo notice', async () => {
+  it('asks even when only one type fits, spelling out the result, and writes nothing until chosen', () => {
     const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
 
     h.actions.startConvert('b.md', 'solo.md', { x: 10, y: 20 });
+
+    expect(showAtPositionSpy).toHaveBeenCalledTimes(1);
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual(['Make "b" a A here']);
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('commits once the sole option is chosen from the menu, writing the new recipe and parent link, and shows an undo notice', async () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.startConvert('b.md', 'solo.md', { x: 10, y: 20 });
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
 
     await vi.waitFor(() => {
       expect(h.refresh).toHaveBeenCalled();
@@ -1562,8 +1585,8 @@ describe('startConvert', () => {
     const menu = showAtPositionSpy.mock.contexts[0] as Menu;
     const titles = menu.items__.map((item) => item.title__);
     expect(titles).toHaveLength(2);
-    expect(titles).toContain('A');
-    expect(titles).toContain('B');
+    expect(titles).toContain('Make "leaf" a A here');
+    expect(titles).toContain('Make "leaf" a B here');
   });
 
   it('commits the type chosen from the menu', async () => {
@@ -1575,7 +1598,7 @@ describe('startConvert', () => {
       });
     h.actions.startConvert('leaf.md', 'cat.md', { x: 0, y: 0 });
     const menu = showAtPositionSpy.mock.contexts[0] as Menu;
-    const aItem = menu.items__.find((item) => item.title__ === 'A');
+    const aItem = menu.items__.find((item) => item.title__ === 'Make "leaf" a A here');
     if (aItem === undefined) throw new Error('Test setup error: no "A" menu item');
 
     aItem.onClick__?.(new MouseEvent('click'));
@@ -1603,10 +1626,19 @@ describe('startConvert', () => {
 
   it('ignores a second convert commit started while the first is still committing, with its own Notice (I5)', async () => {
     const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
 
     h.actions.startConvert('b.md', 'solo.md', { x: 0, y: 0 });
+    const firstMenu = showAtPositionSpy.mock.contexts[0] as Menu;
+    firstMenu.items__[0]?.onClick__?.(new MouseEvent('click'));
     const noticesBeforeSecond = NoticeMock.instances.length;
     h.actions.startConvert('b.md', 'solo.md', { x: 0, y: 0 });
+    const secondMenu = showAtPositionSpy.mock.contexts[1] as Menu;
+    secondMenu.items__[0]?.onClick__?.(new MouseEvent('click'));
 
     expect(NoticeMock.instances).toHaveLength(noticesBeforeSecond + 1);
     expect(NoticeMock.instances[noticesBeforeSecond]?.message).toBe(
@@ -1632,6 +1664,11 @@ describe('startConvert', () => {
       'x.md': '---\ntags: [start]\nup: "[[cat1]]"\n---\n',
     };
     const h = makeHarness(files, { schemaConfig });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
     // Created directly on the vault, bypassing the harness's own frozen `visiblePaths` (I5):
     // `getInput()` (used to list `convertOptions`) still sees "x.md" as childless, so "Target"
     // lists as the sole fit; `freshInput()` (used to actually plan) sees the real child and
@@ -1639,6 +1676,8 @@ describe('startConvert', () => {
     await h.app.vault.create('kid.md', '---\ntags: [kid]\nup: "[[x]]"\n---\n');
 
     h.actions.startConvert('x.md', 'cat2.md', { x: 0, y: 0 });
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    menu.items__[0]?.onClick__?.(new MouseEvent('click'));
 
     expect(NoticeMock.instances[0]?.message).toBe(
       'Structure: "x" cannot become "Target": "kid" would have no parent',

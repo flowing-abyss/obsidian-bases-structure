@@ -464,12 +464,15 @@ export class StructureActions {
   /** The drop-side half of the Shift-drag gesture (`drag.ts`'s `'convert'` mode): `convertOptions`
    * lists which types `node` could become while landing under `parent`, listed against the
    * current render's `getInput()` (same "good enough for a listing" freshness as
-   * `startMovePicker`/`startRetype`) — one option commits immediately, several open a menu at
-   * `position` (the drop point), none shows a Notice. `doc` is the pop-out convention every other
-   * `showAtPosition` call in this file follows (see `showNodeMenu`/`showMenuAt`): the caller's own
-   * anchor element's owning document, since a drag can start inside a pop-out window and the menu
-   * must open there too, not on the default document. Every commit itself re-plans against
-   * `freshInput()` via `commitConvert`, same as every other commit path (I5). */
+   * `startMovePicker`/`startRetype`). A type change never happens without the user picking it
+   * from a menu — even a single fitting type still opens a one-item menu at `position` (the drop
+   * point), spelling out the result (`Make "<name>" a <Type> here`) instead of naming a bare type,
+   * so nothing is rewritten before the user has actually seen and chosen it. An empty option list
+   * shows a Notice instead. `doc` is the pop-out convention every other `showAtPosition` call in
+   * this file follows (see `showNodeMenu`/`showMenuAt`): the caller's own anchor element's owning
+   * document, since a drag can start inside a pop-out window and the menu must open there too, not
+   * on the default document. Every commit itself re-plans against `freshInput()` via
+   * `commitConvert`, same as every other commit path (I5). */
   startConvert(
     node: string,
     parent: string,
@@ -484,15 +487,10 @@ export class StructureActions {
       notifyError(`"${name}" has no type that fits under "${displayName(snapshot, parent)}"`);
       return;
     }
-    const [only] = options;
-    if (only !== undefined && options.length === 1) {
-      this.commitConvert(node, parent, only, name);
-      return;
-    }
     const menu = new Menu();
     for (const type of options) {
       menu.addItem((item) => {
-        item.setTitle(type).onClick(() => {
+        item.setTitle(`Make "${name}" a ${type} here`).onClick(() => {
           this.commitConvert(node, parent, type, name);
         });
       });
