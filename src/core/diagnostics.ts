@@ -90,14 +90,99 @@ function expectedTargetsFor(
   return unionInheritedTargets(ctx.subtree, propertyParentsOf(node), property);
 }
 
+/** Cached per `schema` object identity — a parsed schema never changes shape, and every
+ * `collectDiagnostics` call in the same render shares it, so there's no reason to re-walk the
+ * type graph on every node. */
+const inheritableKeysCache = new WeakMap<Schema, ReadonlyMap<string, ReadonlySet<string>>>();
+
+/** `typeName`'s own inheritable keys: the property of every `P → typeName` rule (when it's a
+ * `'property'` rule — `links`/`backlinks` never contribute a key of their own) plus everything
+ * each such `P` can itself carry, recursively. `visiting` breaks a cycle in the type graph (e.g. a
+ * `Hierarchy → Hierarchy` `file.backlinks` rule): a type still being computed contributes nothing
+ * further to itself, since whatever it can carry is already flowing in from its other parents. */
+function computeInheritableKeys(
+  schema: Schema,
+  typeName: string,
+  visiting: Set<string>,
+  memo: Map<string, ReadonlySet<string>>,
+): ReadonlySet<string> {
+  const cached = memo.get(typeName);
+  if (cached !== undefined) {
+    return cached;
+  }
+  if (visiting.has(typeName)) {
+    return new Set();
+  }
+  visiting.add(typeName);
+  const keys = new Set<string>();
+  for (const parentType of schema.types) {
+    const rule = parentType.children.get(typeName);
+    if (rule === undefined) {
+      continue;
+    }
+    if (rule.kind === 'property') {
+      keys.add(rule.property);
+    }
+    for (const key of computeInheritableKeys(schema, parentType.name, visiting, memo)) {
+      keys.add(key);
+    }
+  }
+  visiting.delete(typeName);
+  memo.set(typeName, keys);
+  return keys;
+}
+
+/** Every type's inheritable-key set, per `schema` — see `computeInheritableKeys`. */
+function inheritableKeysByType(schema: Schema): ReadonlyMap<string, ReadonlySet<string>> {
+  const cached = inheritableKeysCache.get(schema);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const memo = new Map<string, ReadonlySet<string>>();
+  for (const type of schema.types) {
+    computeInheritableKeys(schema, type.name, new Set(), memo);
+  }
+  inheritableKeysCache.set(schema, memo);
+  return memo;
+}
+
+/** `true` when `property` is one `typeName` could ever hold by inheritance, per the schema alone
+ * — independent of whether any *current* ancestor actually supplies a value right now, so a
+ * broken ancestor further up the chain can never turn a schema-legal property red on an otherwise
+ * healthy descendant (see `isIllegalTarget`'s branch 3/4 split). */
+function typeCanInherit(schema: Schema, typeName: string, property: string): boolean {
+  return inheritableKeysByType(schema).get(typeName)?.has(property) ?? false;
+}
+
+/** `true` when `target` could ever be the *origin* of `property`'s value — its own type is
+ * untyped (tolerated, same as `ruleBetween`'s "untyped root" fallback) or uses `property` as its
+ * own edge property (the same `edgeProperties`/`inheritedTargets` shortcut: a note IS the value a
+ * descendant inherits for a key exactly when its own type hands that key to *its* children).
+ * `typeCanInherit` alone would let *any* typed target ride branch 3 as long as `property` is
+ * reachable somewhere in `node`'s type's ancestry — this keeps a target of a structurally
+ * unrelated type (e.g. a Problem standing in for a Hierarchy's `category`) out of the amber
+ * bucket, so it's still `illegal-parent`. */
+function isPlausibleOrigin(ctx: DiagCtx, property: string, target: string): boolean {
+  const targetType = ctx.structure.nodes.get(target)?.type ?? null;
+  if (targetType === null) {
+    return true;
+  }
+  const typeDef = ctx.schema.typeByName.get(targetType);
+  return typeDef !== undefined && edgeProperties(typeDef).has(property);
+}
+
 /** Branches 2-4: a non-direct-edge `target` is still legal when it's a flattened inherited copy
- * (branch 2) or `node` has a well-defined (non-empty) expected value for `property` — the types
- * are compatible somewhere up the chain, this is just a stale disagreement (branch 3, folded into
- * `inherit-mismatch` at the key level rather than flagged per link). Anything left over — a
- * property outside `inherit` (a pure edge property, never a mismatch candidate), or `node` has no
- * property parent to explain the value at all — is illegal (branch 4). The view's own root is
- * exempt outright: nothing parents it by construction, so none of its own links are ever "wrong",
- * the same reasoning `inheritMismatchDiagnostic` already applies via `parents.length === 0`. */
+ * *right now* (branch 2, `unionInheritedTargets`) or `property` is one `node`'s type could ever
+ * hold by inheritance per the schema alone *and* `target` is a plausible origin for it (branch 3,
+ * folded into `inherit-mismatch` at the key level rather than flagged per link) — asking "is the
+ * *current* expected set non-empty" instead would make a broken ancestor's own violation cascade a
+ * hard `illegal-parent` onto every otherwise-healthy descendant sharing that key, with no repair
+ * action available for red. Anything left over — a property outside `inherit` (a pure edge
+ * property, never a mismatch candidate), a property the schema can never route to `node`'s type at
+ * all, or a target whose own type could never have originated it — is illegal (branch 4). The
+ * view's own root is exempt outright: nothing parents it by construction, so none of its own links
+ * are ever "wrong", the same reasoning `inheritMismatchDiagnostic` already applies via
+ * `parents.length === 0`. */
 function isIllegalTarget(
   ctx: DiagCtx,
   node: StructureNode,
@@ -113,8 +198,13 @@ function isIllegalTarget(
   if (!ctx.schema.inherit.includes(property)) {
     return true;
   }
-  const expected = expectedTargetsFor(ctx, node, property);
-  return !(expected.includes(target) || expected.length > 0);
+  if (expectedTargetsFor(ctx, node, property).includes(target)) {
+    return false;
+  }
+  if (!typeCanInherit(ctx.schema, node.type as string, property)) {
+    return true;
+  }
+  return !isPlausibleOrigin(ctx, property, target);
 }
 
 function illegalTargetsFor(

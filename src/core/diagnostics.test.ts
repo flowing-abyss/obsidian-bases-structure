@@ -130,9 +130,12 @@ describe('collectDiagnostics — illegal-parent', () => {
     expect(diagnostics).toEqual([]);
   });
 
-  it('flags an orphaned problem that still carries a category link', () => {
-    // A Problem with no "meta" at all — nothing to inherit "category" from — but a "category"
-    // value of its own; Category never lists Problem as a child, so this can only be illegal.
+  it('does not flag an orphaned problem whose category is a plausible value it just isn’t wired up to yet', () => {
+    // A Problem with no "meta" at all — nothing to inherit "category" from yet — but a
+    // "category" value naming a real Category note. "category" is a key Problem can hold by
+    // inheritance (through a Meta-note ancestor), and the target is a genuine Category note, so
+    // this is a plausible-but-not-yet-connected value, never a hard error: there's no ancestor to
+    // compare it against (nothing to be "illegal-parent" red or "inherit-mismatch" amber about).
     const schema = vaultSchema();
     const snap = snapshot([
       note('kb.md', { tags: ['system/category'] }),
@@ -144,9 +147,42 @@ describe('collectDiagnostics — illegal-parent', () => {
 
     const diagnostics = diagnosticsFor(schema, snap);
 
-    expect(diagnostics[0]).toMatchObject({
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('never turns a broken ancestor into a red error on an otherwise-healthy descendant', () => {
+    // meta2 is a genuine orphan: no "category" of its own, and a stray "meta" pointing at
+    // another Meta-note (illegal, per the earlier test). prob is a perfectly normal child of
+    // meta2 via "meta", carrying the right "category" — correct once meta2's own link is fixed.
+    // Before this fix, prob's "category" read as illegal-parent too, because meta2's brokenness
+    // left prob's *current* expected set empty. "category" is schema-reachable for Problem and
+    // "cat" is a real Category note, so prob's own link is never illegal — but meta2 supplies no
+    // "category" to compare against right now, so the shared derivation still reads it as a
+    // drifted (amber) value, same as any other inherited key nothing currently substantiates.
+    // Amber has a repair action ("Fix inheritance"); red does not — prob must never be red.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('meta1.md', { tags: ['system/high/meta'] }),
+      note('meta2.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { meta: ['meta1.md'] },
+      }),
+      note('cat.md', { tags: ['system/category'] }),
+      note('prob.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { meta: ['meta2.md'], category: ['cat.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics.find((diagnostic) => diagnostic.node === 'meta2.md')).toMatchObject({
       kind: 'illegal-parent',
-      property: 'category',
+      property: 'meta',
+    });
+    expect(diagnostics.find((diagnostic) => diagnostic.node === 'prob.md')).toMatchObject({
+      kind: 'inherit-mismatch',
+      keys: ['category'],
     });
   });
 });
