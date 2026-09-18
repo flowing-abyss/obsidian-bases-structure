@@ -587,6 +587,63 @@ describe('applyPlan — appends', () => {
   });
 });
 
+describe('applyPlan — appends: the must-fix regression (a target already mentioned does not gain a second line)', () => {
+  it('the real planner (readSnapshot → planAction → applyPlan) skips the append when the new parent already mentions the target, leaving its body byte-for-byte unchanged', async () => {
+    // newcat.md already has a hand-written "- [[thing]]" line — unrelated to this convert, but
+    // enough on its own to make thing.md already resolve into newcat.md's `links`. Before the
+    // fix, `buildTextEdgeChanges` had no guard at all here: the plan would carry a second append,
+    // which `plan-applier.ts`'s `applyAppend` (unlike the simulator) writes unconditionally,
+    // producing a real duplicate "- [[thing]]" line in the user's note.
+    // thing.md must exist before the notes that link to it are created — the mock metadata cache
+    // resolves a file's own links once, at creation/modify time, so a forward reference would
+    // otherwise sit in `unresolvedLinks` forever, never getting a second chance to resolve.
+    const app = App.createConfigured__({
+      files: {
+        'thing.md': '---\ntags: [thing]\n---\n',
+        'oldcat.md': '---\ntags: [oldcat]\n---\n- [[thing]]\n',
+        'newcat.md': '---\ntags: [newcat]\n---\n- [[thing]]\n',
+      },
+    });
+    const schema = parseSchema(
+      (key: string) =>
+        ({
+          types: {
+            OldCat: { tag: 'oldcat', children: { Thing: 'file.backlinks' } },
+            NewCat: { tag: 'newcat', children: { OtherThing: 'file.backlinks' } },
+            Thing: { tag: 'thing' },
+            OtherThing: { tag: 'otherthing' },
+          },
+        })[key],
+    ).schema;
+    const env = { defaultFolder: '', exists: (): boolean => false };
+    const realFile = (path: string): RealTFile => mustFile(app, path).asOriginalType2__();
+    const originalApp = app.asOriginalType__();
+    const initialSnapshot = readSnapshot(
+      originalApp,
+      [realFile('oldcat.md'), realFile('newcat.md'), realFile('thing.md')],
+      null,
+    );
+
+    const result = planAction(
+      schema,
+      initialSnapshot,
+      { kind: 'convert', node: 'thing.md', parent: 'newcat.md', type: 'OtherThing' },
+      env,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([]);
+
+    const outcome = await applyPlan(originalApp, result.plan, 'Convert', initialSnapshot);
+
+    expect(outcome.error).toBeNull();
+    expect(await app.vault.read(mustFile(app, 'newcat.md'))).toBe(
+      '---\ntags: [newcat]\n---\n- [[thing]]\n',
+    );
+  });
+});
+
 describe('applyPlan — body link removals', () => {
   it('removes the mention from the note text and records a bodyEdit step', async () => {
     const app = App.createConfigured__({

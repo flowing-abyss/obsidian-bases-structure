@@ -13,7 +13,6 @@ import {
 } from './derive.js';
 import { looseEqual } from './link-patch.js';
 import {
-  alreadyLinked,
   buildEdgeWrites,
   type EdgeWriteInputs,
   firstChangedOtherNode,
@@ -21,7 +20,7 @@ import {
   recordAllOverrides,
   recordOverride,
   targetStillHeldByProperty,
-  textEdgeAppend,
+  textEdgeAppendIfNeeded,
   textEdgeRemoval,
   textLinkReason,
 } from './plan-shared.js';
@@ -594,21 +593,26 @@ interface ChildTextInputs {
 /** The child's text-side changes for an edge-kind change: the append that establishes the new
  * rule's mention (when the new rule is text-kind), and the removal that clears the old one (when
  * the old edge was text-kind) — same per-kind sidedness `buildTextEdgeChanges` uses for a node's
- * own edge, applied here to a child/N pair instead of a moved node and its new parent. Two guards
- * keep this from ever emitting a primitive the simulator/applier would find redundant or missing:
- * `alreadyLinked` skips the append when the target already resolves (property and text can attach
- * the same pair at once — round 2 C1's I4 sibling for this cascade — so the text edge can already
- * be live before this write ever runs); `targetStillHeldByProperty` skips the removal when some
- * other property still resolves the same link, mirroring `buildTextEdgeChanges`'s own guard. */
+ * own edge, applied here to a child/N pair instead of a moved node and its new parent. The append
+ * is `textEdgeAppendIfNeeded`'s — the exact same guard `buildTextEdgeChanges` uses, so the two
+ * can't drift apart — with `staleProperty` set to the old edge's own property when it was
+ * `'property'`-kind: a property → text rewrite clears that property in this same transition
+ * (`childOldKeyCleanup`), so without excluding it, "already linked" would see the property's own
+ * about-to-vanish value as proof the append is redundant, and the relationship would simply
+ * disappear once the clear landed. The removal is guarded by `targetStillHeldByProperty` (skipped
+ * when some other property still resolves the same link), mirroring `buildTextEdgeChanges`'s own
+ * removal guard — that side has no analogous hole, since the property/body writes a child-edge
+ * rewrite makes never land on the same key `targetStillHeldByProperty` is reading pre-action. */
 function childTextChanges(inputs: ChildTextInputs): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
   const { snapshot, childPath, node, change } = inputs;
   const { oldEdge, newRule } = change;
-  const appendTarget =
-    newRule.kind === 'property' ? null : textEdgeAppend(newRule.kind, childPath, node);
-  const appends: Plan['appends'] =
-    appendTarget !== null && !alreadyLinked(snapshot, appendTarget.path, appendTarget.target)
-      ? [appendTarget]
-      : [];
+  const appends = textEdgeAppendIfNeeded({
+    snapshot,
+    rule: newRule,
+    node: childPath,
+    newParent: node,
+    staleProperty: oldEdge.kind === 'property' ? oldEdge.property : null,
+  });
   const removal =
     oldEdge.kind === 'property' ? null : textEdgeRemoval(oldEdge.kind, childPath, node);
   const bodyLinkRemovals: Plan['bodyLinkRemovals'] =

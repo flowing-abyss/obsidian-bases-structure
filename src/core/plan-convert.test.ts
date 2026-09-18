@@ -359,6 +359,37 @@ describe('planConvert — text-based (non-property) edges on both sides', () => 
     if (!result.ok) return;
     expect(result.plan.bodyLinkRemovals).toStrictEqual([]);
   });
+
+  it('omits the append when a frontmatter property on the new parent already resolves the same link (the append-side mirror of finding 2)', () => {
+    // newcat.md already links thing.md via an unrelated frontmatter property ("related") — the
+    // append that would establish the file.backlinks edge (newcat.md's body mentioning thing.md)
+    // is therefore redundant: `links` already resolves it, and nothing here is about to remove
+    // that property, so the link is genuinely already live.
+    const heldSnap = snapshot(
+      [
+        note('oldcat.md', { tags: ['oldcat'], links: ['thing.md'] }),
+        note('newcat.md', {
+          tags: ['newcat'],
+          frontmatter: { related: '[[thing]]' },
+          propertyLinks: { related: ['thing.md'] },
+          links: ['thing.md'],
+        }),
+        note('thing.md', { tags: ['thing'] }),
+      ],
+      { results: ['oldcat.md', 'newcat.md', 'thing.md'] },
+    );
+
+    const result = planAction(
+      textSchema,
+      heldSnap,
+      convert('thing.md', 'newcat.md', 'OtherThing'),
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([]);
+  });
 });
 
 describe('planConvert — keeps a genuine property extra untouched', () => {

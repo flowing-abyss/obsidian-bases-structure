@@ -1213,3 +1213,48 @@ describe('planAction — retype: user ruling — writes only the type tag, keepi
     }
   });
 });
+
+describe("planAction — retype: a direct child's property -> file.links rewrite does not under-plan the append", () => {
+  // A property-kind edge's wikilink target also resolves into the note's own `links` (normal
+  // Obsidian `resolvedLinks` behaviour) — so kid.md's "holds" property already makes "p" look
+  // already-linked *before* this retype runs. That property is exactly what `childOldKeyCleanup`
+  // clears in this same plan: if the append were skipped on that stale evidence, the relationship
+  // would simply vanish once the clear landed (no property, no body mention, nothing). The
+  // "already linked" check must exclude "holds" — the one property this transition itself is
+  // about to remove — so the append still happens.
+  const schema = schemaFrom({
+    types: {
+      Parent: { tag: 'parent', children: { Kid: 'holds' } },
+      NewParent: { tag: 'newparent', children: { Kid: 'file.links' } },
+      Kid: { tag: 'kid' },
+    },
+  });
+  const snap = snapshot([
+    note('p.md', { tags: ['parent'] }),
+    note('kid.md', {
+      tags: ['kid'],
+      frontmatter: { holds: '[[p]]' },
+      propertyLinks: { holds: ['p.md'] },
+      links: ['p.md'],
+    }),
+  ]);
+
+  it('still appends kid\'s body mention of p, and clears the stale "holds" property', () => {
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'p.md', type: 'NewParent' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([{ path: 'kid.md', target: 'p.md' }]);
+    expect(result.plan.changes).toContainEqual({
+      path: 'kid.md',
+      writes: [{ key: 'holds', value: { kind: 'links', remove: ['p.md'], add: [], list: false } }],
+    });
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get('kid.md')?.parent).toBe('p.md');
+  });
+});

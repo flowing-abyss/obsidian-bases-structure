@@ -59,11 +59,11 @@ export function textLinkReason(
  * `'backlinks'` writes to the parent's own body (the parent mentions the child), `'links'` writes
  * to the node's own body (the child mentions the parent) — mirrors `textLinkReason`'s ordering.
  * Keyed off the *new* rule's own kind — see `textEdgeRemoval` for the old-side counterpart, which
- * must be keyed off the *old* edge's kind instead, since the two can differ. `buildTextEdgeChanges`
- * calls this directly for a node's own edge; `plan-retype.ts`'s direct-child edge rewrite calls it
- * too, for the exact same per-kind sidedness over a child/parent pair instead of a moved node and
- * its new parent. */
-export function textEdgeAppend(
+ * must be keyed off the *old* edge's kind instead, since the two can differ. Only
+ * `textEdgeAppendIfNeeded` calls this directly — every planner (a node's own edge, or
+ * `plan-retype.ts`'s direct-child edge rewrite) goes through that instead, so the "already linked"
+ * guard can never be forgotten on one path and not the other. */
+function textEdgeAppend(
   kind: 'links' | 'backlinks',
   node: string,
   newParent: string,
@@ -315,30 +315,84 @@ export function targetStillHeldByProperty(
  * the append side rather than the removal side). A `file.backlinks`/`file.links` edge is resolved
  * from `links` alone (see `structure.ts`'s candidate collection), so once `target` is already
  * there the edge already exists — appending a second body line for it would be a redundant write,
- * not a new relationship. Used to skip a text-edge append the plan doesn't actually need. */
-export function alreadyLinked(snapshot: Snapshot, path: string, target: string): boolean {
-  return snapshot.notes.get(path)?.links.includes(target) ?? false;
+ * not a new relationship.
+ *
+ * `excludeKey`, when given, ignores whatever *that one property alone* contributes: the property a
+ * child-edge rewrite is clearing in this same transition (see `textEdgeAppendIfNeeded`'s
+ * `staleProperty`). Without it, a property → `file.links` rewrite would see its own about-to-vanish
+ * property as "already linked" and skip the append that's the relationship's only remaining home —
+ * the link would simply disappear once the property write lands. Only *other* properties count as
+ * proof the link survives; a genuine independent body mention that happens to be the property's
+ * only competing source can't be told apart from "nothing else holds it" from this data alone, so
+ * (mirroring `targetStillHeldByProperty`'s own "only trust property evidence" rule on the removal
+ * side) this favors still writing the append over silently dropping the relationship. Only
+ * `textEdgeAppendIfNeeded` calls this directly. */
+function alreadyLinked(
+  snapshot: Snapshot,
+  path: string,
+  target: string,
+  excludeKey: string | null = null,
+): boolean {
+  const note = snapshot.notes.get(path);
+  if (note?.links.includes(target) !== true) {
+    return false;
+  }
+  if (excludeKey === null) {
+    return true;
+  }
+  return Object.entries(note.propertyLinks).some(
+    ([key, targets]) => key !== excludeKey && targets.includes(target),
+  );
+}
+
+export interface TextEdgeAppendInputs {
+  readonly snapshot: Snapshot;
+  readonly rule: EdgeRule; // the *new* rule
+  readonly node: string;
+  readonly newParent: string;
+  /** The property this same transition is about to clear, when the old edge was itself
+   * `'property'`-kind pointing at `newParent` — excluded from the "already linked" check (see
+   * `alreadyLinked`'s own `excludeKey`). `null` for a node's own edge during a move/convert, where
+   * the old and new parents are always different notes, so no property being cleared could ever
+   * be the thing making the *new* target look already-linked. */
+  readonly staleProperty: string | null;
+}
+
+/** The append that establishes a text-kind (`'backlinks'`/`'links'`) edge from `node` to
+ * `newParent` — keyed off the *new* rule's own kind: `'backlinks'` writes to the new parent's own
+ * body (the parent mentions the child), `'links'` writes to the node's own body (the child mentions
+ * the parent) — mirrors `textLinkReason`'s ordering. `[]` when the new rule isn't text-kind, or
+ * `alreadyLinked` (with `staleProperty` excluded) says the target already resolves — appending a
+ * second mention for a link that already exists would be a redundant write, not a new relationship.
+ * Single source of truth for both `buildTextEdgeChanges` (a node's own edge, move/convert) and
+ * `plan-retype.ts`'s direct-child edge rewrite (`childTextChanges`), so the two guards can't drift
+ * apart the way they once did. */
+export function textEdgeAppendIfNeeded(inputs: TextEdgeAppendInputs): Plan['appends'] {
+  const { snapshot, rule, node, newParent, staleProperty } = inputs;
+  if (rule.kind === 'property') {
+    return [];
+  }
+  const append = textEdgeAppend(rule.kind, node, newParent);
+  return alreadyLinked(snapshot, append.path, append.target, staleProperty) ? [] : [append];
 }
 
 /** The append/removal pair establishing and clearing a text-kind (`'backlinks'`/`'links'`) edge
  * to `node`'s new parent — shared by move (`planMove`) and convert (`planConvert`)'s own-N edge
- * handling. The append is keyed off the *new* rule's own kind: `'backlinks'` writes to the new
- * parent's own body (the parent mentions the child), `'links'` writes to the node's own body (the
- * child mentions the parent) — mirrors `textLinkReason`'s ordering. The removal is keyed off the
- * *old* edge's own kind instead, since the two can differ — a node's possible parent types can mix
- * property and text-kind rules, so an action can freely cross from one kind to the other;
- * conflating the two would either remove nothing (old edge was actually `'property'`) or target a
- * mention that was never written (old edge was the other text kind). Omitted entirely when there
- * was no old parent, the old edge was itself `'property'`-kind (nothing in note text to clear), or
- * `targetStillHeldByProperty` says the link would survive anyway — a plan never carries a removal
- * the simulator would itself no-op, so the real applier is never asked to go hunting a body mention
- * that may not exist. */
+ * handling. The append is `textEdgeAppendIfNeeded`'s (`staleProperty: null` — the old and new
+ * parents are always different notes here, so there's never a property to exclude). The removal is
+ * keyed off the *old* edge's own kind instead, since the two can differ — a node's possible parent
+ * types can mix property and text-kind rules, so an action can freely cross from one kind to the
+ * other; conflating the two would either remove nothing (old edge was actually `'property'`) or
+ * target a mention that was never written (old edge was the other text kind). Omitted entirely
+ * when there was no old parent, the old edge was itself `'property'`-kind (nothing in note text to
+ * clear), or `targetStillHeldByProperty` says the link would survive anyway — a plan never carries
+ * a removal the simulator would itself no-op, so the real applier is never asked to go hunting a
+ * body mention that may not exist. */
 export function buildTextEdgeChanges(
   inputs: TextEdgeChangeInputs,
 ): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
   const { snapshot, rule, node, newParent, oldParent, oldEdge } = inputs;
-  const appends: Plan['appends'] =
-    rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, node, newParent)];
+  const appends = textEdgeAppendIfNeeded({ snapshot, rule, node, newParent, staleProperty: null });
   const removal =
     oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
       ? textEdgeRemoval(oldEdge.kind, node, oldParent)
