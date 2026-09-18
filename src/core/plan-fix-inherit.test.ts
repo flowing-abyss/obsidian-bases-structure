@@ -220,3 +220,77 @@ describe('planFixInherit', () => {
     });
   });
 });
+
+describe('planFixInherit — user ruling — writes only the schema-owned inherited link, keeping a rich real-note fixture untouched (2026-09-18)', () => {
+  // The user's real schema (see CLAUDE.md): fixing a Problem's drifted "category" must never touch
+  // its icon/color/aliases/description/created/updated, any user tag, or its own unrelated "problem"
+  // junk value.
+  const realSchema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+  // Every key the schema is ever allowed to write for this action — anything else in the note
+  // belongs to the user (and other plugins) and must survive untouched (2026-09-18 ruling).
+  const OWNED_KEYS = ['tags', 'category', 'meta', 'problem'];
+
+  it('fixing a drifted "category" rewrites only that key, leaving icon/color/aliases/description/created/updated and every user tag untouched', () => {
+    const cat = note('cat.md', { tags: ['system/category'] });
+    const wrongCat = note('wrongcat.md');
+    const meta = note('meta.md', {
+      tags: ['system/high/meta'],
+      frontmatter: { category: '[[cat]]' },
+      propertyLinks: { category: ['cat.md'] },
+    });
+    const n = note('n.md', {
+      tags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+      frontmatterTags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+      frontmatter: {
+        tags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+        icon: '🗄️',
+        color: '#ff7733',
+        aliases: ['Problem Alias'],
+        description: 'A note describing a specific problem.',
+        created: '2024-02-02',
+        updated: '2024-07-01',
+        meta: '[[meta]]',
+        category: '[[wrongcat]]',
+        problem: '[[Unrelated Problem]]',
+      },
+      propertyLinks: { meta: ['meta.md'], category: ['wrongcat.md'] },
+    });
+    const snap = snapshot([cat, wrongCat, meta, n], {
+      results: ['cat.md', 'wrongcat.md', 'meta.md', 'n.md'],
+    });
+
+    const result = planFixInherit(realSchema, snap, { kind: 'fix-inherit', node: 'n.md' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          {
+            key: 'category',
+            value: { kind: 'links', remove: ['wrongcat.md'], add: ['cat.md'], list: false },
+          },
+        ],
+      },
+    ]);
+    // The assertion the user ruling requires: the whole frontmatter object minus the owned keys,
+    // not a spot check of a couple of properties.
+    const before = snap.notes.get('n.md')?.frontmatter ?? {};
+    const after = applyPlan(snap, result.plan).notes.get('n.md')?.frontmatter ?? {};
+    for (const key of Object.keys(before).filter((k) => !OWNED_KEYS.includes(k))) {
+      expect(after[key]).toEqual(before[key]);
+    }
+  });
+});

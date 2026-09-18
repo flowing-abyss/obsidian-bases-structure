@@ -475,3 +475,94 @@ describe('operationTargets', () => {
     expect(operationTargets(context, 'p.md', 'convert')).not.toContain('h.md');
   });
 });
+
+describe('planConvert — user ruling — writes only the type tag and the moved link, keeping a rich real-note fixture untouched (2026-09-18)', () => {
+  // The user's real schema (see CLAUDE.md): Problem and Hierarchy are both children of Meta-note
+  // via "meta" — converting between meta-notes only ever patches "tags" and "meta".
+  const realSchema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+  // Every key the schema is ever allowed to write for this action — anything else in the note
+  // belongs to the user (and other plugins) and must survive untouched (2026-09-18 ruling).
+  const OWNED_KEYS = ['tags', 'category', 'meta', 'problem'];
+
+  it('converting a Problem to Hierarchy under a different meta-note writes only "tags" and "meta", leaving icon/color/aliases/description/created/updated and every user tag untouched', () => {
+    const cat = note('cat.md', { tags: ['system/category'] });
+    const meta1 = note('meta1.md', {
+      tags: ['system/high/meta'],
+      frontmatter: { category: '[[cat]]' },
+      propertyLinks: { category: ['cat.md'] },
+    });
+    const meta2 = note('meta2.md', {
+      tags: ['system/high/meta'],
+      frontmatter: { category: '[[cat]]' },
+      propertyLinks: { category: ['cat.md'] },
+    });
+    const n = note('n.md', {
+      tags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+      frontmatterTags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+      frontmatter: {
+        tags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+        icon: '🗄️',
+        color: '#ff7733',
+        aliases: ['Problem Alias'],
+        description: 'A note describing a specific problem.',
+        created: '2024-02-02',
+        updated: '2024-07-01',
+        meta: '[[meta1]]',
+        category: '[[Unrelated Category]]',
+        problem: '[[Unrelated Problem]]',
+      },
+      propertyLinks: { meta: ['meta1.md'] },
+    });
+    const snap = snapshot([cat, meta1, meta2, n], {
+      results: ['cat.md', 'meta1.md', 'meta2.md', 'n.md'],
+    });
+
+    const result = planAction(
+      realSchema,
+      snap,
+      { kind: 'convert', node: 'n.md', parent: 'meta2.md', type: 'Hierarchy' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.moves).toStrictEqual([]);
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          {
+            key: 'tags',
+            value: {
+              kind: 'listItem',
+              remove: 'system/high/problem',
+              add: 'system/high/hierarchy',
+            },
+          },
+          {
+            key: 'meta',
+            value: { kind: 'links', remove: ['meta1.md'], add: ['meta2.md'], list: false },
+          },
+        ],
+      },
+    ]);
+    // The assertion the user ruling requires: the whole frontmatter object minus the owned keys,
+    // not a spot check of a couple of properties.
+    const before = snap.notes.get('n.md')?.frontmatter ?? {};
+    const after = applyPlan(snap, result.plan).notes.get('n.md')?.frontmatter ?? {};
+    for (const key of Object.keys(before).filter((k) => !OWNED_KEYS.includes(k))) {
+      expect(after[key]).toEqual(before[key]);
+    }
+  });
+});

@@ -1020,3 +1020,88 @@ describe('applyPlan parity with the simulator (round 2 minor 7)', () => {
     expect(realFrontmatter?.['status']).toStrictEqual(simulatedFrontmatter?.['status']);
   });
 });
+
+describe('applyPlan — user ruling: a real note’s owned-nothing-else frontmatter survives a commit byte-for-byte (2026-09-18)', () => {
+  it('retyping a Meta-note to Hierarchy under the same category changes only "tags", leaving icon/color/aliases/description/created/updated and every user tag exactly as written', async () => {
+    const app = App.createConfigured__({
+      files: {
+        'cat.md': '---\ntags: [system/category]\n---\n',
+        'n.md':
+          '---\n' +
+          'tags:\n  - mark/ignore\n  - system/high/meta\n  - category/knowledge_base\n' +
+          'icon: "🗂️"\n' +
+          'color: "#3355ff"\n' +
+          'aliases:\n  - Meta Note Alias\n' +
+          'description: A note about note-taking meta practices.\n' +
+          'created: "2024-01-01"\n' +
+          'updated: "2024-06-01"\n' +
+          'category: "[[cat]]"\n' +
+          '---\n' +
+          'Body text about this note that must never be touched.\n',
+      },
+    });
+    const schema = parseSchema(
+      (key: string) =>
+        ({
+          inherit: ['category', 'meta', 'problem'],
+          types: {
+            Category: {
+              tag: 'system/category',
+              children: { 'Meta-note': 'category', Hierarchy: 'category' },
+            },
+            'Meta-note': {
+              tag: 'system/high/meta',
+              children: { Problem: 'meta', Hierarchy: 'meta' },
+            },
+            Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+            Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+          },
+        })[key],
+    ).schema;
+    const env = { defaultFolder: '', exists: (): boolean => false };
+    const realFile = (path: string): RealTFile => mustFile(app, path).asOriginalType2__();
+    const originalApp = app.asOriginalType__();
+    const initialSnapshot = readSnapshot(originalApp, [realFile('cat.md'), realFile('n.md')], null);
+
+    const result = planAction(
+      schema,
+      initialSnapshot,
+      { kind: 'retype', node: 'n.md', type: 'Hierarchy' },
+      env,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.moves).toStrictEqual([]);
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          {
+            key: 'tags',
+            value: { kind: 'listItem', remove: 'system/high/meta', add: 'system/high/hierarchy' },
+          },
+        ],
+      },
+    ]);
+
+    const outcome = await applyPlan(originalApp, result.plan, 'Retype', initialSnapshot);
+
+    expect(outcome.error).toBeNull();
+    const after = app.metadataCache.getFileCache(mustFile(app, 'n.md'))?.frontmatter ?? {};
+    expect(after['tags']).toStrictEqual([
+      'mark/ignore',
+      'system/high/hierarchy',
+      'category/knowledge_base',
+    ]);
+    // The assertion the user ruling requires, applied to a real committed file: every key the plan
+    // did not name compares equal, value for value, to what the note held before the commit — not
+    // a spot check of a couple of properties.
+    const before = initialSnapshot.notes.get('n.md')?.frontmatter ?? {};
+    for (const key of Object.keys(before).filter((k) => k !== 'tags')) {
+      expect(after[key]).toStrictEqual(before[key]);
+    }
+    const raw = await app.vault.read(mustFile(app, 'n.md'));
+    expect(raw).toContain('Body text about this note that must never be touched.');
+  });
+});

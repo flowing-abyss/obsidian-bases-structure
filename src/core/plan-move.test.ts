@@ -1070,3 +1070,79 @@ describe('planAction — move: vault schema', () => {
     expect(after.nodes.get(basicVariables)?.extras).toStrictEqual([]);
   });
 });
+
+describe('planAction — move: user ruling — writes only the schema-owned link, keeping a rich real-note fixture untouched (2026-09-18)', () => {
+  // The user's real schema (see CLAUDE.md): Category's children (Meta-note, Hierarchy) are both
+  // reached via "category" — moving a Meta-note between categories patches only that one key.
+  const schema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+  // Every key the schema is ever allowed to write for this action — anything else in the note
+  // belongs to the user (and other plugins) and must survive untouched (2026-09-18 ruling).
+  const OWNED_KEYS = ['tags', 'category', 'meta', 'problem'];
+
+  it('moving a Meta-note between categories writes only "category", leaving icon/color/aliases/description/created/updated and every user tag untouched', () => {
+    const n = note('n.md', {
+      tags: ['mark/ignore', 'system/high/meta', 'category/knowledge_base'],
+      frontmatterTags: ['mark/ignore', 'system/high/meta', 'category/knowledge_base'],
+      frontmatter: {
+        tags: ['mark/ignore', 'system/high/meta', 'category/knowledge_base'],
+        icon: '🗂️',
+        color: '#3355ff',
+        aliases: ['Meta Note Alias'],
+        description: 'A note about note-taking meta practices.',
+        created: '2024-01-01',
+        updated: '2024-06-01',
+        category: '[[cat1]]',
+        meta: '[[Unrelated Meta]]',
+        problem: '[[Unrelated Problem]]',
+      },
+      propertyLinks: { category: ['cat1.md'] },
+    });
+    const snap = snapshot(
+      [
+        note('cat1.md', { tags: ['system/category'] }),
+        note('cat2.md', { tags: ['system/category'] }),
+        n,
+      ],
+      { results: ['cat1.md', 'cat2.md', 'n.md'] },
+    );
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'n.md', parent: 'cat2.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          {
+            key: 'category',
+            value: { kind: 'links', remove: ['cat1.md'], add: ['cat2.md'], list: false },
+          },
+        ],
+      },
+    ]);
+    // The assertion the user ruling requires: the whole frontmatter object minus the owned keys,
+    // not a spot check of a couple of properties.
+    const before = snap.notes.get('n.md')?.frontmatter ?? {};
+    const after = applyPlan(snap, result.plan).notes.get('n.md')?.frontmatter ?? {};
+    for (const key of Object.keys(before).filter((k) => !OWNED_KEYS.includes(k))) {
+      expect(after[key]).toEqual(before[key]);
+    }
+  });
+});

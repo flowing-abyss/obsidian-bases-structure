@@ -1110,3 +1110,79 @@ describe('mergeWritesByPath', () => {
     ]);
   });
 });
+
+describe('planAction — retype: user ruling — writes only the type tag, keeping a rich real-note fixture untouched (2026-09-18)', () => {
+  // The user's real schema (see CLAUDE.md): Problem and Hierarchy are both children of Meta-note
+  // via "meta" — retyping between them never changes the edge key, only the type tag.
+  const schema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+  // Every key the schema is ever allowed to write for this action — anything else in the note
+  // belongs to the user (and other plugins) and must survive untouched (2026-09-18 ruling).
+  const OWNED_KEYS = ['tags', 'category', 'meta', 'problem'];
+
+  it('retyping a Problem to Hierarchy under the same meta-note changes only "tags", keeping every other tag and property untouched', () => {
+    const n = note('n.md', {
+      tags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+      frontmatterTags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+      frontmatter: {
+        tags: ['mark/ignore', 'system/high/problem', 'category/knowledge_base'],
+        icon: '🗄️',
+        color: '#ff7733',
+        aliases: ['Problem Alias'],
+        description: 'A note describing a specific problem.',
+        created: '2024-02-02',
+        updated: '2024-07-01',
+        meta: '[[meta]]',
+        category: '[[Unrelated Category]]',
+        problem: '[[Unrelated Problem]]',
+      },
+      propertyLinks: { meta: ['meta.md'] },
+    });
+    const snap = snapshot([note('meta.md', { tags: ['system/high/meta'] }), n], {
+      results: ['meta.md', 'n.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'retype', node: 'n.md', type: 'Hierarchy' },
+      envAllowing(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.moves).toStrictEqual([]);
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'n.md',
+        writes: [
+          {
+            key: 'tags',
+            value: {
+              kind: 'listItem',
+              remove: 'system/high/problem',
+              add: 'system/high/hierarchy',
+            },
+          },
+        ],
+      },
+    ]);
+    // The assertion the user ruling requires: the whole frontmatter object minus the owned keys,
+    // not a spot check of a couple of properties.
+    const before = snap.notes.get('n.md')?.frontmatter ?? {};
+    const after = applyPlan(snap, result.plan).notes.get('n.md')?.frontmatter ?? {};
+    for (const key of Object.keys(before).filter((k) => !OWNED_KEYS.includes(k))) {
+      expect(after[key]).toEqual(before[key]);
+    }
+  });
+});
