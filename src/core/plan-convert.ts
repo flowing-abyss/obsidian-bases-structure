@@ -310,6 +310,7 @@ export function planConvert(
   const oldCtx = bareContext(ctx);
   const changes = buildConvertChanges({ ctx, oldCtx, nNote, validation, action });
   const { appends, bodyLinkRemovals } = buildTextEdgeChanges({
+    snapshot,
     rule,
     node: action.node,
     newParent: action.parent,

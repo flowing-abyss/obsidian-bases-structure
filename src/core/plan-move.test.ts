@@ -251,6 +251,49 @@ describe('planAction — move: over a text-linked hierarchy (Task 8)', () => {
   });
 });
 
+describe('planAction — move: a still-held old text edge is never targeted by a body-link removal (finding 2)', () => {
+  // o.md's link to n.md comes entirely from a frontmatter property ("related") that happens to
+  // resolve to n.md — not from any body text. `links` (resolvedLinks) doesn't distinguish the
+  // two, so o.md -> n.md still resolves as a `file.backlinks` candidate, same as a genuine body
+  // mention would; n.md's primary parent is o.md going in. p.md (earlier in results order, so it
+  // outranks o.md's still-held candidate once it gets its own new mention of n.md) is the move's
+  // target. Moving n.md away from o.md must not emit a bodyLinkRemovals entry against o.md: there
+  // is no body mention to cut, and the applier's `removeBodyLink` scans the whole file — including
+  // frontmatter — so an emitted-but-groundless removal would cut into "related" instead.
+  const schema = schemaFrom({
+    types: { Hierarchy: { tag: 'hier', children: { Hierarchy: 'file.backlinks' } } },
+  });
+  const snap = snapshot(
+    [
+      note('p.md', { tags: ['hier'] }),
+      note('o.md', {
+        tags: ['hier'],
+        frontmatter: { related: '[[n]]' },
+        propertyLinks: { related: ['n.md'] },
+        links: ['n.md'],
+      }),
+      note('n.md', { tags: ['hier'] }),
+    ],
+    { results: ['p.md', 'o.md', 'n.md'] },
+  );
+
+  it('resolves n.md under o.md before the move (sanity check on the fixture)', () => {
+    const structure = buildStructure(schema, snap);
+    expect(structure.nodes.get('n.md')?.parent).toBe('o.md');
+  });
+
+  it('moves n.md to p.md and omits the removal against o.md, matching the simulator’s own stillHeld skip', () => {
+    const result = planAction(schema, snap, { kind: 'move', node: 'n.md', parent: 'p.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([{ path: 'p.md', target: 'n.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([]);
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get('n.md')?.parent).toBe('p.md');
+  });
+});
+
 describe('planAction — move: old and new edge kinds differ (review fix)', () => {
   it('old edge property, new edge backlinks: clears the stale property, no bogus body removal, no stale extra', () => {
     // CatA (level 0, property "up") declared before CatB (level 1, file.backlinks) — deeper level

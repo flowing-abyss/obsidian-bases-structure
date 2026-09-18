@@ -281,11 +281,23 @@ export function oldEdgeCleanupOnly(schema: Schema, inputs: RuleEdgeInputs): read
 }
 
 export interface TextEdgeChangeInputs {
+  readonly snapshot: Snapshot;
   readonly rule: EdgeRule;
   readonly node: string;
   readonly newParent: string;
   readonly oldParent: string | null;
   readonly oldEdge: EdgeRule | null;
+}
+
+/** Whether some frontmatter property on `path` — any key, not just the edge's own — already
+ * resolves a link to `target`. A note's `links` (`resolvedLinks`-derived, see
+ * `snapshot-reader.ts`'s `readNote`) can't tell that apart from a genuine body mention, so when
+ * this is true `target` would stay in `links` regardless of what note text does or doesn't say —
+ * matches `simulate.ts`'s own `applyBodyLinkRemovals`, which treats the same condition as a
+ * no-op. */
+function targetStillHeldByProperty(snapshot: Snapshot, path: string, target: string): boolean {
+  const propertyLinks = snapshot.notes.get(path)?.propertyLinks ?? {};
+  return Object.values(propertyLinks).flat().includes(target);
 }
 
 /** The append/removal pair establishing and clearing a text-kind (`'backlinks'`/`'links'`) edge
@@ -297,16 +309,23 @@ export interface TextEdgeChangeInputs {
  * property and text-kind rules, so an action can freely cross from one kind to the other;
  * conflating the two would either remove nothing (old edge was actually `'property'`) or target a
  * mention that was never written (old edge was the other text kind). Omitted entirely when there
- * was no old parent, or the old edge was itself `'property'`-kind (nothing in note text to clear). */
+ * was no old parent, the old edge was itself `'property'`-kind (nothing in note text to clear), or
+ * `targetStillHeldByProperty` says the link would survive anyway — a plan never carries a removal
+ * the simulator would itself no-op, so the real applier is never asked to go hunting a body mention
+ * that may not exist. */
 export function buildTextEdgeChanges(
   inputs: TextEdgeChangeInputs,
 ): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
-  const { rule, node, newParent, oldParent, oldEdge } = inputs;
+  const { snapshot, rule, node, newParent, oldParent, oldEdge } = inputs;
   const appends: Plan['appends'] =
     rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, node, newParent)];
-  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
+  const removal =
     oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
-      ? [textEdgeRemoval(oldEdge.kind, node, oldParent)]
+      ? textEdgeRemoval(oldEdge.kind, node, oldParent)
+      : null;
+  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
+    removal !== null && !targetStillHeldByProperty(snapshot, removal.path, removal.target)
+      ? [removal]
       : [];
   return { appends, bodyLinkRemovals };
 }

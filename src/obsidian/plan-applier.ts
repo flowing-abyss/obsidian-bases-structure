@@ -4,7 +4,7 @@
 // Never throws — the first failing operation stops the walk and comes back as `ApplyOutcome.error`.
 
 import type { App, TFile } from 'obsidian';
-import { Notice } from 'obsidian';
+import { getFrontMatterInfo, Notice } from 'obsidian';
 import { removeBodyLink, type BodyLinkRemoval } from '../core/body-link.js';
 import { deepEqual } from '../core/deep-equal.js';
 import type { KeyWrite, Plan } from '../core/plan-types.js';
@@ -298,6 +298,19 @@ function withSeamContext(data: string, cut: BodyLinkRemoval): BodyEditCut {
   };
 }
 
+/** `cut` (computed over just `data`'s body — everything from `bodyStart`,
+ * `getFrontMatterInfo(data).contentStart`, onward) translated back to an absolute offset into the
+ * whole file, with `text` extended to include the untouched frontmatter ahead of it. Keeps the
+ * guarantee `removeBodyLink` alone can't make: a body-link removal only ever touches what the user
+ * typed as the note's body, never a wikilink that happens to sit inside YAML frontmatter. */
+function toAbsoluteCut(data: string, bodyStart: number, cut: BodyLinkRemoval): BodyLinkRemoval {
+  return {
+    text: data.slice(0, bodyStart) + cut.text,
+    removed: cut.removed,
+    index: bodyStart + cut.index,
+  };
+}
+
 async function applyBodyLinkRemoval(
   app: App,
   removal: Plan['bodyLinkRemovals'][number],
@@ -310,9 +323,15 @@ async function applyBodyLinkRemoval(
   // condition`/`no-unsafe-assignment` false positives).
   const outcome: { cut: BodyEditCut | null } = { cut: null };
   await app.vault.process(file, (data: string) => {
-    const cut = removeBodyLink(data, linktexts);
-    outcome.cut = cut === null ? null : withSeamContext(data, cut);
-    return cut === null ? data : cut.text;
+    const bodyStart = getFrontMatterInfo(data).contentStart;
+    const cut = removeBodyLink(data.slice(bodyStart), linktexts);
+    if (cut === null) {
+      outcome.cut = null;
+      return data;
+    }
+    const absolute = toAbsoluteCut(data, bodyStart, cut);
+    outcome.cut = withSeamContext(data, absolute);
+    return absolute.text;
   });
   if (outcome.cut === null) {
     throw new Error(

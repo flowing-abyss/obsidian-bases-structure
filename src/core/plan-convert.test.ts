@@ -224,6 +224,37 @@ describe('planConvert — text-based (non-property) edges on both sides', () => 
     expect(after.nodes.get('thing.md')?.parent).toBe('newcat.md');
     expect(after.nodes.get('thing.md')?.type).toBe('OtherThing');
   });
+
+  it('omits the removal when a frontmatter property on the old parent still resolves the same link (finding 2, shared with planMove)', () => {
+    // oldcat.md's link to thing.md comes from a frontmatter property ("related"), not body text —
+    // `links` doesn't distinguish the two. The old rule (Thing via file.backlinks) doesn't even
+    // apply to the converted type (OtherThing), so this has no bearing on where thing.md resolves
+    // after the convert; it only matters for whether a doomed removal gets emitted at all.
+    const heldSnap = snapshot(
+      [
+        note('oldcat.md', {
+          tags: ['oldcat'],
+          frontmatter: { related: '[[thing]]' },
+          propertyLinks: { related: ['thing.md'] },
+          links: ['thing.md'],
+        }),
+        note('newcat.md', { tags: ['newcat'] }),
+        note('thing.md', { tags: ['thing'] }),
+      ],
+      { results: ['oldcat.md', 'newcat.md', 'thing.md'] },
+    );
+
+    const result = planAction(
+      textSchema,
+      heldSnap,
+      convert('thing.md', 'newcat.md', 'OtherThing'),
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([]);
+  });
 });
 
 describe('planConvert — keeps a genuine property extra untouched', () => {

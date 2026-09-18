@@ -186,6 +186,7 @@ export function planMove(schema: Schema, snapshot: Snapshot, action: MoveAction)
   const changes =
     nWrites.length > 0 ? [{ path: action.node, writes: nWrites }, ...subtreeWrites] : subtreeWrites;
   const { appends, bodyLinkRemovals } = buildTextEdgeChanges({
+    snapshot,
     rule,
     node: action.node,
     newParent: action.parent,

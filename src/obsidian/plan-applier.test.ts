@@ -709,6 +709,28 @@ describe('applyPlan — body link removals', () => {
     expect(errorMessage(outcome.error)).toBe('No mention of "child" found in "parent"');
     expect(await app.vault.read(mustFile(app, 'parent.md'))).toBe('![[Child]]\n');
   });
+
+  it('never cuts into frontmatter: rejects a removal whose only mention of the target lives in a frontmatter property, leaving the YAML untouched (finding 2)', async () => {
+    // "related" is not the edge property — it just happens to hold a wikilink to "n" too, the
+    // same way a note's frontmatter link can make `NoteData.links` (resolvedLinks-derived) look
+    // exactly like a genuine body mention (see `snapshot-reader.ts`'s `readNote`). Since there is
+    // no actual body mention, the only honest outcome is the same rejection a plain "no mention"
+    // gets — never a cut into YAML that happens to contain a matching `[[n]]` token.
+    const app = App.createConfigured__({
+      files: { 'o.md': '---\nrelated: "[[n]]"\n---\n', 'n.md': '' },
+    });
+    const plan: Plan = {
+      ...emptyPlan(),
+      bodyLinkRemovals: [{ path: 'o.md', target: 'n.md' }],
+    };
+
+    const outcome = await applyPlan(app.asOriginalType__(), plan, 'Remove', emptySnapshot());
+
+    expect(errorMessage(outcome.error)).toBe('No mention of "n" found in "o"');
+    expect(await app.vault.read(mustFile(app, 'o.md'))).toBe('---\nrelated: "[[n]]"\n---\n');
+    const cache = app.metadataCache.getFileCache(mustFile(app, 'o.md'));
+    expect(cache?.frontmatter?.['related']).toBe('[[n]]');
+  });
 });
 
 describe('applyPlan — moves', () => {
