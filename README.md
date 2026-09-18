@@ -1,5 +1,6 @@
 # Bases Structure
 
+[![Available in Obsidian](https://img.shields.io/badge/Available%20in%20Obsidian-7C3AED?logo=obsidian&logoColor=white&style=flat-square)](https://obsidian.md/plugins?id=bases-structure)
 [![Release](https://github.com/flowing-abyss/obsidian-bases-structure/actions/workflows/release.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-bases-structure/actions/workflows/release.yml)
 [![Downloads](https://img.shields.io/github/downloads/flowing-abyss/obsidian-bases-structure/total?style=flat-square&label=downloads&color=blue)](https://github.com/flowing-abyss/obsidian-bases-structure/releases)
 
