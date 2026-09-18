@@ -452,7 +452,14 @@ export class StructureView extends BasesView {
       },
       onDrop: (node, parent, mode, event) => {
         if (mode === 'convert') {
-          this.actions?.startConvert(node, parent, { x: event.clientX, y: event.clientY });
+          // Pop-out convention (M3): `this.bodyEl.doc` — the same document `attachDrag` itself
+          // scoped the whole gesture to — not the bare global `document`.
+          this.actions?.startConvert(
+            node,
+            parent,
+            { x: event.clientX, y: event.clientY },
+            this.bodyEl.doc,
+          );
           return;
         }
         this.actions?.startMove(node, parent);

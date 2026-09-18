@@ -904,7 +904,7 @@ describe('StructureView — drag wiring', () => {
     expect(startMoveSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', 'cat2.md');
   });
 
-  it('wires onDrop (convert mode) to StructureActions.startConvert with the event position', () => {
+  it('wires onDrop (convert mode) to StructureActions.startConvert with the event position and the container’s own document (pop-out convention)', () => {
     const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
     const { view } = twoParentsView();
     view.onDataUpdated();
@@ -917,10 +917,12 @@ describe('StructureView — drag wiring', () => {
 
     deps.onDrop('leaf.md', 'cat2.md', 'convert', event);
 
-    expect(startConvertSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', 'cat2.md', {
-      x: 15,
-      y: 25,
-    });
+    expect(startConvertSpy).toHaveBeenCalledExactlyOnceWith(
+      'leaf.md',
+      'cat2.md',
+      { x: 15, y: 25 },
+      deps.container.doc,
+    );
   });
 
   it('targetsFor(mode: "convert") only highlights parents where operationTargets finds a fitting type', () => {

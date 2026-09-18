@@ -462,9 +462,17 @@ export class StructureActions {
    * lists which types `node` could become while landing under `parent`, listed against the
    * current render's `getInput()` (same "good enough for a listing" freshness as
    * `startMovePicker`/`startRetype`) — one option commits immediately, several open a menu at
-   * `position` (the drop point), none shows a Notice. Every commit itself re-plans against
+   * `position` (the drop point), none shows a Notice. `doc` is the pop-out convention every other
+   * `showAtPosition` call in this file follows (see `showNodeMenu`/`showMenuAt`): the caller's own
+   * anchor element's owning document, since a drag can start inside a pop-out window and the menu
+   * must open there too, not on the default document. Every commit itself re-plans against
    * `freshInput()` via `commitConvert`, same as every other commit path (I5). */
-  startConvert(node: string, parent: string, position: { x: number; y: number }): void {
+  startConvert(
+    node: string,
+    parent: string,
+    position: { x: number; y: number },
+    doc?: Document,
+  ): void {
     const { schema, snapshot, structure } = this.deps.getInput();
     const context: ConvertContext = { schema, snapshot, structure, env: this.planEnv() };
     const options = convertOptions(context, node, parent);
@@ -486,7 +494,7 @@ export class StructureActions {
         });
       });
     }
-    menu.showAtPosition(position);
+    menu.showAtPosition(position, doc);
   }
 
   /** Plans and commits a `'convert'` action: `node` becomes `type` under `parent`, in the same

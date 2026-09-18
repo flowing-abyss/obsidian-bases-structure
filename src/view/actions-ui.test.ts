@@ -1525,17 +1525,19 @@ describe('startConvert', () => {
     expect(fragment.querySelector('span')?.textContent).toBe('Converted "b" to "A" under "solo"');
   });
 
-  it('shows a menu with one item per fitting type at the drop position when several fit', () => {
+  it('shows a menu with one item per fitting type at the drop position (with the anchor’s own document — pop-out convention) when several fit', () => {
     const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const leafEl = h.nodes.get('leaf.md');
+    if (leafEl === undefined) throw new Error('missing leaf element');
     const showAtPositionSpy = vi
       .spyOn(Menu.prototype, 'showAtPosition')
       .mockImplementation(function (this: Menu) {
         return this;
       });
 
-    h.actions.startConvert('leaf.md', 'cat.md', { x: 10, y: 20 });
+    h.actions.startConvert('leaf.md', 'cat.md', { x: 10, y: 20 }, leafEl.doc);
 
-    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith({ x: 10, y: 20 });
+    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith({ x: 10, y: 20 }, leafEl.doc);
     const menu = showAtPositionSpy.mock.contexts[0] as Menu;
     const titles = menu.items__.map((item) => item.title__);
     expect(titles).toHaveLength(2);
