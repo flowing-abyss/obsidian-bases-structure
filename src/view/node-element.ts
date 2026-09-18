@@ -263,11 +263,20 @@ function diagnosticsTitle(diagnostics: readonly Diagnostic[]): string {
   return diagnostics.map((diagnostic) => diagnostic.message).join('\n');
 }
 
+/** `true` only when every diagnostic naming the node is `inherit-mismatch` — the marker's one
+ * "amber" case (Task 7). A single `illegal-parent`/`broken-link`/`untyped` alongside any number of
+ * drifts still outweighs them, matching the edge classes' own severity in `edges.ts`. */
+function isWarningOnly(diagnostics: readonly Diagnostic[]): boolean {
+  return diagnostics.every((diagnostic) => diagnostic.kind === 'inherit-mismatch');
+}
+
 /** The `.bases-structure-problem` (alert-circle) marker, right before the title — drop-then-
  * conditionally-readd (same idempotent shape as `updateAlsoIn`), so a node that gains or loses its
  * last diagnostic between renders picks up or drops the marker instead of ever accumulating one or
  * leaking a stale one. A no-op (beyond dropping any stale marker) with no title to anchor before —
- * not expected in practice, every real node has one. */
+ * not expected in practice, every real node has one. Carries `.is-warning` (Task 7) when
+ * `isWarningOnly` says so, so the marker's colour matches the edges' own severity instead of
+ * always reading as the harder violation. */
 function applyProblemMarker(el: HTMLElement, diagnostics: readonly Diagnostic[] | undefined): void {
   el.querySelector(PROBLEM_SELECTOR)?.remove();
   if (diagnostics === undefined || diagnostics.length === 0) {
@@ -281,6 +290,7 @@ function applyProblemMarker(el: HTMLElement, diagnostics: readonly Diagnostic[] 
     cls: 'bases-structure-problem',
     attr: { title: diagnosticsTitle(diagnostics) },
   });
+  marker.classList.toggle('is-warning', isWarningOnly(diagnostics));
   setSizedIcon(marker, 'alert-circle');
   titleEl.before(marker);
 }

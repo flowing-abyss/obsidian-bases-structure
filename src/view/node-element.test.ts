@@ -816,6 +816,64 @@ describe('createNodeElement — diagnostics (Task 5)', () => {
   });
 });
 
+describe('createNodeElement / updateNodeElement — marker severity (Task 7)', () => {
+  const inheritMismatch: Diagnostic = {
+    kind: 'inherit-mismatch',
+    node: 'a.md',
+    keys: ['category'],
+    message: 'drift',
+  };
+
+  it('gives the marker .is-warning when every diagnostic is inherit-mismatch', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [inheritMismatch] });
+
+    expect(el.querySelector('.bases-structure-problem')?.classList.contains('is-warning')).toBe(
+      true,
+    );
+  });
+
+  it('leaves the marker without .is-warning for a hard violation', () => {
+    const ctx = makeCtx();
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+
+    expect(el.querySelector('.bases-structure-problem')?.classList.contains('is-warning')).toBe(
+      false,
+    );
+  });
+
+  it('leaves the marker without .is-warning when a hard violation and a drift both name the node', () => {
+    const ctx = makeCtx();
+    const diagnostics: Diagnostic[] = [makeDiagnostic(), inheritMismatch];
+
+    const el = createNodeElement(ctx, makeNode(), { diagnostics });
+
+    expect(el.querySelector('.bases-structure-problem')?.classList.contains('is-warning')).toBe(
+      false,
+    );
+  });
+
+  it('flips the marker between severities as diagnostics change on update', () => {
+    const ctx = makeCtx();
+    const el = createNodeElement(ctx, makeNode(), { diagnostics: [inheritMismatch] });
+    expect(el.querySelector('.bases-structure-problem')?.classList.contains('is-warning')).toBe(
+      true,
+    );
+
+    updateNodeElement(el, ctx, makeNode(), { diagnostics: [makeDiagnostic()] });
+    expect(el.querySelector('.bases-structure-problem')?.classList.contains('is-warning')).toBe(
+      false,
+    );
+
+    updateNodeElement(el, ctx, makeNode(), { diagnostics: [inheritMismatch] });
+    expect(el.querySelector('.bases-structure-problem')?.classList.contains('is-warning')).toBe(
+      true,
+    );
+  });
+});
+
 describe('updateNodeElement — diagnostics (Task 5)', () => {
   it('adds the marker to a previously clean node once it gains a diagnostic', () => {
     const ctx = makeCtx();

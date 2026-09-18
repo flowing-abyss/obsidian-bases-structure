@@ -299,11 +299,11 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   --bases-structure-icon-size: 10px;
 }
 
-/* Task 5: always on, no severity distinction of its own (an edge already carries `.is-error`/
-   `.is-warning` — see below) — a node either has a problem worth a glance or it doesn't. Same
-   icon-led shape as `.bases-structure-two-way-icon` (small, muted-but-visible, right before the
-   title), always in the DOM's normal flow (not hover-revealed, unlike the toggle/"+") since a
-   diagnostic is worth surfacing at rest, not just on hover. */
+/* Task 5: always on. Same icon-led shape as `.bases-structure-two-way-icon` (small,
+   muted-but-visible, right before the title), always in the DOM's normal flow (not hover-revealed,
+   unlike the toggle/"+") since a diagnostic is worth surfacing at rest, not just on hover.
+   `--text-error` by default (a hard violation); Task 7's `.is-warning` below softens it to
+   `--text-warning` to match the edge classes' own severity when every diagnostic is a drift. */
 .bases-structure-problem {
   display: inline-flex;
   flex: 0 0 auto;
@@ -313,6 +313,10 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   color: var(--text-error);
 
   --bases-structure-icon-size: 10px;
+}
+
+.bases-structure-problem.is-warning {
+  color: var(--text-warning);
 }
 
 /* Toggle and "+" share the same 20x20 icon box (see the `.bases-structure`
