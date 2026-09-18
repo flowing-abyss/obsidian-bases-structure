@@ -17,6 +17,7 @@ import {
   bodyOnlyTagReason,
   checkRetypeFolder,
   failingChildren,
+  firstFailingChildReason,
   literalRetypeWrites,
   mergeWritesByPath,
   retypedChildWrites,
@@ -150,6 +151,14 @@ function validateConvert(context: ConvertContext, action: ConvertAction): Conver
     return parentCheck;
   }
   const { nNode, oldMatch, newType } = nodeCheck.fields;
+  const failingReason = firstFailingChildReason(schema, structure, snapshot, {
+    nNode,
+    node: action.node,
+    type: action.type,
+  });
+  if (failingReason !== null) {
+    return { ok: false, reason: failingReason };
+  }
   const folderCheck = checkRetypeFolder(env, snapshot, action.node, newType);
   if (folderCheck.kind === 'occupied') {
     return { ok: false, reason: `A note already exists at "${folderCheck.to}"` };
@@ -297,23 +306,38 @@ interface BuildConvertChangesInputs {
   readonly action: ConvertAction;
 }
 
-/** N's own writes plus the merged child/subtree cascade, as a single `changes` list — the part of
- * `planConvert` shared regardless of whether N's folder also moves. */
-function buildConvertChanges(inputs: BuildConvertChangesInputs): Plan['changes'] {
+interface ConvertChangeResult {
+  readonly changes: Plan['changes'];
+  readonly appends: Plan['appends'];
+  readonly bodyLinkRemovals: Plan['bodyLinkRemovals'];
+}
+
+/** N's own writes plus the merged child/subtree cascade, as a single `changes` list, alongside
+ * whatever text-edge appends/removals a direct child's own edge rewrite needs — the part of
+ * `planConvert` shared regardless of whether N's folder also moves. N's *own* edge to its new
+ * parent is handled separately by `planConvert` itself (`buildTextEdgeChanges`); this is only the
+ * child cascade. */
+function buildConvertChanges(inputs: BuildConvertChangesInputs): ConvertChangeResult {
   const { ctx, oldCtx, nNote, validation, action } = inputs;
   const { nNode } = validation.fields;
   const nWrites = buildNWrites({ ctx, oldCtx, nNote, fields: validation.fields, action });
   recordAllOverrides(ctx, action.node, nWrites);
 
-  const childWrites = retypedChildWrites(ctx.schema, ctx, nNode, {
+  const childRewrite = retypedChildWrites(ctx.schema, ctx, nNode, {
     node: action.node,
     type: action.type,
   });
   const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
-  const mergedDescendantWrites = mergeWritesByPath(childWrites, subtreeWrites);
-  return nWrites.length > 0
-    ? [{ path: action.node, writes: nWrites }, ...mergedDescendantWrites]
-    : mergedDescendantWrites;
+  const mergedDescendantWrites = mergeWritesByPath(childRewrite.entries, subtreeWrites);
+  const changes =
+    nWrites.length > 0
+      ? [{ path: action.node, writes: nWrites }, ...mergedDescendantWrites]
+      : mergedDescendantWrites;
+  return {
+    changes,
+    appends: childRewrite.appends,
+    bodyLinkRemovals: childRewrite.bodyLinkRemovals,
+  };
 }
 
 export function planConvert(
@@ -342,8 +366,8 @@ export function planConvert(
     linkOverrides: new Map(),
   };
   const oldCtx = bareContext(ctx);
-  const changes = buildConvertChanges({ ctx, oldCtx, nNote, validation, action });
-  const { appends, bodyLinkRemovals } = buildTextEdgeChanges({
+  const childResult = buildConvertChanges({ ctx, oldCtx, nNote, validation, action });
+  const nEdge = buildTextEdgeChanges({
     snapshot,
     rule,
     node: action.node,
@@ -354,7 +378,13 @@ export function planConvert(
   const moves: Plan['moves'] = folderTo !== null ? [{ from: action.node, to: folderTo }] : [];
   const focus = folderTo ?? action.node;
 
-  const plan: Plan = { creations: [], changes, appends, moves, bodyLinkRemovals };
+  const plan: Plan = {
+    creations: [],
+    changes: childResult.changes,
+    appends: [...nEdge.appends, ...childResult.appends],
+    moves,
+    bodyLinkRemovals: [...nEdge.bodyLinkRemovals, ...childResult.bodyLinkRemovals],
+  };
   const failure = verifyConvert({ schema, snapshot, plan, before: structure, action, focus });
   if (failure !== null) {
     return { ok: false, reason: failure };

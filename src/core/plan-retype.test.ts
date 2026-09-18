@@ -764,6 +764,8 @@ describe('planAction — retype: vault schema', () => {
   const DATAVIEW = 'base/_hierarchy/dataview.md';
   const OBSIDIAN = 'base/_meta-notes/obsidian.md';
   const INFO_ACQUISITION = 'base/_problems/information acquisition.md';
+  const INFO_PROCESSING = 'base/_meta-notes/information processing.md';
+  const READING_STRATEGIES = 'base/_hierarchy/reading strategies.md';
 
   it('retypes a Hierarchy leaf (under a meta-note) to Problem: tags swap, same edge key, no move', () => {
     const snap = knowledgeBaseSnapshot();
@@ -792,9 +794,11 @@ describe('planAction — retype: vault schema', () => {
     expect(after.nodes.get(DATAVIEW)?.type).toBe('Problem');
   });
 
-  it('rejects retyping a Problem with a Hierarchy child to Hierarchy (backlinks-only children)', () => {
+  it('retypes a Problem with a Hierarchy child to Hierarchy: the child is appended to the body and its stale "problem" value is cleared', () => {
     const snap = knowledgeBaseSnapshot();
-    // The failing child is `READING_STRATEGIES`, named by its display name in the reason string.
+    // READING_STRATEGIES is attached to INFO_ACQUISITION via the property "problem" (Problem's own
+    // rule) — retyping to Hierarchy rewrites that edge onto Hierarchy's own rule (file.backlinks)
+    // instead of refusing the whole retype.
 
     const result = planAction(
       schema,
@@ -803,10 +807,33 @@ describe('planAction — retype: vault schema', () => {
       envAllowing(),
     );
 
-    expect(result).toStrictEqual({
-      ok: false,
-      reason: '"Hierarchy" cannot contain: reading strategies',
-    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([
+      { path: INFO_ACQUISITION, target: READING_STRATEGIES },
+    ]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([]);
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: INFO_ACQUISITION,
+        writes: [{ key: 'tags', value: { kind: 'literal', value: ['system/high/hierarchy'] } }],
+      },
+      {
+        path: READING_STRATEGIES,
+        writes: [
+          {
+            key: 'problem',
+            value: { kind: 'links', remove: [INFO_ACQUISITION], add: [], list: true },
+          },
+        ],
+      },
+    ]);
+
+    const after = buildStructure(schema, applyPlan(snap, result.plan));
+    expect(after.nodes.get(INFO_ACQUISITION)?.type).toBe('Hierarchy');
+    // Same parent as before the retype (a plain retype never moves N) — the child stays too.
+    expect(after.nodes.get(INFO_ACQUISITION)?.parent).toBe(INFO_PROCESSING);
+    expect(after.nodes.get(READING_STRATEGIES)?.parent).toBe(INFO_ACQUISITION);
   });
 });
 

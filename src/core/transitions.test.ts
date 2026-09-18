@@ -5,9 +5,15 @@
 // planner — not the other way around — so a future change that silently narrows what's possible
 // fails loudly instead of just shrinking a computed table alongside it.
 //
-// Category is the graph's root/host (`root.md`), reproducing the reported bug directly: Shift-
-// dragging a Problem onto the root offers exactly "Meta-note"; a plain drag onto it offers
-// nothing at all (only a type change can carry a Problem that far up).
+// Category is the graph's root/host (`root.md`), reproducing the originally reported bug directly:
+// a plain drag of a Problem onto the root offers nothing at all (only a type change can carry a
+// Problem that far up) — that part of the bug is unchanged. Shift-dragging it now offers both
+// "Meta-note" *and* "Hierarchy": a direct child's edge rewrites between any rule kind (property,
+// file.links, file.backlinks) in either direction, so a Hierarchy child attached by a property no
+// longer blocks becoming a type whose own rule to Hierarchy is the schema's one text-only edge.
+// The only thing that still blocks a conversion outright is a direct child whose *own* type has no
+// rule at all under the candidate new type — one conversion only ever changes one note's type, so
+// that child would have to change type too. See the "with a child of an illegal type" rows below.
 
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
@@ -46,24 +52,33 @@ const schema = schemaFrom({
   },
 });
 
-/** A with-child row's own child: always Hierarchy-typed, attached through *that row's own* rule
- * (a property key matching the parent's real child rule) — the shape whose child a plain retype
- * usually keeps by rewriting it onto the new parent's own rule (`plan-shared.ts`'s
- * `childEdgeChange`). */
-function hierarchyChildViaProperty(path: string, property: string, parentBasename: string) {
+/** A with-child row's own child, attached through *that row's own* rule (a property key matching
+ * the parent's real child rule under its *current* type) — `childTag` picks the child's type, so
+ * this builds both shapes a with-child row needs: a Hierarchy child (every type has a rule to
+ * Hierarchy, so this shape always survives a conversion) and a child of whatever type the row's
+ * *current* type owns a rule to but candidate new types mostly don't (so this shape mostly
+ * refuses, naming the child — see `firstFailingChildReason`). */
+function childViaProperty(
+  path: string,
+  childTag: string,
+  property: string,
+  parentBasename: string,
+) {
   return note(path, {
-    tags: [HIERARCHY_TAG],
+    tags: [childTag],
     frontmatter: { [property]: `[[${parentBasename}]]` },
     propertyLinks: { [property]: [`${parentBasename}.md`] },
   });
 }
 
-// One note of every type, each in two shapes (leaf, with a child) — plus one target anchor per
-// type (never dragged, only ever a `parent` below) and the host/root itself, so the root can be
-// its own target column without colliding with a source row. Every note is otherwise isolated: no
-// note links or property-references any other except a with-child row's own single child, so
-// converting/moving one row can never perturb another (`firstChangedOtherNode`'s whole-structure
-// scan would otherwise mistake stray coupling for a real rejection).
+// One note of every type, each in three shapes where the schema offers them (leaf, with a
+// Hierarchy child, with a child of a type most candidates have no rule to at all) — plus one
+// target anchor per type (never dragged, only ever a `parent` below) and the host/root itself, so
+// the root can be its own target column without colliding with a source row. Every note is
+// otherwise isolated: no note links or property-references any other except a with-child row's
+// own single child, so converting/moving one row can never perturb another
+// (`firstChangedOtherNode`'s whole-structure scan would otherwise mistake stray coupling for a
+// real rejection).
 const notesList = [
   // Root/host.
   note('root.md', { tags: [CATEGORY_TAG] }),
@@ -72,20 +87,26 @@ const notesList = [
   note('metaTarget.md', { tags: [META_TAG] }),
   note('problemTarget.md', { tags: [PROBLEM_TAG] }),
   note('hierarchyTarget.md', { tags: [HIERARCHY_TAG] }),
-  // Category: leaf, and with a Hierarchy child (property "category" — Category's own rule).
+  // Category: leaf, with a Hierarchy child (property "category"), and with a Meta-note child
+  // (also property "category" — Category's own rule to each).
   note('catLeaf.md', { tags: [CATEGORY_TAG] }),
   note('catChild.md', { tags: [CATEGORY_TAG] }),
-  hierarchyChildViaProperty('catChildKid.md', 'category', 'catChild'),
-  // Meta-note: leaf, and with a Hierarchy child (property "meta" — Meta-note's own rule).
+  childViaProperty('catChildKid.md', HIERARCHY_TAG, 'category', 'catChild'),
+  note('catChildB.md', { tags: [CATEGORY_TAG] }),
+  childViaProperty('catChildBKid.md', META_TAG, 'category', 'catChildB'),
+  // Meta-note: leaf, with a Hierarchy child, and with a Problem child (both property "meta" —
+  // Meta-note's own rule to each).
   note('metaLeaf.md', { tags: [META_TAG] }),
   note('metaChild.md', { tags: [META_TAG] }),
-  hierarchyChildViaProperty('metaChildKid.md', 'meta', 'metaChild'),
-  // Problem: leaf, and with a Hierarchy child (property "problem" — Problem's own rule).
+  childViaProperty('metaChildKid.md', HIERARCHY_TAG, 'meta', 'metaChild'),
+  note('metaChildB.md', { tags: [META_TAG] }),
+  childViaProperty('metaChildBKid.md', PROBLEM_TAG, 'meta', 'metaChildB'),
+  // Problem: leaf, and with a Hierarchy child (property "problem" — Problem's own, and only, rule).
   note('problemLeaf.md', { tags: [PROBLEM_TAG] }),
   note('problemChild.md', { tags: [PROBLEM_TAG] }),
-  hierarchyChildViaProperty('problemChildKid.md', 'problem', 'problemChild'),
-  // Hierarchy: leaf, and with a Hierarchy child via a body link (file.backlinks — Hierarchy's own
-  // rule is the schema's one text-only edge).
+  childViaProperty('problemChildKid.md', HIERARCHY_TAG, 'problem', 'problemChild'),
+  // Hierarchy: leaf, and with a Hierarchy child via a body link (file.backlinks — Hierarchy's own,
+  // and only, rule).
   note('hierarchyLeaf.md', { tags: [HIERARCHY_TAG] }),
   note('hierarchyChild.md', { tags: [HIERARCHY_TAG], links: ['hierarchyChildKid.md'] }),
   note('hierarchyChildKid.md', { tags: [HIERARCHY_TAG] }),
@@ -161,31 +182,34 @@ describe('move — every (dragged type, target type) pair the schema allows', ()
   );
 });
 
-// -- Convert (Shift-drag): shape matters for Category/Meta-note/Problem — a with-child row loses
-// "Hierarchy" as an option a same-type leaf keeps, because its existing Hierarchy child is
-// attached through a *property* key (its own type's rule) that a retype to "Hierarchy" would have
-// to rewrite onto a *body-link* rule (Hierarchy's own child rule is the schema's only non-property
-// one) — `plan-shared.ts`'s `childEdgeChange` refuses that rewrite, and nothing else picks it up.
-// This is exactly the user's reported case: their real Problem note had its own Hierarchy child,
-// so only "Meta-note" ever offered under the root; a bare Problem leaf offers "Meta-note" *and*
-// "Hierarchy".
+// -- Convert (Shift-drag): shape only matters when the *child's own type* has no rule at all under
+// a candidate new type — a direct child's edge now rewrites between any rule kind (property,
+// file.links, file.backlinks) in either direction (`plan-retype.ts`'s `retypedChildWrites`), so a
+// Hierarchy child attached by a property no longer blocks converting to a type whose own rule to
+// Hierarchy is the schema's one text-only edge (`childEdgeChange` rewrites it instead of refusing).
+// Every type in this schema has *some* rule to Hierarchy, so a "with a Hierarchy child" row always
+// collapses onto its leaf row below — this is exactly the user's reported case: their real Problem
+// note had its own Hierarchy child, and it now offers "Meta-note" *and* "Hierarchy" under the root,
+// same as a bare Problem leaf.
 //
-// Shape does *not* matter for Hierarchy itself: a with-child Hierarchy row's child is attached
-// through a body link, and the schema's `inherit` list happens to name exactly the three property
-// keys ("category"/"meta"/"problem") that back every other type's own child rule — so the generic
-// `inherit` cascade (`derive.ts`'s `deriveSubtreeWrites`) re-establishes the child under its
-// (retyped) parent through whichever of those keys the new type owns, the same way it would for
-// any inherited property, regardless of the child's original edge kind.
+// What still narrows a row is a child whose *own type* has no rule at all under the candidate new
+// type — one conversion only ever changes one note's type, so that child would have to change type
+// too, and `failingChildren` refuses it (`firstFailingChildReason` names the child). Category only
+// ever offers Meta-note/Hierarchy as children, and Meta-note only ever offers Problem/Hierarchy —
+// neither Meta-note nor Problem has a rule to the *other* one, so "Category (child: Meta-note)" and
+// "Meta-note (child: Problem)" refuse every candidate type, everywhere.
 //
-//                        | Category  | Meta-note | Problem | Hierarchy |  Root
-// Category (leaf)        | Meta,Hier | Prob,Hier |  Hier   |   Hier    | Meta,Hier
-// Category (with child)  |   Meta    |   Prob    |    -    |     -     |   Meta
-// Meta-note (leaf)       |   Hier    | Prob,Hier |  Hier   |   Hier    |   Hier
-// Meta-note (with child) |    -      |   Prob    |    -    |     -     |    -
-// Problem (leaf)         | Meta,Hier |   Hier    |  Hier   |   Hier    | Meta,Hier
-// Problem (with child)   |   Meta    |    -      |    -    |     -     |   Meta
-// Hierarchy (leaf)       |   Meta    |   Prob    |    -    |     -     |   Meta
-// Hierarchy (with child) |   Meta    |   Prob    |    -    |     -     |   Meta
+//                                | Category  | Meta-note | Problem | Hierarchy |  Root
+// Category (leaf)                | Meta,Hier | Prob,Hier |  Hier   |   Hier    | Meta,Hier
+// Category (child: Hierarchy)    | Meta,Hier | Prob,Hier |  Hier   |   Hier    | Meta,Hier
+// Category (child: Meta-note)    |    -      |    -      |    -    |     -     |    -
+// Meta-note (leaf)                |   Hier    | Prob,Hier |  Hier   |   Hier    |   Hier
+// Meta-note (child: Hierarchy)   |   Hier    | Prob,Hier |  Hier   |   Hier    |   Hier
+// Meta-note (child: Problem)     |    -      |    -      |    -    |     -     |    -
+// Problem (leaf)                  | Meta,Hier |   Hier    |  Hier   |   Hier    | Meta,Hier
+// Problem (child: Hierarchy)     | Meta,Hier |   Hier    |  Hier   |   Hier    | Meta,Hier
+// Hierarchy (leaf)                |   Meta    |   Prob    |    -    |     -     |   Meta
+// Hierarchy (child: Hierarchy)   |   Meta    |   Prob    |    -    |     -     |   Meta
 const CONVERT_ROWS = [
   {
     label: 'Category (leaf)',
@@ -199,9 +223,20 @@ const CONVERT_ROWS = [
     ],
   },
   {
-    label: 'Category (with child)',
+    label: 'Category (child: Hierarchy)',
     path: 'catChild.md',
-    offered: [['Meta-note'], ['Problem'], [], [], ['Meta-note']],
+    offered: [
+      ['Meta-note', 'Hierarchy'],
+      ['Problem', 'Hierarchy'],
+      ['Hierarchy'],
+      ['Hierarchy'],
+      ['Meta-note', 'Hierarchy'],
+    ],
+  },
+  {
+    label: 'Category (child: Meta-note)',
+    path: 'catChildB.md',
+    offered: [[], [], [], [], []],
   },
   {
     label: 'Meta-note (leaf)',
@@ -209,9 +244,14 @@ const CONVERT_ROWS = [
     offered: [['Hierarchy'], ['Problem', 'Hierarchy'], ['Hierarchy'], ['Hierarchy'], ['Hierarchy']],
   },
   {
-    label: 'Meta-note (with child)',
+    label: 'Meta-note (child: Hierarchy)',
     path: 'metaChild.md',
-    offered: [[], ['Problem'], [], [], []],
+    offered: [['Hierarchy'], ['Problem', 'Hierarchy'], ['Hierarchy'], ['Hierarchy'], ['Hierarchy']],
+  },
+  {
+    label: 'Meta-note (child: Problem)',
+    path: 'metaChildB.md',
+    offered: [[], [], [], [], []],
   },
   {
     label: 'Problem (leaf)',
@@ -225,9 +265,15 @@ const CONVERT_ROWS = [
     ],
   },
   {
-    label: 'Problem (with child)',
+    label: 'Problem (child: Hierarchy)',
     path: 'problemChild.md',
-    offered: [['Meta-note'], [], [], [], ['Meta-note']],
+    offered: [
+      ['Meta-note', 'Hierarchy'],
+      ['Hierarchy'],
+      ['Hierarchy'],
+      ['Hierarchy'],
+      ['Meta-note', 'Hierarchy'],
+    ],
   },
   {
     label: 'Hierarchy (leaf)',
@@ -235,7 +281,7 @@ const CONVERT_ROWS = [
     offered: [['Meta-note'], ['Problem'], [], [], ['Meta-note']],
   },
   {
-    label: 'Hierarchy (with child)',
+    label: 'Hierarchy (child: Hierarchy)',
     path: 'hierarchyChild.md',
     offered: [['Meta-note'], ['Problem'], [], [], ['Meta-note']],
   },
@@ -339,8 +385,9 @@ describe('move — why the empty cells are empty', () => {
 
 interface EmptyConvertCase extends EmptyCase {
   /** The type `planAction` is actually asked to plan — the one candidate that best demonstrates
-   * *why* the cell is empty (a rule that doesn't exist at all, or a rule that exists but strands
-   * the row's own Hierarchy child; see the two comment blocks in `EMPTY_CONVERT_CASES` below). */
+   * *why* the cell is empty (a rule that doesn't exist at all, or a rule that exists but the row's
+   * own child's type has no rule under it; see the two comment blocks in `EMPTY_CONVERT_CASES`
+   * below). */
   readonly attempt: string;
 }
 
@@ -351,77 +398,75 @@ interface EmptyConvertCase extends EmptyCase {
 //     under a Problem or Hierarchy target, neither of which has a rule to Meta-note, Category, or
 //     (for a non-self type) anything else.
 //
-// (b) A rule *does* exist, but the row's own Hierarchy child can't survive it — either genuinely
-//     orphaned ("would have no parent", when converting under a target whose own rule to the new
-//     type is itself a body link, so nothing ever gives the child a new property to resolve
-//     through), or, more surprisingly, reassigned somewhere else entirely ("would move to <X>"):
-//     converting under a *property*-typed target writes that same property name onto the
-//     converted row itself, and — since the child's own stranded key was excluded from the
-//     generic `inherit` cascade for being "its own edge property" — an *unrelated* inherit key the
-//     cascade does still recompute for it can collide with that same property name and pick up
-//     the row's own new value instead, landing the child on the target rather than its real
-//     parent.
+// (b) A rule *does* exist, but the row's own child's type has no rule at all under it —
+//     `failingChildren`'s one remaining refusal, the one-type-change-per-operation limit: that
+//     child would have to change type too, which a single conversion never does. "Hierarchy" is
+//     placement-valid under every column type in this schema, so it's used here for every
+//     "child: Meta-note"/"child: Problem" row regardless of column — the point isn't the column,
+//     it's that neither Meta-note nor Problem has a rule to the other.
 const EMPTY_CONVERT_CASES: readonly EmptyConvertCase[] = [
-  // Category (with child): converting to "Hierarchy" under Problem writes "problem" onto catChild
-  // itself, which collides with catChildKid's own (excluded-from-rewrite) recompute of "problem"
-  // — (b), "would move to problemTarget". Under Hierarchy, catChild's own new edge is a body link
-  // (no property write at all), so nothing rescues or misdirects catChildKid — (b), orphaned.
+  // Category (child: Meta-note): "Hierarchy" is placement-valid under every column, and Hierarchy
+  // has no rule to Meta-note at all — refused everywhere, naming catChildBKid.
   {
-    node: 'catChild.md',
-    parent: 'problemTarget.md',
-    attempt: 'Hierarchy',
-    reason: '"catChild" cannot become "Hierarchy": "catChildKid" would move to "problemTarget"',
-  },
-  {
-    node: 'catChild.md',
-    parent: 'hierarchyTarget.md',
-    attempt: 'Hierarchy',
-    reason: '"catChild" cannot become "Hierarchy": "catChildKid" would have no parent',
-  },
-  // Meta-note (with child): same shape, over every target whose own rule to "Hierarchy" exists.
-  {
-    node: 'metaChild.md',
+    node: 'catChildB.md',
     parent: 'catTarget.md',
     attempt: 'Hierarchy',
-    reason: '"metaChild" cannot become "Hierarchy": "metaChildKid" would move to "catTarget"',
+    reason: '"catChildBKid" cannot stay under "catChildB" as a "Hierarchy"',
   },
   {
-    node: 'metaChild.md',
-    parent: 'problemTarget.md',
-    attempt: 'Hierarchy',
-    reason: '"metaChild" cannot become "Hierarchy": "metaChildKid" would move to "problemTarget"',
-  },
-  {
-    node: 'metaChild.md',
-    parent: 'hierarchyTarget.md',
-    attempt: 'Hierarchy',
-    reason: '"metaChild" cannot become "Hierarchy": "metaChildKid" would have no parent',
-  },
-  {
-    node: 'metaChild.md',
-    parent: 'root.md',
-    attempt: 'Hierarchy',
-    reason: '"metaChild" cannot become "Hierarchy": "metaChildKid" would move to "root"',
-  },
-  // Problem (with child): same shape again.
-  {
-    node: 'problemChild.md',
+    node: 'catChildB.md',
     parent: 'metaTarget.md',
     attempt: 'Hierarchy',
-    reason:
-      '"problemChild" cannot become "Hierarchy": "problemChildKid" would move to "metaTarget"',
+    reason: '"catChildBKid" cannot stay under "catChildB" as a "Hierarchy"',
   },
   {
-    node: 'problemChild.md',
+    node: 'catChildB.md',
     parent: 'problemTarget.md',
     attempt: 'Hierarchy',
-    reason: '"problemChild" cannot become "Hierarchy": "problemChildKid" would have no parent',
+    reason: '"catChildBKid" cannot stay under "catChildB" as a "Hierarchy"',
   },
   {
-    node: 'problemChild.md',
+    node: 'catChildB.md',
     parent: 'hierarchyTarget.md',
     attempt: 'Hierarchy',
-    reason: '"problemChild" cannot become "Hierarchy": "problemChildKid" would have no parent',
+    reason: '"catChildBKid" cannot stay under "catChildB" as a "Hierarchy"',
+  },
+  {
+    node: 'catChildB.md',
+    parent: 'root.md',
+    attempt: 'Hierarchy',
+    reason: '"catChildBKid" cannot stay under "catChildB" as a "Hierarchy"',
+  },
+  // Meta-note (child: Problem): same shape — Hierarchy has no rule to Problem either.
+  {
+    node: 'metaChildB.md',
+    parent: 'catTarget.md',
+    attempt: 'Hierarchy',
+    reason: '"metaChildBKid" cannot stay under "metaChildB" as a "Hierarchy"',
+  },
+  {
+    node: 'metaChildB.md',
+    parent: 'metaTarget.md',
+    attempt: 'Hierarchy',
+    reason: '"metaChildBKid" cannot stay under "metaChildB" as a "Hierarchy"',
+  },
+  {
+    node: 'metaChildB.md',
+    parent: 'problemTarget.md',
+    attempt: 'Hierarchy',
+    reason: '"metaChildBKid" cannot stay under "metaChildB" as a "Hierarchy"',
+  },
+  {
+    node: 'metaChildB.md',
+    parent: 'hierarchyTarget.md',
+    attempt: 'Hierarchy',
+    reason: '"metaChildBKid" cannot stay under "metaChildB" as a "Hierarchy"',
+  },
+  {
+    node: 'metaChildB.md',
+    parent: 'root.md',
+    attempt: 'Hierarchy',
+    reason: '"metaChildBKid" cannot stay under "metaChildB" as a "Hierarchy"',
   },
   // Hierarchy (leaf and with-child, identically): Problem/Hierarchy targets have no rule to any
   // *other* type at all — (a) — represented here by attempting "Meta-note".
@@ -463,15 +508,18 @@ describe('convert — why the empty cells are empty', () => {
 });
 
 describe('the reported bug, reproduced directly against this fixture', () => {
-  it('Shift-dragging a Problem (with its own Hierarchy child) onto the root Category offers exactly "Meta-note"', () => {
-    expect(convertOptions(context, 'problemChild.md', 'root.md')).toStrictEqual(['Meta-note']);
+  it('Shift-dragging a Problem (with its own Hierarchy child) onto the root Category now offers both "Meta-note" and "Hierarchy" — the child\'s edge rewrites instead of blocking the conversion', () => {
+    expect(convertOptions(context, 'problemChild.md', 'root.md')).toStrictEqual([
+      'Meta-note',
+      'Hierarchy',
+    ]);
   });
 
-  it('a plain drag (no Shift) of the same Problem onto the root Category is not offered at all', () => {
+  it('a plain drag (no Shift) of the same Problem onto the root Category is still not offered at all — only a type change can carry it that far up', () => {
     expect(moveTargets(schema, structure, 'problemChild.md').has('root.md')).toBe(false);
   });
 
-  it('a bare Problem leaf (no child) offers both "Meta-note" and "Hierarchy" onto the same root — the with-child shape is what narrows it to one', () => {
+  it('a bare Problem leaf (no child) offers the same two types onto the same root — shape no longer narrows a Hierarchy-child row at all', () => {
     expect(convertOptions(context, 'problemLeaf.md', 'root.md')).toStrictEqual([
       'Meta-note',
       'Hierarchy',

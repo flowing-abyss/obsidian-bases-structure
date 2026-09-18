@@ -13,12 +13,16 @@ import {
 } from './derive.js';
 import { looseEqual } from './link-patch.js';
 import {
+  alreadyLinked,
   buildEdgeWrites,
   type EdgeWriteInputs,
   firstChangedOtherNode,
   inheritWritesFor,
   recordAllOverrides,
   recordOverride,
+  targetStillHeldByProperty,
+  textEdgeAppend,
+  textEdgeRemoval,
   textLinkReason,
 } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanEnv, PlanResult } from './plan-types.js';
@@ -78,8 +82,11 @@ function retypeParentCompat(
 }
 
 /** Rejection step 6: every primary child of N that couldn't stay a child once N becomes
- * `targetType` — a null rule, or a non-`'property'` rule that doesn't match the child's current
- * edge kind. */
+ * `targetType` — the one case a child's edge can never be rewritten into: `targetType` has no rule
+ * at all to the child's own type, meaning the child would have to change type too, and a single
+ * conversion only ever changes one note's type. A rule that exists but names a different kind
+ * (property vs. `file.links`/`file.backlinks`) is no longer a failure here — see
+ * `retypedChildWrites` for how that edge actually gets rewritten. */
 export function failingChildren(
   schema: Schema,
   structure: Structure,
@@ -92,13 +99,31 @@ export function failingChildren(
     if (childNode?.type === null || childNode === undefined) {
       continue;
     }
-    const rule = ruleBetween(schema, targetType, childNode.type);
-    const fails = rule === null || (rule.kind !== 'property' && childNode.edge?.kind !== rule.kind);
-    if (fails) {
+    if (ruleBetween(schema, targetType, childNode.type) === null) {
       failures.push(childPath);
     }
   }
   return failures;
+}
+
+/** The rejection reason for a retype/convert that would strand a direct child — named for the
+ * first child `failingChildren` finds (mirrors `adoptedChildReason`/`convertChildMismatchReason`'s
+ * own "name the first offender" style elsewhere in the planners). `null` when every child
+ * survives. Shared by `validateRetype` and `plan-convert.ts`'s `validateConvert` so both refuse
+ * this one-type-change-per-operation limit with the exact same wording. */
+export function firstFailingChildReason(
+  schema: Schema,
+  structure: Structure,
+  snapshot: Snapshot,
+  info: { readonly nNode: StructureNode; readonly node: string; readonly type: string },
+): string | null {
+  const [firstFailing] = failingChildren(schema, structure, info.nNode, info.type);
+  if (firstFailing === undefined) {
+    return null;
+  }
+  const childName = displayName(snapshot, firstFailing);
+  const nodeName = displayName(snapshot, info.node);
+  return `"${childName}" cannot stay under "${nodeName}" as a "${info.type}"`;
 }
 
 export type FolderCheck =
@@ -178,10 +203,13 @@ function validateRetype(request: RetypeRequest, action: RetypeAction): RetypeVal
       reason: textLinkReason(compat.rule.kind, snapshot, compat.parent, action.node),
     };
   }
-  const failing = failingChildren(schema, structure, nNode, action.type);
-  if (failing.length > 0) {
-    const names = failing.map((path) => displayName(snapshot, path)).join(', ');
-    return { ok: false, reason: `"${action.type}" cannot contain: ${names}` };
+  const failingReason = firstFailingChildReason(schema, structure, snapshot, {
+    nNode,
+    node: action.node,
+    type: action.type,
+  });
+  if (failingReason !== null) {
+    return { ok: false, reason: failingReason };
   }
   const folderCheck = checkRetypeFolder(env, snapshot, action.node, newType);
   if (folderCheck.kind === 'occupied') {
@@ -410,7 +438,20 @@ function buildNOwnWrites(
   ];
 }
 
-// -- Children whose edge property must move from the old key to the new one -----------------
+// -- Children whose edge to N must be rewritten for the new type's rule ----------------------
+//
+// A direct child's edge can move between *any* of the three rule kinds — property, file.links,
+// file.backlinks — in either direction, not just property-to-property (the old, narrower cascade).
+// `failingChildren` above has already refused the one case that can't be expressed this way (the
+// child's own type has no rule at all under the new type); every other combination is just a
+// question of which primitive kind owns which side of the relationship:
+//
+//   property  -> property : move the value from the old key to the new one (unchanged from before).
+//   property  -> text     : append the child's mention in whichever note the new rule's kind
+//                            requires, and clear the old key's value.
+//   text      -> property : write the new key's value, and remove the stale mention.
+//   text      -> text (same kind)      : nothing — the relationship already reads correctly.
+//   text      -> text (different kind) : move the mention from one note's body to the other.
 
 interface ChildWriteEntry {
   readonly path: string;
@@ -418,13 +459,31 @@ interface ChildWriteEntry {
 }
 
 interface ChildEdgeChange {
-  readonly oldKey: string;
-  readonly newKey: string;
+  readonly oldEdge: EdgeRule;
+  readonly newRule: EdgeRule;
 }
 
-/** Whether `childPath`'s edge property needs to move from its current key to `newType`'s rule for
- * it — `null` when the child doesn't need touching at all (no rule, a non-property edge/rule, or
- * the key hasn't actually changed). */
+interface ChildRewrite {
+  readonly entries: readonly ChildWriteEntry[];
+  readonly appends: Plan['appends'];
+  readonly bodyLinkRemovals: Plan['bodyLinkRemovals'];
+}
+
+/** Whether `oldEdge` already reads correctly as `newRule` — the same property key, or the same
+ * text kind on both sides — nothing a conversion could improve. */
+function childEdgeAlreadyCorrect(oldEdge: EdgeRule, newRule: EdgeRule): boolean {
+  if (oldEdge.kind === 'property' && newRule.kind === 'property') {
+    return oldEdge.property === newRule.property;
+  }
+  return (
+    oldEdge.kind !== 'property' && newRule.kind !== 'property' && oldEdge.kind === newRule.kind
+  );
+}
+
+/** What `childPath`'s edge to N needs to become under `newTypeName`, or `null` when nothing needs
+ * touching: the child isn't a real structure node, `newTypeName` has no rule to its type at all
+ * (`failingChildren` already refuses this case before this ever runs), or the relationship already
+ * reads correctly as-is (`childEdgeAlreadyCorrect`). */
 function childEdgeChange(
   schema: Schema,
   structure: Structure,
@@ -432,84 +491,161 @@ function childEdgeChange(
   childPath: string,
 ): ChildEdgeChange | null {
   const childNode = structure.nodes.get(childPath);
-  if (childNode?.type === null || childNode === undefined || childNode.edge?.kind !== 'property') {
+  if (childNode === undefined) {
     return null;
   }
-  const rule = ruleBetween(schema, newTypeName, childNode.type);
-  if (rule?.kind !== 'property' || childNode.edge.property === rule.property) {
+  const { type: childType, edge: oldEdge } = childNode;
+  if (childType === null || oldEdge === null) {
     return null;
   }
-  return { oldKey: childNode.edge.property, newKey: rule.property };
+  const newRule = ruleBetween(schema, newTypeName, childType);
+  if (newRule === null || childEdgeAlreadyCorrect(oldEdge, newRule)) {
+    return null;
+  }
+  return { oldEdge, newRule };
 }
 
-/** The new-key write (N added) and the old-key cleanup write (N removed) for one child whose edge
- * property is moving — the old key is always cleaned up here, even when it's also a
- * `schema.inherit` key: the generic inherit recompute (`deriveSubtreeWrites`) never touches it
- * either, since it excludes a descendant's *own* (pre-action) edge property from that recompute
- * (see `inheritKeysFor` in `derive.ts`) — so if this step skipped it too, nothing would (I3).
- *
- * Round 2 C1: the new key never held this relationship before, so the write is add-only (nothing
- * is stale, hence the empty set below) — a value already sitting in that property for an unrelated
- * reason (an untagged note, a wrong-type note, an "also in" link) survives untouched. */
-function childRewriteWrites(
+/** The write that adds N under the child's new property key — `null` when the new rule isn't
+ * `'property'`-kind, or N is already there. Round 2 C1: the new key never held this relationship
+ * before, so this is add-only (nothing is stale) — a value already sitting there for an unrelated
+ * reason survives untouched. */
+function childNewKeyWrite(
+  ctx: SubtreeContext,
+  childPath: string,
+  newRule: EdgeRule,
+  node: string,
+): KeyWrite | null {
+  if (newRule.kind !== 'property') {
+    return null;
+  }
+  const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
+  const cur = cLinks[newRule.property] ?? [];
+  const { remove, add } = edgeKeyPatch(cur, new Set(), node);
+  if (remove.length === 0 && add.length === 0) {
+    return null;
+  }
+  recordOverride(ctx, childPath, newRule.property, resultingTargets(cur, remove, add));
+  return {
+    key: newRule.property,
+    value: {
+      kind: 'links',
+      remove,
+      add,
+      list: listShape(ctx.snapshot, newRule.property, childPath),
+    },
+  };
+}
+
+/** The write that clears N from the child's old property key — `null` when the old edge wasn't
+ * `'property'`-kind, that key is also the new one, or N isn't actually in it. Always cleaned up
+ * here even when the key is also a `schema.inherit` key, since the generic inherit recompute
+ * (`deriveSubtreeWrites`) excludes a descendant's own (pre-action) edge property from its own
+ * recompute (see `inheritKeysFor` in `derive.ts`) — so if this step skipped it too, nothing would
+ * (I3). */
+function childOldKeyCleanup(
+  ctx: SubtreeContext,
+  childPath: string,
+  change: ChildEdgeChange,
+  node: string,
+): KeyWrite | null {
+  const { oldEdge, newRule } = change;
+  if (oldEdge.kind !== 'property' || oldEdge.property === newRule.property) {
+    return null;
+  }
+  const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
+  const cur = cLinks[oldEdge.property] ?? [];
+  if (!cur.includes(node)) {
+    return null;
+  }
+  recordOverride(ctx, childPath, oldEdge.property, resultingTargets(cur, [node], []));
+  return {
+    key: oldEdge.property,
+    value: {
+      kind: 'links',
+      remove: [node],
+      add: [],
+      list: listShape(ctx.snapshot, oldEdge.property, childPath),
+    },
+  };
+}
+
+/** The child's own frontmatter writes for an edge-kind change: `childNewKeyWrite` plus
+ * `childOldKeyCleanup`, whichever of the two actually apply. */
+function childPropertyWrites(
   ctx: SubtreeContext,
   childPath: string,
   change: ChildEdgeChange,
   node: string,
 ): readonly KeyWrite[] {
-  const { oldKey, newKey } = change;
-  const cLinks = ctx.snapshot.notes.get(childPath)?.propertyLinks ?? {};
-  const writes: KeyWrite[] = [];
-  const newCur = cLinks[newKey] ?? [];
-  const { remove: newRemove, add: newAdd } = edgeKeyPatch(newCur, new Set(), node);
-  if (newRemove.length > 0 || newAdd.length > 0) {
-    writes.push({
-      key: newKey,
-      value: {
-        kind: 'links',
-        remove: newRemove,
-        add: newAdd,
-        list: listShape(ctx.snapshot, newKey, childPath),
-      },
-    });
-    recordOverride(ctx, childPath, newKey, resultingTargets(newCur, newRemove, newAdd));
-  }
-  const oldCur = cLinks[oldKey] ?? [];
-  if (oldCur.includes(node)) {
-    writes.push({
-      key: oldKey,
-      value: {
-        kind: 'links',
-        remove: [node],
-        add: [],
-        list: listShape(ctx.snapshot, oldKey, childPath),
-      },
-    });
-    recordOverride(ctx, childPath, oldKey, resultingTargets(oldCur, [node], []));
-  }
-  return writes;
+  const writes = [
+    childNewKeyWrite(ctx, childPath, change.newRule, node),
+    childOldKeyCleanup(ctx, childPath, change, node),
+  ];
+  return writes.filter((write): write is KeyWrite => write !== null);
+}
+
+interface ChildTextInputs {
+  readonly snapshot: Snapshot;
+  readonly childPath: string;
+  readonly node: string;
+  readonly change: ChildEdgeChange;
+}
+
+/** The child's text-side changes for an edge-kind change: the append that establishes the new
+ * rule's mention (when the new rule is text-kind), and the removal that clears the old one (when
+ * the old edge was text-kind) — same per-kind sidedness `buildTextEdgeChanges` uses for a node's
+ * own edge, applied here to a child/N pair instead of a moved node and its new parent. Two guards
+ * keep this from ever emitting a primitive the simulator/applier would find redundant or missing:
+ * `alreadyLinked` skips the append when the target already resolves (property and text can attach
+ * the same pair at once — round 2 C1's I4 sibling for this cascade — so the text edge can already
+ * be live before this write ever runs); `targetStillHeldByProperty` skips the removal when some
+ * other property still resolves the same link, mirroring `buildTextEdgeChanges`'s own guard. */
+function childTextChanges(inputs: ChildTextInputs): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
+  const { snapshot, childPath, node, change } = inputs;
+  const { oldEdge, newRule } = change;
+  const appendTarget =
+    newRule.kind === 'property' ? null : textEdgeAppend(newRule.kind, childPath, node);
+  const appends: Plan['appends'] =
+    appendTarget !== null && !alreadyLinked(snapshot, appendTarget.path, appendTarget.target)
+      ? [appendTarget]
+      : [];
+  const removal =
+    oldEdge.kind === 'property' ? null : textEdgeRemoval(oldEdge.kind, childPath, node);
+  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
+    removal !== null && !targetStillHeldByProperty(snapshot, removal.path, removal.target)
+      ? [removal]
+      : [];
+  return { appends, bodyLinkRemovals };
 }
 
 /** `action` only needs `node`/`type` — accepts a `'retype'` action or the equivalent slice of a
- * `'convert'` one (plan-convert.ts reuses this for its own child-edge-key cascade). */
+ * `'convert'` one (plan-convert.ts reuses this for its own child-edge cascade). Every direct child
+ * whose edge needs rewriting contributes its own frontmatter writes (`entries`) and/or its own
+ * text-side append/removal — collected together so both callers can fold them straight into a
+ * `Plan` alongside N's own writes. */
 export function retypedChildWrites(
   schema: Schema,
   ctx: SubtreeContext,
   nNode: StructureNode,
   action: { readonly node: string; readonly type: string },
-): readonly ChildWriteEntry[] {
+): ChildRewrite {
   const entries: ChildWriteEntry[] = [];
+  const appends: Array<Plan['appends'][number]> = [];
+  const bodyLinkRemovals: Array<Plan['bodyLinkRemovals'][number]> = [];
   for (const childPath of nNode.children) {
     const change = childEdgeChange(schema, ctx.structure, action.type, childPath);
     if (change === null) {
       continue;
     }
-    const writes = childRewriteWrites(ctx, childPath, change, action.node);
+    const writes = childPropertyWrites(ctx, childPath, change, action.node);
     if (writes.length > 0) {
       entries.push({ path: childPath, writes });
     }
+    const text = childTextChanges({ snapshot: ctx.snapshot, childPath, node: action.node, change });
+    appends.push(...text.appends);
+    bodyLinkRemovals.push(...text.bodyLinkRemovals);
   }
-  return entries;
+  return { entries, appends, bodyLinkRemovals };
 }
 
 /** Merges two per-path write lists into one entry per path, preserving first-seen path order;
@@ -646,9 +782,9 @@ export function planRetype(
   ];
   recordAllOverrides(ctx, action.node, nWrites);
 
-  const childWrites = retypedChildWrites(schema, ctx, nNode, action);
+  const childRewrite = retypedChildWrites(schema, ctx, nNode, action);
   const subtreeWrites = deriveSubtreeWrites(ctx, oldCtx, action.node);
-  const mergedDescendantWrites = mergeWritesByPath(childWrites, subtreeWrites);
+  const mergedDescendantWrites = mergeWritesByPath(childRewrite.entries, subtreeWrites);
   const changes =
     nWrites.length > 0
       ? [{ path: action.node, writes: nWrites }, ...mergedDescendantWrites]
@@ -656,7 +792,13 @@ export function planRetype(
 
   const moves = folderTo !== null ? [{ from: action.node, to: folderTo }] : [];
   const focus = folderTo ?? action.node;
-  const plan: Plan = { creations: [], changes, appends: [], moves, bodyLinkRemovals: [] };
+  const plan: Plan = {
+    creations: [],
+    changes,
+    appends: childRewrite.appends,
+    moves,
+    bodyLinkRemovals: childRewrite.bodyLinkRemovals,
+  };
   const failure = verifyRetype({ schema, snapshot, plan, before: structure, action, nNode, focus });
   if (failure !== null) {
     return { ok: false, reason: failure };

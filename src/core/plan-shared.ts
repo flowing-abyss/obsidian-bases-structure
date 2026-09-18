@@ -59,9 +59,11 @@ export function textLinkReason(
  * `'backlinks'` writes to the parent's own body (the parent mentions the child), `'links'` writes
  * to the node's own body (the child mentions the parent) — mirrors `textLinkReason`'s ordering.
  * Keyed off the *new* rule's own kind — see `textEdgeRemoval` for the old-side counterpart, which
- * must be keyed off the *old* edge's kind instead, since the two can differ. Only `buildTextEdgeChanges`
- * calls this directly; every planner goes through that instead. */
-function textEdgeAppend(
+ * must be keyed off the *old* edge's kind instead, since the two can differ. `buildTextEdgeChanges`
+ * calls this directly for a node's own edge; `plan-retype.ts`'s direct-child edge rewrite calls it
+ * too, for the exact same per-kind sidedness over a child/parent pair instead of a moved node and
+ * its new parent. */
+export function textEdgeAppend(
   kind: 'links' | 'backlinks',
   node: string,
   newParent: string,
@@ -76,9 +78,9 @@ function textEdgeAppend(
  * the new rule's — a node's possible parent types can mix property and text-kind rules, so a move
  * can freely cross from one kind to the other; conflating the two here would either remove nothing
  * (old edge was actually `'property'`) or target a mention that was never written (old edge was
- * the other text kind). Only `buildTextEdgeChanges` calls this directly; every planner goes
- * through that instead. */
-function textEdgeRemoval(
+ * the other text kind). Exported for the same reason as `textEdgeAppend` — `plan-retype.ts`'s
+ * direct-child edge rewrite needs the identical sidedness rule over a child/parent pair. */
+export function textEdgeRemoval(
   kind: 'links' | 'backlinks',
   node: string,
   oldParent: string,
@@ -296,10 +298,26 @@ export interface TextEdgeChangeInputs {
  * `snapshot-reader.ts`'s `readNote`) can't tell that apart from a genuine body mention, so when
  * this is true `target` would stay in `links` regardless of what note text does or doesn't say —
  * matches `simulate.ts`'s own `applyBodyLinkRemovals`, which treats the same condition as a
- * no-op. */
-function targetStillHeldByProperty(snapshot: Snapshot, path: string, target: string): boolean {
+ * no-op. Exported: `plan-retype.ts`'s direct-child edge rewrite needs the identical no-op guard
+ * for a child's stale text mention. */
+export function targetStillHeldByProperty(
+  snapshot: Snapshot,
+  path: string,
+  target: string,
+): boolean {
   const propertyLinks = snapshot.notes.get(path)?.propertyLinks ?? {};
   return Object.values(propertyLinks).flat().includes(target);
+}
+
+/** Whether `path`'s resolved `links` already include `target` — true whenever *any* existing
+ * property or body mention already makes the link resolve, since `links` (`resolvedLinks`-derived)
+ * can't tell the two apart (same source of truth `targetStillHeldByProperty` reads, viewed from
+ * the append side rather than the removal side). A `file.backlinks`/`file.links` edge is resolved
+ * from `links` alone (see `structure.ts`'s candidate collection), so once `target` is already
+ * there the edge already exists — appending a second body line for it would be a redundant write,
+ * not a new relationship. Used to skip a text-edge append the plan doesn't actually need. */
+export function alreadyLinked(snapshot: Snapshot, path: string, target: string): boolean {
+  return snapshot.notes.get(path)?.links.includes(target) ?? false;
 }
 
 /** The append/removal pair establishing and clearing a text-kind (`'backlinks'`/`'links'`) edge

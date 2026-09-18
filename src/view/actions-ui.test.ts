@@ -1672,7 +1672,8 @@ describe('startConvert', () => {
     // Created directly on the vault, bypassing the harness's own frozen `visiblePaths` (I5):
     // `getInput()` (used to list `convertOptions`) still sees "x.md" as childless, so "Target"
     // lists as the sole fit; `freshInput()` (used to actually plan) sees the real child and
-    // rejects it, since "Target" has no rule that could carry a "Kid".
+    // rejects it, since "Target" has no rule at all to "Kid" — `failingChildren`'s one remaining
+    // refusal (the child would have to change type too, which a single conversion never does).
     await h.app.vault.create('kid.md', '---\ntags: [kid]\nup: "[[x]]"\n---\n');
 
     h.actions.startConvert('x.md', 'cat2.md', { x: 0, y: 0 });
@@ -1680,7 +1681,7 @@ describe('startConvert', () => {
     menu.items__[0]?.onClick__?.(new MouseEvent('click'));
 
     expect(NoticeMock.instances[0]?.message).toBe(
-      'Structure: "x" cannot become "Target": "kid" would have no parent',
+      'Structure: "kid" cannot stay under "x" as a "Target"',
     );
     expect(h.refresh).not.toHaveBeenCalled();
   });

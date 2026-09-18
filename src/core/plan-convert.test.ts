@@ -38,8 +38,10 @@ function contextOf(schema: Schema, snap: Snapshot): ConvertContext {
 
 // Category -> Meta-note or Hierarchy (both "category"). Meta-note -> Hierarchy ("meta"). Problem
 // (P's own current type) -> Hierarchy ("problem"). Hierarchy -> Hierarchy is text-only
-// (file.backlinks — the same shape as the real vault schema), so it can never be rewritten
-// automatically: converting to it strands a property-linked Hierarchy child.
+// (file.backlinks — the same shape as the real vault schema). p.md's own child (h.md, Hierarchy)
+// is attached by the property "problem" (Problem's own rule) — converting p.md to "Hierarchy"
+// rewrites that edge onto Hierarchy's own rule instead (file.backlinks): h.md gets appended to
+// p.md's body, and its stale "problem" value is cleared. This is the user's reported case.
 const schema = schemaFrom({
   types: {
     Category: { tag: 'category', children: { 'Meta-note': 'category', Hierarchy: 'category' } },
@@ -67,7 +69,7 @@ const context = contextOf(schema, snap);
 
 describe('convertOptions', () => {
   it('lists the types a problem can become under a category, keeping its Hierarchy child', () => {
-    expect(convertOptions(context, 'p.md', 'cat.md')).toEqual(['Meta-note']);
+    expect(convertOptions(context, 'p.md', 'cat.md')).toEqual(['Meta-note', 'Hierarchy']);
   });
 
   it('excludes a candidate type with no rule to the parent at all', () => {
@@ -75,8 +77,8 @@ describe('convertOptions', () => {
     expect(convertOptions(context, 'p.md', 'cat.md')).not.toContain('Category');
   });
 
-  it('leaves out a type that would orphan the branch (text-only child rule, unwritable)', () => {
-    expect(convertOptions(context, 'p.md', 'cat.md')).not.toContain('Hierarchy');
+  it('now includes a type whose only rule to the child is a different kind — the edge gets rewritten, not refused', () => {
+    expect(convertOptions(context, 'p.md', 'cat.md')).toContain('Hierarchy');
   });
 
   it('returns [] for a node missing from the structure', () => {
@@ -109,13 +111,22 @@ describe('planConvert', () => {
     expect(afterSnap.notes.get('h.md')?.propertyLinks['problem']).toBeUndefined();
   });
 
-  it('rejects a conversion the whole branch cannot survive', () => {
+  it("converts the node to Hierarchy: the child is appended to its new body and its stale property is cleared (the user's reported case)", () => {
     const result = planAction(schema, snap, convert('p.md', 'cat.md', 'Hierarchy'), noEnv);
 
-    expect(result).toStrictEqual({
-      ok: false,
-      reason: '"Problem note" cannot become "Hierarchy": "Child" would have no parent',
-    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.appends).toStrictEqual([{ path: 'p.md', target: 'h.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([]);
+    const afterSnap = applyPlan(snap, result.plan);
+    const after = buildStructure(schema, afterSnap);
+    expect(after.nodes.get('p.md')?.parent).toBe('cat.md');
+    expect(after.nodes.get('p.md')?.type).toBe('Hierarchy');
+    // The child stays the node's child — its "problem" edge is rewritten onto the body mention
+    // Hierarchy's own rule requires, instead of stranding it under the old (now-meaningless) key.
+    expect(after.nodes.get('h.md')?.parent).toBe('p.md');
+    expect(afterSnap.notes.get('h.md')?.propertyLinks['problem']).toBeUndefined();
+    expect(afterSnap.notes.get('p.md')?.links).toContain('h.md');
   });
 
   it('rejects an unknown type', () => {
@@ -146,6 +157,75 @@ describe('planConvert', () => {
     expect(result).toStrictEqual({
       ok: false,
       reason: '"Problem" cannot be placed under "cat"',
+    });
+  });
+});
+
+// The real vault schema (see CLAUDE.md / transitions.test.ts's own copy) — used here because it
+// has both a property rule (Meta-note -> Problem, "meta") and the schema's one text rule
+// (Hierarchy -> Hierarchy, file.backlinks), the two shapes a direct child's edge now rewrites
+// between in either direction.
+const realSchema = schemaFrom({
+  inherit: ['category', 'meta', 'problem'],
+  types: {
+    Category: {
+      tag: 'system/category',
+      children: { 'Meta-note': 'category', Hierarchy: 'category' },
+    },
+    'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+    Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+    Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+  },
+});
+
+describe("planConvert — a direct child's edge rewrites between any rule kind, in either direction", () => {
+  it("file.backlinks -> property (the mirror of the reported case): the child gains the property, its body mention is removed, and it stays the node's child", () => {
+    const mirrorSnap = snapshot([
+      note('meta-target.md', { basename: 'Meta target', tags: ['system/high/meta'] }),
+      note('h.md', { basename: 'H', tags: ['system/high/hierarchy'], links: ['k.md'] }),
+      note('k.md', { basename: 'K', tags: ['system/high/hierarchy'] }),
+    ]);
+
+    const result = planAction(
+      realSchema,
+      mirrorSnap,
+      convert('h.md', 'meta-target.md', 'Problem'),
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([{ path: 'h.md', target: 'k.md' }]);
+    const afterSnap = applyPlan(mirrorSnap, result.plan);
+    const after = buildStructure(realSchema, afterSnap);
+    expect(after.nodes.get('h.md')?.type).toBe('Problem');
+    expect(after.nodes.get('h.md')?.parent).toBe('meta-target.md');
+    expect(after.nodes.get('k.md')?.parent).toBe('h.md');
+    expect(afterSnap.notes.get('k.md')?.propertyLinks['problem']).toStrictEqual(['h.md']);
+  });
+
+  it('refuses a conversion that would strand a direct child of a type the new type has no rule to at all, naming that child', () => {
+    const refusalSnap = snapshot([
+      note('cat.md', { basename: 'Category target', tags: ['system/category'] }),
+      note('mn.md', { basename: 'MN', tags: ['system/high/meta'] }),
+      note('pc.md', {
+        basename: 'PC',
+        tags: ['system/high/problem'],
+        frontmatter: { meta: '[[MN]]' },
+        propertyLinks: { meta: ['mn.md'] },
+      }),
+    ]);
+
+    const result = planAction(
+      realSchema,
+      refusalSnap,
+      convert('mn.md', 'cat.md', 'Hierarchy'),
+      noEnv,
+    );
+
+    expect(result).toStrictEqual({
+      ok: false,
+      reason: '"PC" cannot stay under "MN" as a "Hierarchy"',
     });
   });
 });
