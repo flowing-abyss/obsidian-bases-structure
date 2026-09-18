@@ -8,6 +8,8 @@ import type * as ObsidianModule from 'obsidian';
 import { App, Menu, Modal, type TFile } from 'obsidian-test-mocks/obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collectDiagnostics } from '../core/diagnostics.js';
+import * as PlanConvertModule from '../core/plan-convert.js';
+import * as PlannerModule from '../core/planner.js';
 import { parseSchema, type Schema } from '../core/schema.js';
 import type { Snapshot } from '../core/snapshot.js';
 import { buildStructure } from '../core/structure.js';
@@ -354,6 +356,25 @@ function convertFiles(): Record<string, string> {
     'solo.md': '---\ntags: [solo]\n---\n',
     'leaf.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n',
     'b.md': '---\ntags: [b]\nup: "[[cat]]"\n---\n',
+  };
+}
+
+/** `Cat` accepts only its own current child type (`Leaf`) — no sibling type exists anywhere in
+ * the schema, so dropping `leaf.md` back onto its own current parent could never offer a
+ * different type: exactly the "nothing to change" no-op `explainInvalidDrop` must stay silent
+ * for, distinct from `CONVERT_SCHEMA_CONFIG`'s `cat.md` (which always has a sibling type to
+ * offer there). */
+const NOOP_CONVERT_SCHEMA_CONFIG = {
+  types: {
+    Cat: { tag: 'cat', children: { Leaf: 'up' } },
+    Leaf: { tag: 'leaf' },
+  },
+};
+
+function noopConvertFiles(): Record<string, string> {
+  return {
+    'cat.md': '---\ntags: [cat]\n---\n',
+    'leaf.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n',
   };
 }
 
@@ -1738,6 +1759,41 @@ describe('explainInvalidDrop', () => {
     expect(NoticeMock.instances[0]?.message).toBe('Structure: "b" cannot go under "solo"');
     expect(h.refresh).not.toHaveBeenCalled();
   });
+
+  it("move mode: stays silent when the drop target is already the node's current parent — nothing was attempted, so there is nothing to explain, and the planner is never even asked", () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    const planActionSpy = vi.spyOn(PlannerModule, 'planAction');
+
+    h.actions.explainInvalidDrop('meta.md', 'cat1.md', 'move');
+
+    expect(planActionSpy).not.toHaveBeenCalled();
+    expect(NoticeMock.instances).toHaveLength(0);
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it("convert mode: stays silent when the drop target is already the node's current parent and no other type could ever fit there either, without calling convertOptions", () => {
+    const h = makeHarness(noopConvertFiles(), { schemaConfig: NOOP_CONVERT_SCHEMA_CONFIG });
+    const convertOptionsSpy = vi.spyOn(PlanConvertModule, 'convertOptions');
+
+    h.actions.explainInvalidDrop('leaf.md', 'cat.md', 'convert');
+
+    expect(convertOptionsSpy).not.toHaveBeenCalled();
+    expect(NoticeMock.instances).toHaveLength(0);
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it("convert mode: still explains itself when the drop target is the current parent but a sibling type genuinely fits there (not a no-op — this is startConvert's own menu case, reached here only via a stale target set)", () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+
+    // "leaf.md" -> "cat.md" is leaf's own current parent, but Cat also accepts A/B (see
+    // CONVERT_SCHEMA_CONFIG's doc comment) — a real change is still on offer there, so this must
+    // not be swallowed by the same silence as NOOP_CONVERT_SCHEMA_CONFIG's cat.md above.
+    h.actions.explainInvalidDrop('leaf.md', 'cat.md', 'convert');
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "leaf" cannot go under "cat"');
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
 });
 
 describe('fixInherit', () => {
@@ -1863,6 +1919,25 @@ describe('startMovePicker', () => {
     expect(folderedEl.querySelector('.bases-structure-suggest-folder')?.textContent).toBe(
       'archive',
     );
+  });
+
+  it("still shows the planner's \"already under\" rejection via startMove when the chosen target is the node's own current parent — unaffected by explainInvalidDrop's new silence for the identical pair", () => {
+    const h = makeHarness(moveFiles(), { schemaConfig: MOVE_SCHEMA_CONFIG });
+    const openSpy = mockModalOpen();
+
+    h.actions.startMovePicker('meta.md');
+    const modal = openSpy.mock.contexts[0] as MoveModal;
+
+    // "cat1.md" is meta's own current parent — `moveTargets` never lists it (see the previous
+    // test), but `onChooseItem` itself doesn't filter, so this exercises exactly what choosing it
+    // would do: commit through `startMove`, which still plans and still reports the planner's own
+    // rejection, since only the drop-side explanation (`explainInvalidDrop`) was asked to stay
+    // silent for this pair — every other caller of the planner keeps its reason.
+    modal.onChooseItem('cat1.md', new MouseEvent('click'));
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe('Structure: "meta" is already under "cat1"');
+    expect(h.refresh).not.toHaveBeenCalled();
   });
 });
 

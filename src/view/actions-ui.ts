@@ -6,6 +6,7 @@
 
 import type { App, FuzzyMatch, PaneType } from 'obsidian';
 import { FuzzySuggestModal, Menu, Notice } from 'obsidian';
+import { ruleBetween } from '../core/derive.js';
 import type { Diagnostic } from '../core/diagnostics.js';
 import { convertOptions, type ConvertContext } from '../core/plan-convert.js';
 import { moveTargets } from '../core/plan-move.js';
@@ -542,13 +543,46 @@ export class StructureActions {
    * has one well-defined action to plan, so its rejection reason is shown directly; a Shift-drag
    * has no single type to plan for (that's what the menu is for), so it reuses `startConvert`'s own
    * "no type fits" wording instead of inventing new copy. Read-only — never plans/writes anything
-   * beyond the listing itself. */
+   * beyond the listing itself.
+   *
+   * `isNoopDrop` short-circuits first: a drop back onto `node`'s own current parent attempted
+   * nothing (the planner's own "already under" rejection is correct but useless to surface — see
+   * its doc comment), so it explains nothing either, rather than joining the "genuinely invalid"
+   * cases below. */
   explainInvalidDrop(node: string, parent: string, mode: DragMode): void {
+    if (this.isNoopDrop(node, parent, mode)) {
+      return;
+    }
     if (mode === 'convert') {
       this.explainInvalidConvert(node, parent);
       return;
     }
     this.explainInvalidMove(node, parent);
+  }
+
+  /** Whether dropping `node` on `parent` in `mode` could not possibly have changed anything:
+   * `parent` is already `node`'s current parent, and — in convert mode only, since a move never
+   * changes type — no *other* type even has a schema rule connecting `parent`'s type to it. That
+   * second check is a cheap structural lookup (`ruleBetween`, the same pre-filter
+   * `convertCandidateSurvives` runs first), never the full `convertOptions` simulation: it can
+   * under-detect a no-op that only a deeper check (failing children, a body-only tag, …) would
+   * catch — left to fall through to `explainInvalidConvert`'s own message, no worse than today —
+   * but never over-detects, so a drop that could genuinely still change something is never
+   * silenced by mistake. */
+  private isNoopDrop(node: string, parent: string, mode: DragMode): boolean {
+    const { schema, structure } = this.deps.getInput();
+    const nNode = structure.nodes.get(node);
+    if (nNode?.parent !== parent) {
+      return false;
+    }
+    if (mode === 'move') {
+      return true;
+    }
+    const parentType = structure.nodes.get(parent)?.type ?? null;
+    return !schema.types.some(
+      (candidate) =>
+        candidate.name !== nNode.type && ruleBetween(schema, parentType, candidate.name) !== null,
+    );
   }
 
   private explainInvalidMove(node: string, parent: string): void {
