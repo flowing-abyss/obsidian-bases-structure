@@ -46,11 +46,14 @@ export interface ActionsDeps {
   readonly refresh: () => void;
   /** I11: shows `snapshot` — the exact result of simulating the plan `commitWithOptimism` just
    * verified (`applyPlan`, never a second, independent guess) — immediately, before the real write
-   * lands. Called again with the pre-plan snapshot if the commit itself throws, undoing the
-   * prediction; a plan that fails gracefully (`commitPlan`'s own `applied: false`, already shown
-   * its own Notice) is left alone, since a partial write can leave the vault somewhere `applyPlan`
-   * never predicted at all. `StructureView` renders from the shown snapshot until the next real
-   * `onDataUpdated` clears it — real data always wins once Bases reports it. */
+   * lands. Called again with the pre-plan snapshot if the commit itself throws, or if it resolves
+   * with `transaction: null` (per `CommitOutcome`'s own doc, that means literally nothing was
+   * written, whatever `applied` says — e.g. an I5 concurrency conflict on the very first write),
+   * undoing the prediction either way. A plan that fails gracefully *after* writing something
+   * (`applied: false` with a non-null `transaction`, already shown its own Notice) is left alone,
+   * since that partial write can leave the vault somewhere `applyPlan` never predicted at all.
+   * `StructureView` renders from the shown snapshot until the next real `onDataUpdated` clears it
+   * — real data always wins once Bases reports it. */
   readonly showOptimistic: (snapshot: Snapshot) => void;
   /** I11: clears `StructureView.optimistic` without itself forcing a render — call right before
    * `refresh()` once an undo has actually reverted something (`undoLast`/`runUndoFromNotice`),
@@ -713,9 +716,12 @@ export class StructureActions {
 
   /** I11: shows the plan's simulated result (`applyPlan(snapshot, plan)`, the exact snapshot
    * `planAction` just verified against) via `showOptimistic`, then commits — reverting to
-   * `snapshot` itself if `commitPlan` throws, so a prediction nothing ever wrote never lingers.
-   * Shared by every planned action (`commitAndNotify` for move/retype, `runCommit` for create) so
-   * they can't drift on when the prediction shows or unwinds. */
+   * `snapshot` itself if `commitPlan` throws, or if it resolves with `transaction: null` (nothing
+   * was actually written, whatever `applied` says — see `CommitOutcome`), so a prediction nothing
+   * ever wrote never lingers. Left showing only when a graceful failure still wrote *something*
+   * (`applied: false` with a non-null `transaction`), since that partial write can land somewhere
+   * `applyPlan` never predicted. Shared by every planned action (`commitAndNotify` for move/retype,
+   * `runCommit` for create) so they can't drift on when the prediction shows or unwinds. */
   private async commitWithOptimism(
     snapshot: Snapshot,
     plan: Plan,
@@ -723,7 +729,15 @@ export class StructureActions {
   ): Promise<CommitOutcome> {
     this.deps.showOptimistic(applyPlan(snapshot, plan));
     try {
-      return await commitPlan(this.deps.app, this.deps.undo, { plan, label, expected: snapshot });
+      const outcome = await commitPlan(this.deps.app, this.deps.undo, {
+        plan,
+        label,
+        expected: snapshot,
+      });
+      if (outcome.transaction === null) {
+        this.deps.showOptimistic(snapshot);
+      }
+      return outcome;
     } catch (error) {
       this.deps.showOptimistic(snapshot);
       throw error;

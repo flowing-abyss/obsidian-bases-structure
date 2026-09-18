@@ -11,6 +11,7 @@ import { collectDiagnostics } from '../core/diagnostics.js';
 import { parseSchema, type Schema } from '../core/schema.js';
 import type { Snapshot } from '../core/snapshot.js';
 import { buildStructure } from '../core/structure.js';
+import type * as PlanApplierModule from '../obsidian/plan-applier.js';
 import { readSnapshot } from '../obsidian/snapshot-reader.js';
 import { UndoManager } from '../obsidian/undo-manager.js';
 import { formatUndoResult, StructureActions, type ActionsDeps } from './actions-ui.js';
@@ -37,6 +38,25 @@ const { NoticeMock } = vi.hoisted(() => {
 vi.mock('obsidian', async (importOriginal) => {
   const actual = await importOriginal<typeof ObsidianModule>();
   return { ...actual, Notice: NoticeMock };
+});
+
+/** A pass-through wrapper around the real `commitPlan`, overridable per test via a plain mutable
+ * ref rather than `vi.fn()` — `afterEach`'s `vi.restoreAllMocks()` would otherwise wipe a
+ * `vi.fn()`'s implementation back to a no-op after the first test that uses it (it was never a
+ * `vi.spyOn` on a real object, so "restore" has nothing to restore to), silently breaking every
+ * later test in this file that needs a real commit. Lets one test (finding 3) make `commitPlan`
+ * resolve however it likes — e.g. a graceful `{ applied: false, transaction: null }` — without a
+ * real concurrent-edit race, while every other test keeps exercising the genuine implementation. */
+const { commitPlanOverride } = vi.hoisted(() => ({
+  commitPlanOverride: {
+    current: null as typeof PlanApplierModule.commitPlan | null,
+  },
+}));
+vi.mock('../obsidian/plan-applier.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof PlanApplierModule>();
+  const commitPlan: typeof actual.commitPlan = (...args) =>
+    (commitPlanOverride.current ?? actual.commitPlan)(...args);
+  return { ...actual, commitPlan };
 });
 
 function schemaFrom(config: Record<string, unknown>): Schema {
@@ -367,6 +387,7 @@ function attachRendererChildren(nodeEl: HTMLElement): void {
 
 afterEach(() => {
   NoticeMock.instances.length = 0;
+  commitPlanOverride.current = null;
   vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
@@ -1936,6 +1957,26 @@ describe('optimistic rendering (I11)', () => {
     expect(optimistic.notes.has('New Sub.md')).toBe(true);
     expect(reverted.notes.has('New Sub.md')).toBe(false);
     expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
+  });
+
+  it('reverts the optimistic prediction when commitPlan resolves gracefully with nothing written (finding 3)', async () => {
+    // commitPlan's own contract (see its CommitOutcome doc): transaction === null means literally
+    // nothing was written, regardless of `applied` — exactly the shape a first-write I5
+    // concurrency conflict produces (e.g. "Fix inheritance" on a node whose very first change
+    // write hits the check: zero steps recorded, nothing written, the Notice already says the
+    // note changed while applying). `commitWithOptimism` used to only unwind its prediction when
+    // `commitPlan` *threw*; a graceful failure like this left the amber-marker-free, already-
+    // "fixed" prediction on screen even though the vault never changed and Bases never re-queries.
+    const h = makeHarness(fixInheritFiles(), { schemaConfig: FIX_INHERIT_SCHEMA_CONFIG });
+    commitPlanOverride.current = () => Promise.resolve({ applied: false, transaction: null });
+
+    await h.actions.fixInherit('bad.md');
+
+    expect(h.showOptimistic).toHaveBeenCalledTimes(2);
+    const optimistic = h.showOptimistic.mock.calls[0]?.[0] as Snapshot;
+    const reverted = h.showOptimistic.mock.calls[1]?.[0] as Snapshot;
+    expect(optimistic.notes.get('bad.md')?.frontmatter['category']).toBe('[[cat1]]');
+    expect(reverted.notes.get('bad.md')?.frontmatter['category']).toBe('[[wrong]]');
   });
 });
 
