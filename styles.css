@@ -162,6 +162,13 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   transform: translate(-50%, -50%);
 }
 
+/* Shift-drag (task 10): the ghost alone signals convert mode — an accent border, same color the
+   drop targets themselves already use, so nothing new appears on the nodes. */
+.bases-structure-drag-ghost.is-convert {
+  border-color: var(--color-accent);
+  border-width: 2px;
+}
+
 /* The "Move to…" suggest modal's folder subtext (see `StructureActions`'s `MoveSuggestModal`). */
 .bases-structure-suggest-folder {
   color: var(--text-muted);

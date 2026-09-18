@@ -762,7 +762,7 @@ describe('StructureView — actions defer their own refresh while an unrelated d
 
     // Starts the move (leaf.md -> cat2.md) via the same path a real drag-drop uses — its own
     // `commitAndNotify` is now awaiting the gated write above.
-    dragDeps.onDrop('leaf.md', 'cat2.md');
+    dragDeps.onDrop('leaf.md', 'cat2.md', 'move', new PointerEvent('pointerup'));
 
     // While that move is still in flight, the user opens an unrelated create draft and types.
     findNode(parentEl, 'cat1.md')
@@ -888,7 +888,7 @@ describe('StructureView — drag wiring', () => {
     expect(deps?.container).toBe(parentEl.querySelector('.bases-structure-body'));
   });
 
-  it('wires targetsFor to moveTargets and onDrop to StructureActions.startMove', () => {
+  it('wires targetsFor to operationTargets and onDrop (move mode) to StructureActions.startMove', () => {
     const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
     const { view } = twoParentsView();
     view.onDataUpdated();
@@ -898,10 +898,41 @@ describe('StructureView — drag wiring', () => {
       .spyOn(StructureActions.prototype, 'startMove')
       .mockImplementation(() => undefined);
 
-    expect(deps.targetsFor('leaf.md')).toStrictEqual(new Set(['cat2.md']));
-    deps.onDrop('leaf.md', 'cat2.md');
+    expect(deps.targetsFor('leaf.md', 'move')).toStrictEqual(new Set(['cat2.md']));
+    deps.onDrop('leaf.md', 'cat2.md', 'move', new PointerEvent('pointerup'));
 
     expect(startMoveSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', 'cat2.md');
+  });
+
+  it('wires onDrop (convert mode) to StructureActions.startConvert with the event position', () => {
+    const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
+    const { view } = twoParentsView();
+    view.onDataUpdated();
+    const deps = attachDragSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachDrag was not called');
+    const startConvertSpy = vi
+      .spyOn(StructureActions.prototype, 'startConvert')
+      .mockImplementation(() => undefined);
+    const event = new PointerEvent('pointerup', { clientX: 15, clientY: 25 });
+
+    deps.onDrop('leaf.md', 'cat2.md', 'convert', event);
+
+    expect(startConvertSpy).toHaveBeenCalledExactlyOnceWith('leaf.md', 'cat2.md', {
+      x: 15,
+      y: 25,
+    });
+  });
+
+  it('targetsFor(mode: "convert") only highlights parents where operationTargets finds a fitting type', () => {
+    const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
+    const { view } = twoParentsView();
+    view.onDataUpdated();
+    const deps = attachDragSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachDrag was not called');
+
+    // Under `twoParentsConfig` (Cat -> Leaf only), converting "leaf.md" itself has no other type
+    // to become, so no parent lights up in convert mode — unlike move mode's ('cat2.md').
+    expect(deps.targetsFor('leaf.md', 'convert')).toStrictEqual(new Set());
   });
 
   it('disposes the previous attachment and re-attaches when the renderer is recreated (layout switch)', () => {

@@ -4,7 +4,7 @@
 // `elementAt` — never through measured geometry.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { attachDrag, type DragDeps } from './drag.js';
+import { attachDrag, type DragDeps, type DragMode } from './drag.js';
 
 const NODE_CLASS = 'bases-structure-node';
 const POINTER_ID = 1;
@@ -32,6 +32,7 @@ function pointerEvent(
     button?: number;
     target?: EventTarget;
     pointerType?: string;
+    shiftKey?: boolean;
   } = {},
 ): PointerEvent {
   const event = new PointerEvent(type, {
@@ -40,6 +41,7 @@ function pointerEvent(
     clientY: init.y ?? 0,
     button: init.button ?? 0,
     pointerType: init.pointerType ?? 'mouse',
+    shiftKey: init.shiftKey ?? false,
     bubbles: true,
     cancelable: true,
   });
@@ -49,26 +51,44 @@ function pointerEvent(
   return event;
 }
 
+function shiftKeyEvent(type: 'keydown' | 'keyup'): KeyboardEvent {
+  return new KeyboardEvent(type, { key: 'Shift', bubbles: true });
+}
+
 interface Harness {
   readonly container: HTMLElement;
   readonly onDrop: ReturnType<typeof vi.fn>;
   readonly elementAt: ReturnType<typeof vi.fn>;
+  readonly targetsFor: ReturnType<typeof vi.fn>;
   readonly dispose: () => void;
   moveTo(x: number, y: number, hovered: Element | null): void;
   down(
     el: HTMLElement,
-    init?: { x?: number; y?: number; button?: number; pointerType?: string },
+    init?: { x?: number; y?: number; button?: number; pointerType?: string; shiftKey?: boolean },
   ): void;
+  pressShift(): void;
+  releaseShift(): void;
 }
 
-function makeHarness(targets: ReadonlySet<string> = new Set(['parent.md'])): Harness {
+interface HarnessOptions {
+  /** Overrides the default "same set regardless of mode" `targetsFor` — tests that need the
+   * highlighted set to actually differ between `'move'` and `'convert'` (the mid-drag Shift
+   * switch) provide their own. Still wrapped in `vi.fn` so every test can assert on calls. */
+  readonly targetsFor?: (path: string, mode: DragMode) => ReadonlySet<string>;
+}
+
+function makeHarness(
+  targets: ReadonlySet<string> = new Set(['parent.md']),
+  options: HarnessOptions = {},
+): Harness {
   const container = createDiv();
   document.body.appendChild(container);
   const onDrop = vi.fn();
   const elementAt = vi.fn<(x: number, y: number) => Element | null>(() => null);
+  const targetsFor = vi.fn(options.targetsFor ?? ((): ReadonlySet<string> => targets));
   const deps: DragDeps = {
     container,
-    targetsFor: () => targets,
+    targetsFor,
     onDrop,
     elementAt,
   };
@@ -77,6 +97,7 @@ function makeHarness(targets: ReadonlySet<string> = new Set(['parent.md'])): Har
     container,
     onDrop,
     elementAt,
+    targetsFor,
     dispose,
     moveTo(x: number, y: number, hovered: Element | null): void {
       elementAt.mockReturnValue(hovered);
@@ -84,6 +105,12 @@ function makeHarness(targets: ReadonlySet<string> = new Set(['parent.md'])): Har
     },
     down(el: HTMLElement, init = {}): void {
       el.dispatchEvent(pointerEvent('pointerdown', { ...init, target: el }));
+    },
+    pressShift(): void {
+      document.dispatchEvent(shiftKeyEvent('keydown'));
+    },
+    releaseShift(): void {
+      document.dispatchEvent(shiftKeyEvent('keyup'));
     },
   };
 }
@@ -163,7 +190,12 @@ describe('attachDrag — valid drop', () => {
     h.moveTo(10, 10, parent);
     document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
-    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md');
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'parent.md',
+      'move',
+      expect.any(PointerEvent),
+    );
   });
 
   it('adds is-drop-target to every valid target and is-drag-blocked to everything else once the drag starts', () => {
@@ -288,7 +320,12 @@ describe('attachDrag — abort', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
     document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
-    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md');
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'parent.md',
+      'move',
+      expect.any(PointerEvent),
+    );
   });
 
   it('a keydown before any drag has started is a no-op', () => {
@@ -326,7 +363,12 @@ describe('attachDrag — abort', () => {
     document.dispatchEvent(otherPointerCancel);
     document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
-    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md');
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'parent.md',
+      'move',
+      expect.any(PointerEvent),
+    );
   });
 });
 
@@ -442,11 +484,175 @@ describe('attachDrag — disposer', () => {
       h.moveTo(10, 10, parent);
       document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
-      expect(h.onDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md');
+      expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+        'source.md',
+        'parent.md',
+        'move',
+        expect.any(PointerEvent),
+      );
     } finally {
       delete proto.setPointerCapture;
       delete proto.releasePointerCapture;
     }
+  });
+});
+
+describe('attachDrag — Shift/convert mode', () => {
+  it('starts in move mode by default, calling targetsFor with the source path and "move"', () => {
+    const source = makeNode('source.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.appendChild(source);
+
+    h.down(source);
+
+    expect(h.targetsFor).toHaveBeenCalledExactlyOnceWith('source.md', 'move');
+  });
+
+  it('starts in convert mode when Shift is already held at pointerdown', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, null);
+
+    expect(h.targetsFor).toHaveBeenCalledExactlyOnceWith('source.md', 'convert');
+    expect(parent.classList.contains('is-drop-target')).toBe(true);
+  });
+
+  it('switches target sets and re-highlights when Shift is pressed mid-drag, and switches back on release', () => {
+    const source = makeNode('source.md');
+    const moveTarget = makeNode('move-target.md');
+    const convertTarget = makeNode('convert-target.md');
+    const h = makeHarness(new Set(), {
+      targetsFor: (_path, mode) =>
+        mode === 'convert' ? new Set(['convert-target.md']) : new Set(['move-target.md']),
+    });
+    h.container.append(source, moveTarget, convertTarget);
+    h.down(source);
+    h.moveTo(10, 10, null);
+    expect(moveTarget.classList.contains('is-drop-target')).toBe(true);
+    expect(convertTarget.classList.contains('is-drop-target')).toBe(false);
+
+    h.pressShift();
+
+    expect(h.targetsFor).toHaveBeenLastCalledWith('source.md', 'convert');
+    expect(convertTarget.classList.contains('is-drop-target')).toBe(true);
+    expect(moveTarget.classList.contains('is-drop-target')).toBe(false);
+
+    h.releaseShift();
+
+    expect(h.targetsFor).toHaveBeenLastCalledWith('source.md', 'move');
+    expect(moveTarget.classList.contains('is-drop-target')).toBe(true);
+    expect(convertTarget.classList.contains('is-drop-target')).toBe(false);
+  });
+
+  it('re-derives is-drop-hover for the currently hovered node once the mode flip makes it a valid target', () => {
+    const source = makeNode('source.md');
+    const swing = makeNode('swing.md');
+    const h = makeHarness(new Set(), {
+      targetsFor: (_path, mode) => (mode === 'convert' ? new Set(['swing.md']) : new Set()),
+    });
+    h.container.append(source, swing);
+    h.down(source);
+    h.moveTo(10, 10, swing);
+    expect(swing.classList.contains('is-drop-hover')).toBe(false);
+
+    h.pressShift();
+
+    expect(swing.classList.contains('is-drop-target')).toBe(true);
+    expect(swing.classList.contains('is-drop-hover')).toBe(true);
+  });
+
+  it('does not recompute targets for a repeated Shift keydown while already held (key repeat)', () => {
+    const source = makeNode('source.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.appendChild(source);
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, null);
+    h.targetsFor.mockClear();
+
+    h.pressShift();
+
+    expect(h.targetsFor).not.toHaveBeenCalled();
+  });
+
+  it('adds is-convert to the ghost while Shift is held and removes it on release — nothing new appears on the nodes themselves', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, null);
+
+    const ghost = document.querySelector<HTMLElement>('.bases-structure-drag-ghost');
+    expect(ghost?.classList.contains('is-convert')).toBe(true);
+    expect(parent.classList.contains('is-convert')).toBe(false);
+    expect(source.classList.contains('is-convert')).toBe(false);
+
+    h.releaseShift();
+
+    expect(ghost?.classList.contains('is-convert')).toBe(false);
+  });
+
+  it('reports the mode current at drop time to onDrop', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, parent);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: true }));
+
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'parent.md',
+      'convert',
+      expect.any(PointerEvent),
+    );
+  });
+
+  it('a Shift keydown/keyup before any drag has started is a no-op', () => {
+    makeHarness();
+    expect(() => {
+      document.dispatchEvent(shiftKeyEvent('keydown'));
+      document.dispatchEvent(shiftKeyEvent('keyup'));
+    }).not.toThrow();
+  });
+
+  it('stops listening for Shift once the drag ends, so a later press does not recompute targets', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+    h.down(source);
+    h.moveTo(10, 10, parent);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+    h.targetsFor.mockClear();
+
+    h.pressShift();
+
+    expect(h.targetsFor).not.toHaveBeenCalled();
+  });
+
+  it('stops listening for Shift once disposed mid-drag', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+    h.down(source);
+    h.moveTo(10, 10, parent);
+    h.targetsFor.mockClear();
+
+    h.dispose();
+
+    expect(() => {
+      document.dispatchEvent(shiftKeyEvent('keydown'));
+    }).not.toThrow();
+    expect(h.targetsFor).not.toHaveBeenCalled();
   });
 });
 
@@ -479,7 +685,12 @@ describe('attachDrag — pop-out window (M3)', () => {
     expect(source.classList.contains('is-dragging')).toBe(true);
     otherDoc.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
 
-    expect(onDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md');
+    expect(onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'parent.md',
+      'move',
+      expect.any(PointerEvent),
+    );
     dispose();
   });
 

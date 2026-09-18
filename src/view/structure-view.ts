@@ -15,7 +15,8 @@ import type { QueryController } from 'obsidian';
 import { BasesView, Notice } from 'obsidian';
 import type { Diagnostic } from '../core/diagnostics.js';
 import { collectDiagnostics } from '../core/diagnostics.js';
-import { moveTargets } from '../core/plan-move.js';
+import { operationTargets, type ConvertContext } from '../core/plan-convert.js';
+import type { PlanEnv } from '../core/plan-types.js';
 import type { Schema, SchemaIssue } from '../core/schema.js';
 import { parseSchema } from '../core/schema.js';
 import type { Snapshot } from '../core/snapshot.js';
@@ -416,20 +417,44 @@ export class StructureView extends BasesView {
     return this.renderer;
   }
 
+  /** `operationTargets`'s own `env` only matters for its `'convert'` half (a plain move never
+   * consults it) and only for `checkRetypeFolder`'s occupancy check — `exists`, never
+   * `defaultFolder` (see `plan-create.ts`'s the only reader of that field). A fixed `''` here is
+   * therefore honest, not a shortcut: `defaultFolder` is create-only. */
+  private convertEnv(): PlanEnv {
+    return {
+      defaultFolder: '',
+      exists: (path) => this.app.vault.getAbstractFileByPath(path) !== null,
+    };
+  }
+
   /** `targetsFor`/`onDrop` always resolve against `this.lastInput`/`this.actions` at drag time
    * (not whatever was current when `attachDrag` was called) — the same "read the latest render"
    * approach `resolveActions`'s `getInput` uses, since a single `attachDrag` call is reused across
-   * every render until the renderer itself is next recreated (see `resolveRenderer`). */
+   * every render until the renderer itself is next recreated (see `resolveRenderer`).
+   * `operationTargets` (not `moveTargets` directly) is the single source of truth for both modes
+   * (task 10) — a plain move only ever highlights where the node's *current* type fits; Shift
+   * highlights every parent where some type conversion would keep the whole branch valid. */
   private attachNodeDrag(): () => void {
     return attachDrag({
       container: this.bodyEl,
-      targetsFor: (path) => {
+      targetsFor: (path, mode) => {
         if (this.lastInput === null) {
           return new Set();
         }
-        return moveTargets(this.lastInput.schema, this.lastInput.structure, path);
+        const context: ConvertContext = {
+          schema: this.lastInput.schema,
+          structure: this.lastInput.structure,
+          snapshot: this.lastInput.snapshot,
+          env: this.convertEnv(),
+        };
+        return operationTargets(context, path, mode);
       },
-      onDrop: (node, parent) => {
+      onDrop: (node, parent, mode, event) => {
+        if (mode === 'convert') {
+          this.actions?.startConvert(node, parent, { x: event.clientX, y: event.clientY });
+          return;
+        }
         this.actions?.startMove(node, parent);
       },
     });

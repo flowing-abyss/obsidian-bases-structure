@@ -313,6 +313,30 @@ function retypeFiles(): Record<string, string> {
   };
 }
 
+/** Two parents shaped so a drop-drag-convert can land on either a "several fit" or a "single fit"
+ * case with no extra schema config per test: `cat.md` (Cat) accepts Leaf/A/B, so dropping the
+ * Leaf-typed `leaf.md` there excludes only its own current type, leaving two candidates (A, B);
+ * `solo.md` (Solo) accepts only A/B, so dropping the B-typed `b.md` there excludes B, leaving
+ * exactly one (A). */
+const CONVERT_SCHEMA_CONFIG = {
+  types: {
+    Cat: { tag: 'cat', children: { Leaf: 'up', A: 'up', B: 'up' } },
+    Solo: { tag: 'solo', children: { A: 'up', B: 'up' } },
+    Leaf: { tag: 'leaf' },
+    A: { tag: 'a' },
+    B: { tag: 'b' },
+  },
+};
+
+function convertFiles(): Record<string, string> {
+  return {
+    'cat.md': '---\ntags: [cat]\n---\n',
+    'solo.md': '---\ntags: [solo]\n---\n',
+    'leaf.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n',
+    'b.md': '---\ntags: [b]\nup: "[[cat]]"\n---\n',
+  };
+}
+
 function lastNotice(): (typeof NoticeMock.instances)[number] | undefined {
   return NoticeMock.instances[NoticeMock.instances.length - 1];
 }
@@ -1479,6 +1503,124 @@ describe('startMove', () => {
         (notice) => notice.message === 'Structure: still applying the previous change',
       ),
     ).toBe(false);
+  });
+});
+
+describe('startConvert', () => {
+  it('commits immediately when exactly one type fits, writing the new recipe and parent link, and shows an undo notice', async () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+
+    h.actions.startConvert('b.md', 'solo.md', { x: 10, y: 20 });
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    const bFile = mustFile(h.app, 'b.md');
+    const cache = h.app.metadataCache.getFileCache(bFile);
+    expect(cache?.frontmatter?.['tags']).toStrictEqual(['a']);
+    expect(cache?.frontmatter?.['up']).toBe('[[solo]]');
+    expect(h.undo.canUndo).toBe(true);
+    const notice = lastNotice();
+    const fragment = notice?.message as DocumentFragment;
+    expect(fragment.querySelector('span')?.textContent).toBe('Converted "b" to "A" under "solo"');
+  });
+
+  it('shows a menu with one item per fitting type at the drop position when several fit', () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.startConvert('leaf.md', 'cat.md', { x: 10, y: 20 });
+
+    expect(showAtPositionSpy).toHaveBeenCalledExactlyOnceWith({ x: 10, y: 20 });
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    const titles = menu.items__.map((item) => item.title__);
+    expect(titles).toHaveLength(2);
+    expect(titles).toContain('A');
+    expect(titles).toContain('B');
+  });
+
+  it('commits the type chosen from the menu', async () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+    h.actions.startConvert('leaf.md', 'cat.md', { x: 0, y: 0 });
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    const aItem = menu.items__.find((item) => item.title__ === 'A');
+    if (aItem === undefined) throw new Error('Test setup error: no "A" menu item');
+
+    aItem.onClick__?.(new MouseEvent('click'));
+
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+    const leafFile = mustFile(h.app, 'leaf.md');
+    const cache = h.app.metadataCache.getFileCache(leafFile);
+    expect(cache?.frontmatter?.['tags']).toStrictEqual(['a']);
+    expect(cache?.frontmatter?.['up']).toBe('[[cat]]');
+  });
+
+  it('shows a Notice and writes nothing when no type fits (e.g. dropping onto itself)', () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+
+    h.actions.startConvert('leaf.md', 'leaf.md', { x: 0, y: 0 });
+
+    expect(NoticeMock.instances).toHaveLength(1);
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: "leaf" has no type that fits under "leaf"',
+    );
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('ignores a second convert commit started while the first is still committing, with its own Notice (I5)', async () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+
+    h.actions.startConvert('b.md', 'solo.md', { x: 0, y: 0 });
+    const noticesBeforeSecond = NoticeMock.instances.length;
+    h.actions.startConvert('b.md', 'solo.md', { x: 0, y: 0 });
+
+    expect(NoticeMock.instances).toHaveLength(noticesBeforeSecond + 1);
+    expect(NoticeMock.instances[noticesBeforeSecond]?.message).toBe(
+      'Structure: still applying the previous change',
+    );
+    await vi.waitFor(() => {
+      expect(h.refresh).toHaveBeenCalled();
+    });
+  });
+
+  it('shows the planner rejection reason and writes nothing when the sole fit is rejected at commit time because of a child Bases has not reported yet (I5)', async () => {
+    const schemaConfig = {
+      types: {
+        Cat: { tag: 'cat', children: { Start: 'up', Target: 'up' } },
+        Start: { tag: 'start', children: { Kid: 'up' } },
+        Target: { tag: 'target' },
+        Kid: { tag: 'kid' },
+      },
+    };
+    const files = {
+      'cat1.md': '---\ntags: [cat]\n---\n',
+      'cat2.md': '---\ntags: [cat]\n---\n',
+      'x.md': '---\ntags: [start]\nup: "[[cat1]]"\n---\n',
+    };
+    const h = makeHarness(files, { schemaConfig });
+    // Created directly on the vault, bypassing the harness's own frozen `visiblePaths` (I5):
+    // `getInput()` (used to list `convertOptions`) still sees "x.md" as childless, so "Target"
+    // lists as the sole fit; `freshInput()` (used to actually plan) sees the real child and
+    // rejects it, since "Target" has no rule that could carry a "Kid".
+    await h.app.vault.create('kid.md', '---\ntags: [kid]\nup: "[[x]]"\n---\n');
+
+    h.actions.startConvert('x.md', 'cat2.md', { x: 0, y: 0 });
+
+    expect(NoticeMock.instances[0]?.message).toBe(
+      'Structure: "x" cannot become "Target": "kid" would have no parent',
+    );
+    expect(h.refresh).not.toHaveBeenCalled();
   });
 });
 

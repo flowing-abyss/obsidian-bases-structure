@@ -7,6 +7,7 @@
 import type { App, FuzzyMatch, PaneType } from 'obsidian';
 import { FuzzySuggestModal, Keymap, Menu, Notice } from 'obsidian';
 import type { Diagnostic } from '../core/diagnostics.js';
+import { convertOptions, type ConvertContext } from '../core/plan-convert.js';
 import { moveTargets } from '../core/plan-move.js';
 import { retypeOptions } from '../core/plan-retype.js';
 import type { Action, Plan, PlanEnv } from '../core/plan-types.js';
@@ -445,6 +446,59 @@ export class StructureActions {
     const name = displayName(snapshot, node);
     const label = `Move "${name}"`;
     const message = `Moved "${name}" to "${displayName(snapshot, parent)}"`;
+    this.committing = true;
+    this.commitAndNotify(snapshot, result.plan, label, message);
+  }
+
+  /** The drop-side half of the Shift-drag gesture (`drag.ts`'s `'convert'` mode): `convertOptions`
+   * lists which types `node` could become while landing under `parent`, listed against the
+   * current render's `getInput()` (same "good enough for a listing" freshness as
+   * `startMovePicker`/`startRetype`) — one option commits immediately, several open a menu at
+   * `position` (the drop point), none shows a Notice. Every commit itself re-plans against
+   * `freshInput()` via `commitConvert`, same as every other commit path (I5). */
+  startConvert(node: string, parent: string, position: { x: number; y: number }): void {
+    const { schema, snapshot, structure } = this.deps.getInput();
+    const context: ConvertContext = { schema, snapshot, structure, env: this.planEnv() };
+    const options = convertOptions(context, node, parent);
+    const name = displayName(snapshot, node);
+    if (options.length === 0) {
+      notifyError(`"${name}" has no type that fits under "${displayName(snapshot, parent)}"`);
+      return;
+    }
+    const [only] = options;
+    if (only !== undefined && options.length === 1) {
+      this.commitConvert(node, parent, only, name);
+      return;
+    }
+    const menu = new Menu();
+    for (const type of options) {
+      menu.addItem((item) => {
+        item.setTitle(type).onClick(() => {
+          this.commitConvert(node, parent, type, name);
+        });
+      });
+    }
+    menu.showAtPosition(position);
+  }
+
+  /** Plans and commits a `'convert'` action: `node` becomes `type` under `parent`, in the same
+   * transaction — mirrors `startMove`'s shape (fresh plan, notice on rejection, optimistic
+   * render, commit, undo). Plans against `freshInput()`, and is ignored while another commit is
+   * in flight. */
+  private commitConvert(node: string, parent: string, type: string, name: string): void {
+    if (this.guardBusy()) {
+      return;
+    }
+    this.clearPendingCreate();
+    const { schema, snapshot } = this.deps.freshInput();
+    const action: Action = { kind: 'convert', node, parent, type };
+    const result = planAction(schema, snapshot, action, this.planEnv());
+    if (!result.ok) {
+      notifyError(result.reason);
+      return;
+    }
+    const label = `Convert "${name}"`;
+    const message = `Converted "${name}" to "${type}" under "${displayName(snapshot, parent)}"`;
     this.committing = true;
     this.commitAndNotify(snapshot, result.plan, label, message);
   }
