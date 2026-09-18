@@ -39,7 +39,7 @@ types:
 
 1. A rule (type(`T`) → type(`N`)) exists and its property is `P` → legal edge, no diagnostic.
 2. Otherwise, if `P` is an `inherit` key and `T` is in the inherited set `N` should currently hold for `P` (the same `unionInheritedTargets` the repair uses) → legal inherited copy, no diagnostic.
-3. Otherwise, if some rule (type(`T`) → type(`N`)) exists through any property, or `P` is an `inherit` key and `N` has at least one property parent → `inherit-mismatch` as today (amber): the types are compatible, the value simply disagrees with the parent chain.
+3. Otherwise, if `P` is an `inherit` key and the inherited set `N` should hold for `P` is non-empty → `inherit-mismatch` as today (amber): the key is one the parent chain fills, the value simply disagrees. A legal parent sitting under the wrong property stays red — that is a structural mistake, not drift.
 4. Otherwise → `illegal-parent` (red), with `target: T`, `property: P` and a message naming both types, e.g. `"Meta-note" cannot be the meta of "Meta-note"`. Use the type names, not the note names, when both are typed; fall back to the note name when a side is untyped.
 
 - [ ] **Step 1: Write the failing tests**
