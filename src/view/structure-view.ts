@@ -115,6 +115,16 @@ function formatSchemaIssue(issue: SchemaIssue): string {
   return issue.key === '' ? issue.message : `${issue.key}: ${issue.message}`;
 }
 
+/** Every descendant of `path` (not including `path` itself), walking the public `children` field
+ * each `StructureNode` already carries — the same primary-parent-tree traversal the planners use
+ * for a subtree (`core/plan-shared.ts`'s `isSelfOrDescendant` walks the same tree upward, and a
+ * node's primary parent is unique, so this can't cycle or double-visit). Drives
+ * `DragDeps.descendantsOf`, so the drag gesture can mark the whole branch it would carry. */
+function collectDescendants(structure: Structure, path: string): readonly string[] {
+  const children = structure.nodes.get(path)?.children ?? [];
+  return children.flatMap((child) => [child, ...collectDescendants(structure, child)]);
+}
+
 function collectIssueLines(
   schemaIssues: readonly SchemaIssue[],
   structureIssues: readonly StructureIssue[],
@@ -449,6 +459,12 @@ export class StructureView extends BasesView {
           env: this.convertEnv(),
         };
         return operationTargets(context, path, mode);
+      },
+      descendantsOf: (path) => {
+        if (this.lastInput === null) {
+          return [];
+        }
+        return collectDescendants(this.lastInput.structure, path);
       },
       onDrop: (node, parent, mode, event) => {
         if (mode === 'convert') {

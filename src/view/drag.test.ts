@@ -60,6 +60,7 @@ interface Harness {
   readonly onDrop: ReturnType<typeof vi.fn>;
   readonly elementAt: ReturnType<typeof vi.fn>;
   readonly targetsFor: ReturnType<typeof vi.fn>;
+  readonly descendantsOf: ReturnType<typeof vi.fn>;
   readonly dispose: () => void;
   moveTo(x: number, y: number, hovered: Element | null): void;
   down(
@@ -75,6 +76,10 @@ interface HarnessOptions {
    * highlighted set to actually differ between `'move'` and `'convert'` (the mid-drag Shift
    * switch) provide their own. Still wrapped in `vi.fn` so every test can assert on calls. */
   readonly targetsFor?: (path: string, mode: DragMode) => ReadonlySet<string>;
+  /** Overrides the default "no descendants" `descendantsOf` — tests for the branch highlight
+   * (`is-dragging-branch`) provide their own. Still wrapped in `vi.fn` so every test can assert
+   * on calls. */
+  readonly descendantsOf?: (path: string) => readonly string[];
 }
 
 function makeHarness(
@@ -86,9 +91,11 @@ function makeHarness(
   const onDrop = vi.fn();
   const elementAt = vi.fn<(x: number, y: number) => Element | null>(() => null);
   const targetsFor = vi.fn(options.targetsFor ?? ((): ReadonlySet<string> => targets));
+  const descendantsOf = vi.fn(options.descendantsOf ?? ((): readonly string[] => []));
   const deps: DragDeps = {
     container,
     targetsFor,
+    descendantsOf,
     onDrop,
     elementAt,
   };
@@ -98,6 +105,7 @@ function makeHarness(
     onDrop,
     elementAt,
     targetsFor,
+    descendantsOf,
     dispose,
     moveTo(x: number, y: number, hovered: Element | null): void {
       elementAt.mockReturnValue(hovered);
@@ -656,6 +664,102 @@ describe('attachDrag — Shift/convert mode', () => {
   });
 });
 
+describe('attachDrag — branch highlight (is-dragging-branch)', () => {
+  it("marks the dragged node's descendants", () => {
+    const source = makeNode('parent.md');
+    const child = makeNode('child.md');
+    const unrelated = makeNode('unrelated.md');
+    const h = makeHarness(new Set(['parent.md']), {
+      descendantsOf: (path) => (path === 'parent.md' ? ['child.md'] : []),
+    });
+    h.container.append(source, child, unrelated);
+
+    h.down(source);
+    h.moveTo(10, 10, null);
+
+    expect(child.classList.contains('is-dragging-branch')).toBe(true);
+    expect(unrelated.classList.contains('is-dragging-branch')).toBe(false);
+  });
+
+  it('does not mark the dragged node itself with the branch class', () => {
+    const source = makeNode('parent.md');
+    const child = makeNode('child.md');
+    const h = makeHarness(new Set(['parent.md']), {
+      descendantsOf: (path) => (path === 'parent.md' ? ['child.md'] : []),
+    });
+    h.container.append(source, child);
+
+    h.down(source);
+    h.moveTo(10, 10, null);
+
+    expect(source.classList.contains('is-dragging-branch')).toBe(false);
+  });
+
+  it('clears the branch marking when the drag ends', () => {
+    const source = makeNode('parent.md');
+    const child = makeNode('child.md');
+    const target = makeNode('target.md');
+    const h = makeHarness(new Set(['target.md']), {
+      descendantsOf: (path) => (path === 'parent.md' ? ['child.md'] : []),
+    });
+    h.container.append(source, child, target);
+
+    h.down(source);
+    h.moveTo(10, 10, target);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(h.container.querySelectorAll('.is-dragging-branch')).toHaveLength(0);
+  });
+
+  it('clears the branch marking when the drag is cancelled (Escape)', () => {
+    const source = makeNode('parent.md');
+    const child = makeNode('child.md');
+    const h = makeHarness(new Set(['parent.md']), {
+      descendantsOf: (path) => (path === 'parent.md' ? ['child.md'] : []),
+    });
+    h.container.append(source, child);
+    h.down(source);
+    h.moveTo(10, 10, null);
+    expect(child.classList.contains('is-dragging-branch')).toBe(true);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(child.classList.contains('is-dragging-branch')).toBe(false);
+  });
+
+  it('clears the branch marking when disposed mid-drag (view unload)', () => {
+    const source = makeNode('parent.md');
+    const child = makeNode('child.md');
+    const h = makeHarness(new Set(['parent.md']), {
+      descendantsOf: (path) => (path === 'parent.md' ? ['child.md'] : []),
+    });
+    h.container.append(source, child);
+    h.down(source);
+    h.moveTo(10, 10, null);
+    expect(child.classList.contains('is-dragging-branch')).toBe(true);
+
+    h.dispose();
+
+    expect(child.classList.contains('is-dragging-branch')).toBe(false);
+  });
+
+  it('computes the descendant set once per gesture, not per pointer move', () => {
+    const source = makeNode('parent.md');
+    const child = makeNode('child.md');
+    const h = makeHarness(new Set(['parent.md']), {
+      descendantsOf: (path) => (path === 'parent.md' ? ['child.md'] : []),
+    });
+    h.container.append(source, child);
+
+    h.down(source);
+    h.moveTo(5, 5, null);
+    h.moveTo(10, 10, null);
+    h.moveTo(15, 15, null);
+
+    expect(h.descendantsOf).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('attachDrag — pop-out window (M3)', () => {
   it('drives pointermove/pointerup/Escape through the container’s own document, not the global one', () => {
     // A second, detached `Document` (never attached to the real `document`'s tree) standing in
@@ -676,6 +780,7 @@ describe('attachDrag — pop-out window (M3)', () => {
     const dispose = attachDrag({
       container,
       targetsFor: () => new Set(['parent.md']),
+      descendantsOf: () => [],
       onDrop,
       elementAt,
     });
@@ -700,7 +805,12 @@ describe('attachDrag — pop-out window (M3)', () => {
     const source = makeNode('source.md');
     container.appendChild(source);
     otherDoc.body.appendChild(container);
-    const dispose = attachDrag({ container, targetsFor: () => new Set(), onDrop: vi.fn() });
+    const dispose = attachDrag({
+      container,
+      targetsFor: () => new Set(),
+      descendantsOf: () => [],
+      onDrop: vi.fn(),
+    });
 
     source.dispatchEvent(pointerEvent('pointerdown', { target: source }));
     container.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 10 }));

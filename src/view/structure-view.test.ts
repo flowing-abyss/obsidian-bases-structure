@@ -194,6 +194,25 @@ describe('StructureView', () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith('[bases-structure]', expect.any(Error));
   });
 
+  it('shows a failure message built from String(error) when the render throws something other than an Error', () => {
+    const app = App.createConfigured__({ files: { 'a.md': '' } });
+    const { view, parentEl } = createView(app, [mustFile(app, 'a.md')]);
+    view.config.set('parent', 'note.parent');
+    view.config.set('layout', 'outline');
+    // Exercises errorMessage's non-Error branch (a thrown string, not a real Error) — the shape a
+    // misbehaving dependency could actually throw.
+    vi.spyOn(OutlineRenderer.prototype, 'update').mockImplementation(() => {
+      // eslint-disable-next-line no-throw-literal, @typescript-eslint/only-throw-error -- see above
+      throw 'boom string';
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    view.onDataUpdated();
+
+    const bodyEl = parentEl.querySelector('.bases-structure-body');
+    expect(bodyEl?.textContent).toBe('Structure view failed: boom string');
+  });
+
   it('shows a structure issue (type conflict) prefixed with the note basename', () => {
     const app = App.createConfigured__({
       files: { 'note.md': '---\ntags: [x, y]\n---\n' },
@@ -935,6 +954,35 @@ describe('StructureView — drag wiring', () => {
     // Under `twoParentsConfig` (Cat -> Leaf only), converting "leaf.md" itself has no other type
     // to become, so no parent lights up in convert mode — unlike move mode's ('cat2.md').
     expect(deps.targetsFor('leaf.md', 'convert')).toStrictEqual(new Set());
+  });
+
+  it('wires descendantsOf to the rendered structure, walking the whole branch below a node', () => {
+    const app = App.createConfigured__({
+      files: {
+        'cat.md': '---\ntags: [cat]\n---\n',
+        'leaf.md': '---\ntags: [leaf]\nup: "[[cat]]"\n---\n',
+        'sub.md': '---\ntags: [sub]\nup: "[[leaf]]"\n---\n',
+      },
+    });
+    const attachDragSpy = vi.spyOn(dragModule, 'attachDrag').mockReturnValue(vi.fn());
+    const { view } = createView(app, [
+      mustFile(app, 'cat.md'),
+      mustFile(app, 'leaf.md'),
+      mustFile(app, 'sub.md'),
+    ]);
+    view.config.set('types', {
+      Cat: { tag: 'cat', children: { Leaf: 'up' } },
+      Leaf: { tag: 'leaf', children: { Sub: 'up' } },
+      Sub: { tag: 'sub' },
+    });
+    view.onDataUpdated();
+    const deps = attachDragSpy.mock.calls[0]?.[0];
+    if (deps === undefined) throw new Error('attachDrag was not called');
+
+    expect(new Set(deps.descendantsOf('cat.md'))).toStrictEqual(new Set(['leaf.md', 'sub.md']));
+    expect(deps.descendantsOf('leaf.md')).toStrictEqual(['sub.md']);
+    expect(deps.descendantsOf('sub.md')).toStrictEqual([]);
+    expect(deps.descendantsOf('missing.md')).toStrictEqual([]);
   });
 
   it('disposes the previous attachment and re-attaches when the renderer is recreated (layout switch)', () => {

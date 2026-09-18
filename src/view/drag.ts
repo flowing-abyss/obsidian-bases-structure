@@ -14,6 +14,9 @@ export type DragMode = 'move' | 'convert';
 export interface DragDeps {
   readonly container: HTMLElement;
   readonly targetsFor: (path: string, mode: DragMode) => ReadonlySet<string>;
+  /** Every descendant of `path` (not including `path` itself) — drives the `is-dragging-branch`
+   * highlight that shows the whole branch is coming along with the drag. */
+  readonly descendantsOf: (path: string) => readonly string[];
   readonly onDrop: (node: string, parent: string, mode: DragMode, event: PointerEvent) => void;
   readonly elementAt?: (x: number, y: number) => Element | null;
 }
@@ -25,6 +28,7 @@ const TITLE_SELECTOR = '.bases-structure-title';
 const DRAG_THRESHOLD_PX = 4;
 const GHOST_CLASS = 'bases-structure-drag-ghost';
 const DRAGGING_CLASS = 'is-dragging';
+const DRAGGING_BRANCH_CLASS = 'is-dragging-branch';
 const DROP_TARGET_CLASS = 'is-drop-target';
 const DROP_HOVER_CLASS = 'is-drop-hover';
 const DRAG_BLOCKED_CLASS = 'is-drag-blocked';
@@ -36,6 +40,10 @@ interface DragSession {
   readonly sourcePath: string;
   mode: DragMode;
   targets: ReadonlySet<string>;
+  /** The dragged node's descendants, fixed at pointerdown (task 4's own decision: computed once
+   * per gesture, not re-derived on every pointer move — unlike `targets`, it never changes as the
+   * mode flips, since the branch that would move is the same regardless of move/convert). */
+  readonly descendants: ReadonlySet<string>;
   readonly ghostEl: HTMLElement;
   readonly startX: number;
   readonly startY: number;
@@ -117,14 +125,34 @@ function applyTargetClasses(container: HTMLElement, session: DragSession): void 
   }
 }
 
+/** Marks every rendered element of `session.descendants` — the branch that moves along with the
+ * dragged node — a one-shot pass alongside `applyStartClasses` since the set itself never changes
+ * mid-gesture (see `DragSession.descendants`), unlike `applyTargetClasses` which re-runs on every
+ * mode flip. */
+function applyBranchClasses(container: HTMLElement, session: DragSession): void {
+  for (const el of allNodeElements(container)) {
+    const path = el.getAttribute('data-path');
+    if (path !== null && session.descendants.has(path)) {
+      el.classList.add(DRAGGING_BRANCH_CLASS);
+    }
+  }
+}
+
 function applyStartClasses(container: HTMLElement, session: DragSession): void {
   session.sourceEl.classList.add(DRAGGING_CLASS);
+  applyBranchClasses(container, session);
   applyTargetClasses(container, session);
 }
 
 function clearAllClasses(container: HTMLElement): void {
   for (const el of allNodeElements(container)) {
-    el.classList.remove(DRAGGING_CLASS, DROP_TARGET_CLASS, DROP_HOVER_CLASS, DRAG_BLOCKED_CLASS);
+    el.classList.remove(
+      DRAGGING_CLASS,
+      DRAGGING_BRANCH_CLASS,
+      DROP_TARGET_CLASS,
+      DROP_HOVER_CLASS,
+      DRAG_BLOCKED_CLASS,
+    );
   }
 }
 
@@ -223,6 +251,7 @@ function makePointerDownHandler(
       sourcePath,
       mode,
       targets: deps.targetsFor(sourcePath, mode),
+      descendants: new Set(deps.descendantsOf(sourcePath)),
       ghostEl,
       startX: event.clientX,
       startY: event.clientY,

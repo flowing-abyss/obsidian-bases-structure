@@ -131,6 +131,12 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   opacity: 0.5;
 }
 
+/* The dragged node's whole branch (task 4) — same dimming as `.is-dragging`, lighter, so it reads
+   as "coming along" rather than as the thing actually being picked up. */
+.bases-structure-node.is-dragging-branch {
+  opacity: 0.75;
+}
+
 /* A solid (not dashed) accent border marks every valid drop target; the one currently under the
    pointer additionally gets a thin accent ring so it's unambiguous which target a drop would
    land on. Invalid targets (`.is-drag-blocked`) are intentionally left unstyled — only the
