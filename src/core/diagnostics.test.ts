@@ -85,6 +85,70 @@ describe('collectDiagnostics — illegal-parent', () => {
 
     expect(diagnostics).toStrictEqual([]);
   });
+
+  it('flags a meta-note whose meta points at another meta-note', () => {
+    // meta2 has `meta: [[meta1]]`; both are Meta-notes, and no rule connects a Meta-note to
+    // another Meta-note through any property — the old scoping never inspected "meta" on a
+    // Meta-note at all (it's not Meta-note's own edge property), so this went unreported.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('meta1.md', { tags: ['system/high/meta'] }),
+      note('meta2.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { meta: ['meta1.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toEqual([
+      {
+        kind: 'illegal-parent',
+        node: 'meta2.md',
+        target: 'meta1.md',
+        property: 'meta',
+        message: '"Meta-note" cannot be the meta of "Meta-note"',
+      },
+    ]);
+  });
+
+  it('keeps a legitimate inherited copy quiet', () => {
+    // A Problem under a Meta-note carries "category" copied from that meta-note — the same shape
+    // "Fix inheritance" would produce, so it must never be mistaken for an illegal edge.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('cat2.md', { tags: ['system/category'] }),
+      note('meta3.md', { tags: ['system/high/meta'], propertyLinks: { category: ['cat2.md'] } }),
+      note('prob2.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['cat2.md'], meta: ['meta3.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('flags an orphaned problem that still carries a category link', () => {
+    // A Problem with no "meta" at all — nothing to inherit "category" from — but a "category"
+    // value of its own; Category never lists Problem as a child, so this can only be illegal.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('kb.md', { tags: ['system/category'] }),
+      note('orphanProb.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['kb.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics[0]).toMatchObject({
+      kind: 'illegal-parent',
+      property: 'category',
+    });
+  });
 });
 
 describe('collectDiagnostics — broken-link', () => {
@@ -218,6 +282,42 @@ describe('collectDiagnostics — inherit-mismatch', () => {
     const diagnostics = diagnosticsFor(schema, snap);
 
     expect(diagnostics).toStrictEqual([]);
+  });
+
+  it('still reports a plain disagreement as an inherit mismatch', () => {
+    // A Hierarchy under a Problem (via "problem") whose own "category" names a note that's
+    // neither the direct-edge case (untyped, so no rule connects it to Hierarchy) nor the value
+    // the Problem's own chain would supply — a genuine drift, not a wrong-type link. "meta" is
+    // carried through untouched (matching what the Problem chain supplies) so only "category"
+    // ends up mismatched.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('rightCat.md', { tags: ['system/category'] }),
+      note('wrongCat.md'),
+      note('meta4.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { category: ['rightCat.md'] },
+      }),
+      note('prob3.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['rightCat.md'], meta: ['meta4.md'] },
+      }),
+      note('h3.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: {
+          category: ['wrongCat.md'],
+          meta: ['meta4.md'],
+          problem: ['prob3.md'],
+        },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics[0]).toMatchObject({
+      kind: 'inherit-mismatch',
+      keys: ['category'],
+    });
   });
 
   it('does not flag the root for inheritance', () => {

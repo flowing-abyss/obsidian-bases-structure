@@ -39,22 +39,6 @@ function name(ctx: DiagCtx, path: string): string {
   return displayName(ctx.snapshot, path);
 }
 
-/** Every property that could legally carry an edge into `childType` — the union, over every
- * type in the schema, of the property each uses to claim `childType` as a child. Scopes
- * `illegal-parent` to a note's own possible parent links, so a flattened `inherit` copy held
- * under some other type's edge property (e.g. a Problem's `category`, copied down from its
- * Meta-note parent) is never mistaken for an illegal edge. */
-function edgePropertiesForChild(schema: Schema, childType: string): ReadonlySet<string> {
-  const props = new Set<string>();
-  for (const type of schema.types) {
-    const rule = type.children.get(childType);
-    if (rule?.kind === 'property') {
-      props.add(rule.property);
-    }
-  }
-  return props;
-}
-
 /** Every property worth inspecting on any note: the `inherit` keys (every note in the tree
  * carries a flattened copy of these) plus every property any type uses to link to a child. */
 function relevantProperties(schema: Schema): ReadonlySet<string> {
@@ -78,15 +62,75 @@ function brokenLinkDiagnostics(ctx: DiagCtx, node: StructureNode, property: stri
   }));
 }
 
-function isIllegalParent(
+/** Branch 1 of the four-branch rule: `target` is a legal direct edge into `node` under
+ * `property` when a rule connects `target`'s type to `node`'s type and that rule is bound to
+ * exactly this property. Shares `ruleBetween`'s "untyped root" fallback with the structure
+ * builder itself — an untyped target still reads as a legal stand-in for whatever type would
+ * apply there by convention, same as an untyped host qualifies as a root. */
+function isDirectLegalEdge(
   ctx: DiagCtx,
-  nodeType: string,
+  node: StructureNode,
   property: string,
   target: string,
 ): boolean {
   const targetType = ctx.structure.nodes.get(target)?.type ?? null;
-  const rule = ruleBetween(ctx.schema, targetType, nodeType);
-  return rule?.kind !== 'property' || rule.property !== property;
+  const rule = ruleBetween(ctx.schema, targetType, node.type as string);
+  return rule?.kind === 'property' && rule.property === property;
+}
+
+/** What `node` should currently hold for an `inherit` key `property` — the same
+ * `unionInheritedTargets`/`propertyParentsOf` pairing the repair action uses, so a diagnostic and
+ * "Fix inheritance" can never disagree. Callers only reach this once `property` is confirmed to be
+ * an `inherit` key. */
+function expectedTargetsFor(
+  ctx: DiagCtx,
+  node: StructureNode,
+  property: string,
+): readonly string[] {
+  return unionInheritedTargets(ctx.subtree, propertyParentsOf(node), property);
+}
+
+/** Branches 2-4: a non-direct-edge `target` is still legal when it's a flattened inherited copy
+ * (branch 2) or `node` has a well-defined (non-empty) expected value for `property` — the types
+ * are compatible somewhere up the chain, this is just a stale disagreement (branch 3, folded into
+ * `inherit-mismatch` at the key level rather than flagged per link). Anything left over — a
+ * property outside `inherit` (a pure edge property, never a mismatch candidate), or `node` has no
+ * property parent to explain the value at all — is illegal (branch 4). The view's own root is
+ * exempt outright: nothing parents it by construction, so none of its own links are ever "wrong",
+ * the same reasoning `inheritMismatchDiagnostic` already applies via `parents.length === 0`. */
+function isIllegalTarget(
+  ctx: DiagCtx,
+  node: StructureNode,
+  property: string,
+  target: string,
+): boolean {
+  if (node.path === ctx.structure.root) {
+    return false;
+  }
+  if (isDirectLegalEdge(ctx, node, property, target)) {
+    return false;
+  }
+  if (!ctx.schema.inherit.includes(property)) {
+    return true;
+  }
+  const expected = expectedTargetsFor(ctx, node, property);
+  return !(expected.includes(target) || expected.length > 0);
+}
+
+function illegalTargetsFor(
+  ctx: DiagCtx,
+  node: StructureNode,
+  property: string,
+  targets: readonly string[],
+): readonly string[] {
+  return targets.filter((target) => isIllegalTarget(ctx, node, property, target));
+}
+
+/** Both types when the target is typed; falls back to the note's own name otherwise — matches
+ * the four-branch rule's message contract ("use type names, not note names, when both are
+ * typed"). */
+function typeLabel(ctx: DiagCtx, path: string): string {
+  return ctx.structure.nodes.get(path)?.type ?? name(ctx, path);
 }
 
 function illegalParentDiagnostics(
@@ -94,19 +138,17 @@ function illegalParentDiagnostics(
   node: StructureNode,
   property: string,
 ): Diagnostic[] {
-  if (node.type === null || !edgePropertiesForChild(ctx.schema, node.type).has(property)) {
+  if (node.type === null) {
     return [];
   }
   const targets = ctx.snapshot.notes.get(node.path)?.propertyLinks[property] ?? [];
-  return targets
-    .filter((target) => isIllegalParent(ctx, node.type as string, property, target))
-    .map((target) => ({
-      kind: 'illegal-parent' as const,
-      node: node.path,
-      target,
-      property,
-      message: `"${name(ctx, target)}" cannot be the ${property} of "${name(ctx, node.path)}"`,
-    }));
+  return illegalTargetsFor(ctx, node, property, targets).map((target) => ({
+    kind: 'illegal-parent' as const,
+    node: node.path,
+    target,
+    property,
+    message: `"${typeLabel(ctx, target)}" cannot be the ${property} of "${typeLabel(ctx, node.path)}"`,
+  }));
 }
 
 function propertyDiagnostics(ctx: DiagCtx, node: StructureNode): Diagnostic[] {
@@ -134,12 +176,17 @@ function targetsDiffer(expected: readonly string[], actual: readonly string[]): 
   return actual.some((target) => !expectedSet.has(target));
 }
 
+/** A key mismatches when what's left after setting aside its own illegal links (already reported
+ * separately, one `illegal-parent` per link) still disagrees with what `inherit` expects — an
+ * illegal link is never double-counted as a key-level mismatch too. */
 function mismatchedKeys(ctx: DiagCtx, node: StructureNode, parents: readonly string[]): string[] {
   const keys: string[] = [];
   for (const key of inheritKeysFor(ctx.schema, node)) {
     const expected = unionInheritedTargets(ctx.subtree, parents, key);
     const actual = ctx.snapshot.notes.get(node.path)?.propertyLinks[key] ?? [];
-    if (targetsDiffer(expected, actual)) {
+    const illegal = illegalTargetsFor(ctx, node, key, actual);
+    const remaining = actual.filter((target) => !illegal.includes(target));
+    if (targetsDiffer(expected, remaining)) {
       keys.push(key);
     }
   }
