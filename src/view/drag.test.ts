@@ -820,3 +820,113 @@ describe('attachDrag — pop-out window (M3)', () => {
     dispose();
   });
 });
+
+describe('attachDrag — surviving a native link drag / text selection', () => {
+  it('cancels a dragstart fired on the source mid-gesture, and the session survives to a successful drop', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+    h.down(source);
+    h.moveTo(10, 10, null);
+
+    const dragstart = new Event('dragstart', { bubbles: true, cancelable: true });
+    source.dispatchEvent(dragstart);
+    expect(dragstart.defaultPrevented).toBe(true);
+
+    h.moveTo(10, 10, parent);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'parent.md',
+      'move',
+      expect.any(PointerEvent),
+    );
+  });
+
+  it('stops cancelling dragstart once the drag has ended', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+    h.down(source);
+    h.moveTo(10, 10, parent);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    const dragstart = new Event('dragstart', { bubbles: true, cancelable: true });
+    source.dispatchEvent(dragstart);
+
+    expect(dragstart.defaultPrevented).toBe(false);
+  });
+
+  it('calls preventDefault on the pointerdown that starts a session', () => {
+    const source = makeNode('source.md');
+    makeHarness().container.appendChild(source);
+    const event = pointerEvent('pointerdown', { target: source });
+
+    source.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not call preventDefault on an ignored pointerdown (the toggle button)', () => {
+    const source = makeNode('source.md');
+    const toggle = source.createEl('button', { cls: 'bases-structure-toggle' });
+    makeHarness().container.appendChild(source);
+    const event = pointerEvent('pointerdown', { target: toggle });
+
+    toggle.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('adds is-drag-active to the container once the drag starts (not just on pointerdown)', () => {
+    const source = makeNode('source.md');
+    const h = makeHarness();
+    h.container.appendChild(source);
+
+    h.down(source);
+    expect(h.container.classList.contains('is-drag-active')).toBe(false);
+
+    h.moveTo(10, 10, null);
+    expect(h.container.classList.contains('is-drag-active')).toBe(true);
+  });
+
+  it('removes is-drag-active from the container after a normal drop', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    const h = makeHarness(new Set(['parent.md']));
+    h.container.append(source, parent);
+    h.down(source);
+    h.moveTo(10, 10, parent);
+
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(h.container.classList.contains('is-drag-active')).toBe(false);
+  });
+
+  it('removes is-drag-active from the container after Escape', () => {
+    const source = makeNode('source.md');
+    const h = makeHarness();
+    h.container.appendChild(source);
+    h.down(source);
+    h.moveTo(10, 10, null);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(h.container.classList.contains('is-drag-active')).toBe(false);
+  });
+
+  it('removes is-drag-active from the container when the disposer runs mid-drag', () => {
+    const source = makeNode('source.md');
+    const h = makeHarness();
+    h.container.appendChild(source);
+    h.down(source);
+    h.moveTo(10, 10, null);
+
+    h.dispose();
+
+    expect(h.container.classList.contains('is-drag-active')).toBe(false);
+  });
+});

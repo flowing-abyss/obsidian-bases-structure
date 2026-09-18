@@ -153,6 +153,13 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   box-shadow: 0 0 0 1px var(--color-accent);
 }
 
+/* Set on the tree's own container for the whole active gesture (`drag.ts`'s `beginDrag`/
+   `clearAllClasses`) — a drag that passes over several node titles must never leave the browser's
+   own text selection behind. */
+.bases-structure-body.is-drag-active {
+  user-select: none;
+}
+
 /* The floating chip that follows the pointer while dragging — positioned in `drag.ts` via inline
    `left`/`top`, not here. */
 .bases-structure-drag-ghost {

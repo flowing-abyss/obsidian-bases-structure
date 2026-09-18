@@ -33,6 +33,10 @@ const DROP_TARGET_CLASS = 'is-drop-target';
 const DROP_HOVER_CLASS = 'is-drop-hover';
 const DRAG_BLOCKED_CLASS = 'is-drag-blocked';
 const CONVERT_CLASS = 'is-convert';
+/** Set on `deps.container` for the whole active gesture (added in `beginDrag`, removed in
+ * `clearAllClasses`) — `styles.css`'s `user-select: none` companion, so a drag that passes over
+ * several node titles never leaves the browser's own text selection behind. */
+const DRAG_ACTIVE_CLASS = 'is-drag-active';
 
 interface DragSession {
   readonly pointerId: number;
@@ -53,6 +57,9 @@ interface DragSession {
    * called from `endSession` so a cancelled/completed gesture never leaves a listener behind
    * (each new drag would otherwise stack another pair on top of the last). */
   readonly stopModifierTracking: () => void;
+  /** Removes the session's own `dragstart` guard (see `attachDragstartGuard`) — attached in
+   * `handlePointerDown`, released in `endSession`, same lifecycle as `stopModifierTracking`. */
+  readonly stopDragstartGuard: () => void;
 }
 
 function nodeAncestor(target: EventTarget | null): HTMLElement | null {
@@ -154,6 +161,7 @@ function clearAllClasses(container: HTMLElement): void {
       DRAG_BLOCKED_CLASS,
     );
   }
+  container.classList.remove(DRAG_ACTIVE_CLASS);
 }
 
 function pastThreshold(session: DragSession, x: number, y: number): boolean {
@@ -174,6 +182,7 @@ function endSession(box: SessionBox, container: HTMLElement): void {
   }
   box.current = null;
   current.stopModifierTracking();
+  current.stopDragstartGuard();
   clearAllClasses(container);
   current.ghostEl.remove();
   safePointerCapture(current.sourceEl, current.pointerId, true);
@@ -222,6 +231,22 @@ function attachModifierTracking(doc: Document, box: SessionBox, deps: DragDeps):
   };
 }
 
+/** Cancels every `dragstart` the container sees for the life of one session — a node's title is
+ * an `a.internal-link`, which Obsidian itself makes draggable and drives with its own link-drag
+ * manager; without this, pressing and moving on it (especially with Shift held) can start
+ * Obsidian's own drag instead of ours, which `pointercancel`s our gesture and leaves the user with
+ * silence. Attached by `handlePointerDown` once a session exists, released by `endSession` —
+ * same lifecycle as `attachModifierTracking`'s Shift tracking. */
+function attachDragstartGuard(container: HTMLElement): () => void {
+  const handleDragstart = (event: Event): void => {
+    event.preventDefault();
+  };
+  container.addEventListener('dragstart', handleDragstart);
+  return () => {
+    container.removeEventListener('dragstart', handleDragstart);
+  };
+}
+
 /** `handlePointerDown` as a standalone factory (not a closure inline in `attachDrag`) purely to
  * keep `attachDrag` itself under the project's per-function line budget — behaviorally this is
  * exactly the listener `attachDrag` used to build inline. Starts a new session (in `move` or
@@ -242,6 +267,10 @@ function makePointerDownHandler(
     if (sourceEl === null || sourcePath === null) {
       return;
     }
+    // Only once a session is actually committed to starting — an ignored pointerdown (wrong
+    // button, touch, the "+"/toggle buttons, a text input) must never call this, or those targets'
+    // own default behaviour (typing, native button activation) would break.
+    event.preventDefault();
     const mode: DragMode = event.shiftKey ? 'convert' : 'move';
     const ghostEl = buildGhost(sourceEl, sourcePath);
     ghostEl.classList.toggle(CONVERT_CLASS, mode === 'convert');
@@ -258,6 +287,7 @@ function makePointerDownHandler(
       started: false,
       hoveredEl: null,
       stopModifierTracking: attachModifierTracking(doc, box, deps),
+      stopDragstartGuard: attachDragstartGuard(deps.container),
     };
   };
 }
@@ -289,6 +319,7 @@ function makePointerMoveHandler(
 function beginDrag(container: HTMLElement, current: DragSession, x: number, y: number): void {
   current.started = true;
   safePointerCapture(current.sourceEl, current.pointerId, false);
+  container.classList.add(DRAG_ACTIVE_CLASS);
   applyStartClasses(container, current);
   // M3: `container.doc` (the element's own owner document, or the global one when there isn't a
   // more specific one — see `obsidian.d.ts`'s `Node.doc`), not the bare global `document` — a drag
