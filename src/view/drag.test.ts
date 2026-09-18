@@ -696,6 +696,149 @@ describe('attachDrag — Shift/convert mode', () => {
   });
 });
 
+describe('attachDrag — drop-mode resolution (release-order flake)', () => {
+  /** `targetsFor` for a target only a conversion can accept — models the reported repro (a
+   * Hierarchy child dropped onto a Category root: valid for `'convert'`, never for `'move'`). */
+  function convertOnlyTargets(_path: string, mode: DragMode): ReadonlySet<string> {
+    return mode === 'convert' ? new Set(['target.md']) : new Set();
+  }
+
+  const orderings: ReadonlyArray<{
+    readonly label: string;
+    readonly run: (h: Harness, source: HTMLElement, target: HTMLElement) => void;
+  }> = [
+    {
+      label: 'Shift held before the drag, still held at the drop',
+      run: (h, source, target) => {
+        h.down(source, { shiftKey: true });
+        h.moveTo(10, 10, target);
+        document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: true }));
+      },
+    },
+    {
+      label: 'Shift pressed mid-drag, held at the drop',
+      run: (h, source, target) => {
+        h.down(source);
+        h.moveTo(10, 10, target);
+        h.pressShift();
+        document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: true }));
+      },
+    },
+    {
+      label: 'Shift held, released just before the mouse button',
+      run: (h, source, target) => {
+        h.down(source, { shiftKey: true });
+        h.moveTo(10, 10, target);
+        h.releaseShift();
+        document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: false }));
+      },
+    },
+    {
+      label: 'Shift pressed mid-drag, released just before the mouse button',
+      run: (h, source, target) => {
+        h.down(source);
+        h.moveTo(10, 10, target);
+        h.pressShift();
+        h.releaseShift();
+        document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: false }));
+      },
+    },
+  ];
+
+  it.each(orderings)(
+    '$label: still resolves to a convert drop on a target only conversion accepts',
+    ({ run }) => {
+      const source = makeNode('source.md');
+      const target = makeNode('target.md');
+      const h = makeHarness(new Set(), { targetsFor: convertOnlyTargets });
+      h.container.append(source, target);
+
+      run(h, source, target);
+
+      expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+        'source.md',
+        'target.md',
+        'convert',
+        expect.any(PointerEvent),
+      );
+      expect(h.onInvalidDrop).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a gesture that never held Shift, dropped on a convert-only target, still calls onInvalidDrop and never onDrop with convert', () => {
+    const source = makeNode('source.md');
+    const target = makeNode('target.md');
+    const h = makeHarness(new Set(), { targetsFor: convertOnlyTargets });
+    h.container.append(source, target);
+
+    h.down(source);
+    h.moveTo(10, 10, target);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(h.onDrop).not.toHaveBeenCalled();
+    expect(h.onInvalidDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'target.md', 'move');
+  });
+
+  it('a Shift-held gesture dropped on a target that only a plain move accepts calls onDrop with move', () => {
+    const source = makeNode('source.md');
+    const target = makeNode('target.md');
+    const h = makeHarness(new Set(), {
+      targetsFor: (_path, mode) => (mode === 'move' ? new Set(['target.md']) : new Set()),
+    });
+    h.container.append(source, target);
+
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, target);
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10, shiftKey: true }));
+
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'target.md',
+      'move',
+      expect.any(PointerEvent),
+    );
+  });
+
+  it('uses the current mode with no extra targetsFor call when the target is already valid in it', () => {
+    const source = makeNode('source.md');
+    const target = makeNode('target.md');
+    const h = makeHarness(new Set(['target.md']));
+    h.container.append(source, target);
+
+    h.down(source);
+    h.moveTo(10, 10, target);
+    h.targetsFor.mockClear();
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(h.onDrop).toHaveBeenCalledExactlyOnceWith(
+      'source.md',
+      'target.md',
+      'move',
+      expect.any(PointerEvent),
+    );
+    expect(h.targetsFor).not.toHaveBeenCalled();
+  });
+
+  it('stays silent for a no-op drop onto the current parent, even after a conversion was requested', () => {
+    const source = makeNode('source.md');
+    const parent = makeNode('parent.md');
+    // Neither mode's target set includes `parent.md` here — modelling the planner excluding a
+    // node's own current parent from both `moveTargets` and `convertTargets` (plan-move.ts), the
+    // source of today's "no-op drop stays silent" behaviour (actions-ui.ts's `isNoopDrop`) that
+    // this fallback must not disturb.
+    const h = makeHarness(new Set(), { targetsFor: () => new Set() });
+    h.container.append(source, parent);
+
+    h.down(source, { shiftKey: true });
+    h.moveTo(10, 10, parent);
+    h.releaseShift(); // the release-order flake: Shift let go just before the drop
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 10 }));
+
+    expect(h.onDrop).not.toHaveBeenCalled();
+    expect(h.onInvalidDrop).toHaveBeenCalledExactlyOnceWith('source.md', 'parent.md', 'move');
+  });
+});
+
 describe('attachDrag — branch highlight (is-dragging-branch)', () => {
   it("marks the dragged node's descendants", () => {
     const source = makeNode('parent.md');

@@ -5,9 +5,12 @@
 // module knows nothing about the structure/schema itself, only which of the two modes is active.
 // The modifier is live: `keydown`/`keyup` on the owner document flip the session's own mode and
 // recompute its target set/highlight for as long as the drag is in progress, not just at
-// pointerdown. No Obsidian imports: plain DOM, so it runs the same way inside jsdom (see
-// `DragDeps.elementAt` — jsdom has neither `document.elementFromPoint` nor real pointer capture)
-// and in a real browser.
+// pointerdown — the highlight always follows the modifier, an honest picture of what it currently
+// means. The *drop* is different: releasing Shift a moment before the mouse button (an ordering a
+// user can easily land on without intending it) must not silently demote a conversion to a move
+// that a Problem-under-Category kind of drop can't satisfy — see `resolveDropMode`. No Obsidian
+// imports: plain DOM, so it runs the same way inside jsdom (see `DragDeps.elementAt` — jsdom has
+// neither `document.elementFromPoint` nor real pointer capture) and in a real browser.
 
 export type DragMode = 'move' | 'convert';
 
@@ -48,6 +51,13 @@ interface DragSession {
   readonly sourceEl: HTMLElement;
   readonly sourcePath: string;
   mode: DragMode;
+  /** Set the moment `mode` first becomes `'convert'` (pointerdown's own `shiftKey`, or
+   * `setSessionMode` flipping it mid-drag) and never cleared for the rest of the gesture — the
+   * record that this drag was, at some point, a real conversion request. `handlePointerUp`'s
+   * `resolveDropMode` is the only reader: it's what lets a drop resolve to `'convert'` even after
+   * Shift has since been released, while still guaranteeing a gesture that never held Shift can
+   * never resolve to `'convert'` (it stays `false` for that gesture's whole life). */
+  convertRequested: boolean;
   targets: ReadonlySet<string>;
   /** The dragged node's descendants, fixed at pointerdown (task 4's own decision: computed once
    * per gesture, not re-derived on every pointer move — unlike `targets`, it never changes as the
@@ -202,6 +212,9 @@ function setSessionMode(deps: DragDeps, session: DragSession, mode: DragMode): v
     return;
   }
   session.mode = mode;
+  if (mode === 'convert') {
+    session.convertRequested = true;
+  }
   session.targets = deps.targetsFor(session.sourcePath, mode);
   session.ghostEl.classList.toggle(CONVERT_CLASS, mode === 'convert');
   if (session.started) {
@@ -284,6 +297,7 @@ function makePointerDownHandler(
       sourceEl,
       sourcePath,
       mode,
+      convertRequested: mode === 'convert',
       targets: deps.targetsFor(sourcePath, mode),
       descendants: new Set(deps.descendantsOf(sourcePath)),
       ghostEl,
@@ -351,6 +365,37 @@ function updateHover(
   }
 }
 
+/** What `handlePointerUp` actually drops as, once the pointer lands on `targetPath`: the current
+ * mode's own target set first (`session.targets` — already computed, so a target it already
+ * accepts costs no extra `deps.targetsFor` call). Only when that set doesn't have `targetPath`
+ * does this fall back — convert first, since a gesture that ever requested one
+ * (`session.convertRequested`) takes priority over the mode `keyup` happened to leave it in, then
+ * move — each checked at most once and only when `session.mode` isn't already that mode (its own
+ * target set already ruled it out). A gesture that never set `convertRequested` skips the convert
+ * fallback entirely, so a plain drag can never resolve to `'convert'`. `null` means neither mode
+ * accepts the drop — `handlePointerUp` reports it via `onInvalidDrop` with `session.mode`, exactly
+ * as before this fallback existed. */
+function resolveDropMode(
+  deps: DragDeps,
+  session: DragSession,
+  targetPath: string,
+): DragMode | null {
+  if (session.targets.has(targetPath)) {
+    return session.mode;
+  }
+  if (
+    session.convertRequested &&
+    session.mode !== 'convert' &&
+    deps.targetsFor(session.sourcePath, 'convert').has(targetPath)
+  ) {
+    return 'convert';
+  }
+  if (session.mode !== 'move' && deps.targetsFor(session.sourcePath, 'move').has(targetPath)) {
+    return 'move';
+  }
+  return null;
+}
+
 /** Attaches the whole gesture to `deps.container` and returns a disposer that removes every
  * listener it registered (on both the container and `document`) and tears down any drag still in
  * progress. */
@@ -370,7 +415,7 @@ export function attachDrag(deps: DragDeps): () => void {
     if (current?.pointerId !== event.pointerId) {
       return;
     }
-    const { started, hoveredEl, sourcePath, targets, mode } = current;
+    const { started, hoveredEl, sourcePath, mode } = current;
     endSession(box, deps.container);
     if (!started) {
       return;
@@ -381,11 +426,12 @@ export function attachDrag(deps: DragDeps): () => void {
     if (targetPath === null) {
       return;
     }
-    if (!targets.has(targetPath)) {
+    const resolvedMode = resolveDropMode(deps, current, targetPath);
+    if (resolvedMode === null) {
       deps.onInvalidDrop(sourcePath, targetPath, mode);
       return;
     }
-    deps.onDrop(sourcePath, targetPath, mode, event);
+    deps.onDrop(sourcePath, targetPath, resolvedMode, event);
   };
 
   const handlePointerCancel = (event: PointerEvent): void => {
