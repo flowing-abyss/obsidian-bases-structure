@@ -1,9 +1,11 @@
 {
-  "id": "your-id-here",
-  "name": "Your Title Here",
-  "version": "0.1.0",
-  "minAppVersion": "1.0.3",
-  "description": "Describe what this does in one sentence.",
-  "author": "Your Name",
+  "id": "bases-structure",
+  "name": "Bases Structure",
+  "version": "1.0.0",
+  "minAppVersion": "1.13.1",
+  "description": "Draw a typed note hierarchy as a Bases view, then add, move and retype notes right on the graph.",
+  "author": "flowing-abyss",
+  "authorUrl": "https://github.com/flowing-abyss",
+  "fundingUrl": "https://boosty.to/flowing-abyss/donate",
   "isDesktopOnly": false
 }

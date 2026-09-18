@@ -1,0 +1,463 @@
+// Applies a pure `Plan` (see `src/core/plan-types.ts`) to the real vault: creates notes, writes
+// frontmatter, appends backlink lines, and moves files, recording every primitive step it actually
+// completed so a failure partway through still leaves something `UndoManager` can roll back.
+// Never throws — the first failing operation stops the walk and comes back as `ApplyOutcome.error`.
+
+import type { App, TFile } from 'obsidian';
+import { getFrontMatterInfo, Notice } from 'obsidian';
+import { removeBodyLink, type BodyLinkRemoval } from '../core/body-link.js';
+import { deepEqual } from '../core/deep-equal.js';
+import type { KeyWrite, Plan } from '../core/plan-types.js';
+import { folderOf, lastSegmentBasename, type Snapshot } from '../core/snapshot.js';
+import { applyLinksWrite, applyListItemWrite, linkLine } from './link-writer.js';
+import type { UndoManager } from './undo-manager.js';
+
+export type TransactionStep =
+  | {
+      readonly kind: 'frontmatter';
+      readonly path: string;
+      readonly key: string;
+      readonly existed: boolean;
+      readonly before: unknown;
+      readonly after: unknown;
+      readonly deleted: boolean;
+    }
+  | { readonly kind: 'create'; readonly path: string; readonly content: string }
+  | { readonly kind: 'createFolder'; readonly path: string }
+  | { readonly kind: 'append'; readonly path: string; readonly text: string }
+  | { readonly kind: 'rename'; readonly from: string; readonly to: string }
+  | {
+      readonly kind: 'bodyEdit';
+      readonly path: string;
+      readonly removed: string;
+      readonly index: number;
+      /** The text immediately surrounding the cut at the time it was made — undo's only way to
+       * tell a byte offset that still points at the same seam from one a later edit shifted
+       * somewhere else entirely (e.g. mid-word); `index` alone carries no such guarantee. */
+      readonly seamBefore: string;
+      readonly seamAfter: string;
+    };
+
+export interface Transaction {
+  readonly label: string;
+  readonly steps: readonly TransactionStep[];
+}
+
+export interface ApplyOutcome {
+  readonly transaction: Transaction;
+  readonly error: unknown;
+}
+
+/** Thrown when the I5 optimistic-concurrency check finds a note has changed since the plan's
+ * snapshot was read. Its own subclass so `commitPlan` can show its `message` verbatim (round 2
+ * minor 6: the notice text is exactly `Structure: "<name>" changed while applying; nothing else
+ * was written`, not wrapped in the generic "could not apply all changes" wording every other
+ * failure gets). Not exported — only `applyChange` throws it and only `commitPlan` checks for it,
+ * both in this module. */
+class ConcurrentEditError extends Error {}
+
+/** Creates every path segment of `folderPath` that doesn't already exist, parent-first, recording
+ * a `'createFolder'` step for each one actually created — so a folder this step (a create or a
+ * move) had to make gets cleaned up on undo, not left behind as an orphan (M2). A no-op for the
+ * vault root (`''`). */
+async function ensureFolder(app: App, folderPath: string, steps: TransactionStep[]): Promise<void> {
+  if (folderPath === '') {
+    return;
+  }
+  let cumulative = '';
+  for (const segment of folderPath.split('/')) {
+    cumulative = cumulative === '' ? segment : `${cumulative}/${segment}`;
+    if (app.vault.getFolderByPath(cumulative) === null) {
+      await app.vault.createFolder(cumulative);
+      steps.push({ kind: 'createFolder', path: cumulative });
+    }
+  }
+}
+
+/** The note at `path`, or an error matching the decisions' wording — thrown, not returned, so a
+ * caller can just `await` this and let `applyPlan`'s outer `try` stop the walk. */
+function requireFile(app: App, path: string): TFile {
+  const file = app.vault.getFileByPath(path);
+  if (file === null) {
+    throw new Error(`Note not found: ${path}`);
+  }
+  return file;
+}
+
+interface WriteContext {
+  readonly sourcePath: string;
+  readonly creating: ReadonlySet<string>;
+}
+
+function applyWrite(
+  app: App,
+  frontmatter: Record<string, unknown>,
+  write: KeyWrite,
+  ctx: WriteContext,
+): void {
+  const { key, value } = write;
+  if (value === null) {
+    delete frontmatter[key];
+    return;
+  }
+  if (value.kind === 'links') {
+    applyLinksWrite(app, {
+      frontmatter,
+      key,
+      value,
+      sourcePath: ctx.sourcePath,
+      creating: ctx.creating,
+    });
+    return;
+  }
+  if (value.kind === 'listItem') {
+    applyListItemWrite(frontmatter, key, value);
+    return;
+  }
+  frontmatter[key] = value.value;
+}
+
+function renderBody(
+  app: App,
+  bodyLinks: readonly string[],
+  sourcePath: string,
+  creating: ReadonlySet<string>,
+): string {
+  if (bodyLinks.length === 0) {
+    return '';
+  }
+  return `${bodyLinks.map((target) => linkLine(app, target, sourcePath, creating)).join('\n')}\n`;
+}
+
+/** Creates the note and records its `'create'` step *immediately*, before writing frontmatter —
+ * with the note's initial (pre-frontmatter) content. If `processFrontMatter` then fails partway,
+ * the step already in `steps` still lets `UndoManager` trash the orphaned note; if it succeeds,
+ * the step is updated in place to the final content, matching what undo will actually compare
+ * against (M2 — a failing frontmatter write used to leave the created note un-undoable). */
+async function applyCreation(
+  app: App,
+  creation: Plan['creations'][number],
+  steps: TransactionStep[],
+  creating: ReadonlySet<string>,
+): Promise<void> {
+  await ensureFolder(app, folderOf(creation.path), steps);
+  const body = renderBody(app, creation.bodyLinks, creation.path, creating);
+  const file = await app.vault.create(creation.path, body);
+  const stepIndex = steps.length;
+  steps.push({ kind: 'create', path: creation.path, content: body });
+  const ctx: WriteContext = { sourcePath: creation.path, creating };
+  await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+    for (const write of creation.writes) {
+      applyWrite(app, frontmatter, write, ctx);
+    }
+  });
+  const content = await app.vault.read(file);
+  steps.splice(stepIndex, 1, { kind: 'create', path: creation.path, content });
+}
+
+interface ChangeWriteState {
+  readonly expectedFrontmatter: Readonly<Record<string, unknown>> | undefined;
+  readonly checkedKeys: Set<string>;
+}
+
+interface ChangeWriteArgs {
+  readonly app: App;
+  readonly frontmatter: Record<string, unknown>;
+  readonly write: KeyWrite;
+  readonly path: string;
+  readonly creating: ReadonlySet<string>;
+  readonly state: ChangeWriteState;
+  readonly steps: TransactionStep[];
+}
+
+/** Applies one write, first checking (once per *distinct* key) whether the note's current value
+ * still matches what the plan expected — `false` (nothing applied, nothing recorded) the moment
+ * it doesn't; a later write to the same key already checked (e.g. a retype's paired tag
+ * remove+add) is this same plan's own edit, not a concurrent one, so it's never re-checked. */
+function tryApplyChangeWrite(args: ChangeWriteArgs): boolean {
+  const { app, frontmatter, write, path, creating, state, steps } = args;
+  const { expectedFrontmatter, checkedKeys } = state;
+  if (expectedFrontmatter !== undefined && !checkedKeys.has(write.key)) {
+    checkedKeys.add(write.key);
+    if (!deepEqual(frontmatter[write.key], expectedFrontmatter[write.key])) {
+      return false;
+    }
+  }
+  const existed = write.key in frontmatter;
+  const before = structuredClone(frontmatter[write.key]);
+  const deleted = write.value === null;
+  applyWrite(app, frontmatter, write, { sourcePath: path, creating });
+  const after = deleted ? undefined : structuredClone(frontmatter[write.key]);
+  steps.push({ kind: 'frontmatter', path, key: write.key, existed, before, after, deleted });
+  return true;
+}
+
+/** Applies every write for one changed note inside a single `processFrontMatter` call, checking
+ * each touched key against `ctx.expected` (the raw frontmatter value the fresh snapshot the plan
+ * was built from saw for that key) via `tryApplyChangeWrite`. On a mismatch, stops applying *this
+ * and every later* write and throws — `applyPlan`'s outer `try` already stops the whole walk there
+ * and keeps whatever completed earlier as undoable, exactly what "nothing else was written"
+ * requires (I5).
+ *
+ * Round 2 minor 5: steps are collected into `pendingSteps`, local to this call, and only merged
+ * into the caller's `steps` *after* `processFrontMatter` returns without throwing. Computing a
+ * write's new value can itself throw (`linktextFor`, when a link target no longer exists) — and
+ * real Obsidian discards every frontmatter mutation a throwing callback made, not just the one
+ * write that failed. Pushing straight into the shared `steps` per write, as before, would leave
+ * "phantom" steps recorded for writes that never actually persisted. A conflict (the I5 check
+ * above) is different: the callback returns normally there (the loop just stops early), so
+ * whatever it already wrote genuinely persisted, and `pendingSteps` is flushed before the
+ * conflict is turned into a thrown error. */
+async function applyChange(
+  app: App,
+  change: Plan['changes'][number],
+  steps: TransactionStep[],
+  ctx: ApplyContext,
+): Promise<void> {
+  const file = requireFile(app, change.path);
+  const state: ChangeWriteState = {
+    expectedFrontmatter: ctx.expected.notes.get(change.path)?.frontmatter,
+    checkedKeys: new Set(),
+  };
+  const outcome = { conflict: false };
+  const pendingSteps: TransactionStep[] = [];
+  await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+    for (const write of change.writes) {
+      if (outcome.conflict) {
+        break;
+      }
+      const applied = tryApplyChangeWrite({
+        app,
+        frontmatter,
+        write,
+        path: change.path,
+        creating: ctx.creating,
+        state,
+        steps: pendingSteps,
+      });
+      if (!applied) {
+        outcome.conflict = true;
+      }
+    }
+  });
+  steps.push(...pendingSteps);
+  if (outcome.conflict) {
+    throw new ConcurrentEditError(
+      `"${file.basename}" changed while applying; nothing else was written`,
+    );
+  }
+}
+
+async function applyAppend(
+  app: App,
+  append: Plan['appends'][number],
+  steps: TransactionStep[],
+  creating: ReadonlySet<string>,
+): Promise<void> {
+  const file = requireFile(app, append.path);
+  let text = '';
+  await app.vault.process(file, (data: string) => {
+    const prefix = data === '' || data.endsWith('\n') ? '' : '\n';
+    text = `${prefix}${linkLine(app, append.target, append.path, creating)}\n`;
+    return data + text;
+  });
+  steps.push({ kind: 'append', path: append.path, text });
+}
+
+/** Both linktexts a body mention of `target` could be written under: the file's current rendered
+ * form (matching a link `fileToLinktext` itself would produce) and its bare basename (matching a
+ * shorter mention typed by hand). */
+function linktextsFor(app: App, target: string, sourcePath: string): readonly string[] {
+  const targetFile = requireFile(app, target);
+  return [
+    app.metadataCache.fileToLinktext(targetFile, sourcePath, true),
+    lastSegmentBasename(target),
+  ];
+}
+
+interface BodyEditCut extends BodyLinkRemoval {
+  readonly seamBefore: string;
+  readonly seamAfter: string;
+}
+
+/** How much text on each side of a cut gets remembered for undo's seam check — enough to catch a
+ * realistic edit near the removal, small enough that an unrelated change further down the same
+ * line doesn't spuriously read as a conflict. */
+const SEAM_CONTEXT = 20;
+
+/** `cut` plus the text immediately flanking it in `data` (`data`'s pre-removal state), clamped to
+ * the file's own bounds — every removal (whole-line or inline) gets the same seam context, since
+ * `index` alone gives undo no way to tell a stale-but-in-bounds offset from a genuinely intact
+ * one. */
+function withSeamContext(data: string, cut: BodyLinkRemoval): BodyEditCut {
+  const cutEnd = cut.index + cut.removed.length;
+  return {
+    ...cut,
+    seamBefore: data.slice(Math.max(0, cut.index - SEAM_CONTEXT), cut.index),
+    seamAfter: data.slice(cutEnd, cutEnd + SEAM_CONTEXT),
+  };
+}
+
+/** `cut` (computed over just `data`'s body — everything from `bodyStart`,
+ * `getFrontMatterInfo(data).contentStart`, onward) translated back to an absolute offset into the
+ * whole file, with `text` extended to include the untouched frontmatter ahead of it. Keeps the
+ * guarantee `removeBodyLink` alone can't make: a body-link removal only ever touches what the user
+ * typed as the note's body, never a wikilink that happens to sit inside YAML frontmatter. */
+function toAbsoluteCut(data: string, bodyStart: number, cut: BodyLinkRemoval): BodyLinkRemoval {
+  return {
+    text: data.slice(0, bodyStart) + cut.text,
+    removed: cut.removed,
+    index: bodyStart + cut.index,
+  };
+}
+
+async function applyBodyLinkRemoval(
+  app: App,
+  removal: Plan['bodyLinkRemovals'][number],
+  steps: TransactionStep[],
+): Promise<void> {
+  const file = requireFile(app, removal.path);
+  const linktexts = linktextsFor(app, removal.target, removal.path);
+  // A plain `let` reassigned only inside the closure below keeps TypeScript's outer-scope
+  // narrowing pinned to its initial value; a wrapper object sidesteps that (`no-unnecessary-
+  // condition`/`no-unsafe-assignment` false positives).
+  const outcome: { cut: BodyEditCut | null } = { cut: null };
+  await app.vault.process(file, (data: string) => {
+    const bodyStart = getFrontMatterInfo(data).contentStart;
+    const cut = removeBodyLink(data.slice(bodyStart), linktexts);
+    if (cut === null) {
+      outcome.cut = null;
+      return data;
+    }
+    const absolute = toAbsoluteCut(data, bodyStart, cut);
+    outcome.cut = withSeamContext(data, absolute);
+    return absolute.text;
+  });
+  if (outcome.cut === null) {
+    throw new Error(
+      `No mention of "${lastSegmentBasename(removal.target)}" found in "${file.basename}"`,
+    );
+  }
+  steps.push({
+    kind: 'bodyEdit',
+    path: removal.path,
+    removed: outcome.cut.removed,
+    index: outcome.cut.index,
+    seamBefore: outcome.cut.seamBefore,
+    seamAfter: outcome.cut.seamAfter,
+  });
+}
+
+async function applyMove(
+  app: App,
+  move: Plan['moves'][number],
+  steps: TransactionStep[],
+): Promise<void> {
+  const file = requireFile(app, move.from);
+  await ensureFolder(app, folderOf(move.to), steps);
+  await app.fileManager.renameFile(file, move.to);
+  steps.push({ kind: 'rename', from: move.from, to: move.to });
+}
+
+interface ApplyContext {
+  readonly expected: Snapshot;
+  readonly creating: ReadonlySet<string>;
+}
+
+/** Applies every part of `plan` in order (creations, changes, appends, bodyLinkRemovals, moves —
+ * matching `simulate.ts`'s own `applyPlan` exactly, so the applier never diverges from what a
+ * plan was verified against), recording one `TransactionStep` per primitive write. A
+ * `bodyLinkRemoval` runs before `moves` because `planConvert` is the only planner that can put
+ * both into the same plan, targeting the same node: its old edge's removal and its new type's
+ * folder-pinned move — so the removal must still find that node (as either the removal's own
+ * `path` or its `target`) at its pre-move location. Stops at the first failing operation and
+ * returns the steps completed so far with `error` set — `null` when everything succeeded.
+ * `expected` is the snapshot the plan was built from (the view's `freshInput()`, read immediately
+ * before planning): each change write is checked against it before being applied, so a concurrent
+ * edit to the same key aborts the rest of the plan instead of overwriting it (I5). */
+export async function applyPlan(
+  app: App,
+  plan: Plan,
+  label: string,
+  expected: Snapshot,
+): Promise<ApplyOutcome> {
+  const steps: TransactionStep[] = [];
+  const ctx: ApplyContext = {
+    expected,
+    creating: new Set(plan.creations.map((creation) => creation.path)),
+  };
+  try {
+    for (const creation of plan.creations) {
+      await applyCreation(app, creation, steps, ctx.creating);
+    }
+    for (const change of plan.changes) {
+      await applyChange(app, change, steps, ctx);
+    }
+    for (const append of plan.appends) {
+      await applyAppend(app, append, steps, ctx.creating);
+    }
+    for (const removal of plan.bodyLinkRemovals) {
+      await applyBodyLinkRemoval(app, removal, steps);
+    }
+    for (const move of plan.moves) {
+      await applyMove(app, move, steps);
+    }
+    return { transaction: { label, steps }, error: null };
+  } catch (error) {
+    return { transaction: { label, steps }, error };
+  }
+}
+
+/** A user-facing description of `error`: an `Error`'s own `message`, else its `String()` form —
+ * deliberately permissive since this is the last-resort fallback for whatever a thrown value
+ * turned out to be (`String()` never itself throws, unlike reading a property off it). */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+export interface CommitRequest {
+  readonly plan: Plan;
+  readonly label: string;
+  /** The snapshot the plan was built from — see `applyPlan`'s own doc comment. */
+  readonly expected: Snapshot;
+}
+
+export interface CommitOutcome {
+  readonly applied: boolean;
+  /** The exact `Transaction` object pushed onto `undo` — the same reference `UndoManager` holds
+   * on its stack, so a caller can pass it straight to `undo.undo(transaction)` (I1) and have the
+   * identity check actually match. `null` when the plan produced no steps at all (nothing was
+   * pushed, so nothing to undo), regardless of `applied`. */
+  readonly transaction: Transaction | null;
+}
+
+/** `applyPlan`, then the outer boundary a user-triggered structure edit needs: the transaction is
+ * pushed onto `undo` whenever it has at least one step — even a failed apply may have partially
+ * succeeded, and that partial work still needs to be reversible. On failure, logs the error and
+ * shows the user a short `Notice`. */
+export async function commitPlan(
+  app: App,
+  undo: UndoManager,
+  request: CommitRequest,
+): Promise<CommitOutcome> {
+  const { plan, label, expected } = request;
+  const outcome = await applyPlan(app, plan, label, expected);
+  const pushed = outcome.transaction.steps.length > 0;
+  if (pushed) {
+    undo.push(outcome.transaction);
+  }
+  const transaction = pushed ? outcome.transaction : null;
+  if (outcome.error === null) {
+    return { applied: true, transaction };
+  }
+  console.error('[bases-structure]', outcome.error);
+  const notice =
+    outcome.error instanceof ConcurrentEditError
+      ? `Structure: ${outcome.error.message}`
+      : `Structure: could not apply all changes. ${errorMessage(outcome.error)}`;
+  new Notice(notice);
+  return { applied: false, transaction };
+}

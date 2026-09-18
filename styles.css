@@ -5,10 +5,772 @@ prefer Obsidian's CSS custom properties over hardcoded colors, so the plugin fol
 the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interface/CSS
 */
 
-.your-id-here-example {
+.bases-structure {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   color: var(--text-normal);
+
+  /* Every icon in the view goes through `setSizedIcon` (`src/view/icon.ts`), a thin `setIcon`
+     wrapper — sizing itself doesn't need any class from that module (see the `.svg-icon`-targeting
+     rule below, U4). This variable is what those rules read; local overrides (see
+     `.bases-structure-alsoin-icon`) rescope it to shrink just their own icon.
+     Plugin-specific name (M12), not the bare `--icon-size` a redefinition here used to shadow —
+     custom properties inherit down the DOM, so a bare name risked leaking this view's own 16px
+     default onto any of Obsidian's *own* icons rendered inside it (e.g. a Menu popup anchored in
+     the view), overriding whatever size Obsidian itself expected there. */
+  --bases-structure-icon-size: 16px;
+}
+
+/* U4: sizing rules target `.svg-icon` — the class Obsidian's own `setIcon` itself puts on the
+   `<svg>` — through a selector specific enough (three plugin-scoped classes deep) to beat
+   Obsidian's own global `.svg-icon` rule without `!important`. A plain `.bases-structure-icon`
+   selector (equal or lower specificity than Obsidian's) used to lose that fight outright, leaving
+   every icon in the view at Obsidian's global 18px instead of this view's own size — the
+   misalignment reported as "icons look crooked" (toggle/add/toolbar/chip icons all sized/centred
+   differently from their 20px or 16px button box). Each icon-bearing element gets its own line so
+   a future one only has to add itself here, not re-derive the specificity trick. */
+.bases-structure .bases-structure-toggle .svg-icon,
+.bases-structure .bases-structure-add .svg-icon,
+.bases-structure .bases-structure-node-menu .svg-icon,
+.bases-structure .bases-structure-toolbar-btn .svg-icon,
+.bases-structure .bases-structure-alsoin-icon .svg-icon,
+.bases-structure .bases-structure-extras-icon .svg-icon,
+.bases-structure .bases-structure-two-way-icon .svg-icon,
+.bases-structure .bases-structure-problem .svg-icon {
+  width: var(--bases-structure-icon-size);
+  height: var(--bases-structure-icon-size);
+}
+
+.bases-structure .is-hidden {
+  display: none;
+}
+
+.bases-structure-issues {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  padding: var(--size-4-2);
+  color: var(--text-warning);
+  background-color: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.bases-structure-body {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: var(--size-4-2);
+}
+
+/* Node card — shared by the outline and graph renderers. The graph renderer additionally
+   positions it absolutely (see `.bases-structure-nodes` below); the outline renderer leaves it
+   in normal document flow inside its `<li>`. */
+
+.bases-structure-node {
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+
+  /* `max-content`, not `fit-content` — `fit-content` is `min(max-content, max(min-content,
+     available))`, and `available` still resolves against the containing-block chain
+     (`.bases-structure-nodes` → `.bases-structure-canvas` → `.bases-structure-canvas-wrap`),
+     which the graph renderer only gives an explicit size *from* this same measurement
+     (`applyCanvasSize`, called after `measureAll` in `graph-renderer.ts`'s `update()`). On the
+     very first render that chain has no width yet, so `available` is 0 and `fit-content` collapses
+     every node to its min-content (one-word-per-line) width — confirmed live via `offsetWidth`
+     instrumentation: the canvas measured 0px at measurement time on a fresh open, but a
+     stale-but-nonzero inline width left over from the *previous* render on any subsequent one,
+     which is why only the first render was ever affected. `max-content` ignores available space
+     entirely, so the node always sizes from its own content regardless of ancestor width — still
+     capped by `max-width` below. */
+  width: max-content;
+  max-width: 260px;
+  padding: 4px 8px;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+  line-height: 1.35;
+  transition:
+    background-color 100ms ease,
+    border-color 100ms ease;
+}
+
+.bases-structure-node:hover {
+  background: var(--background-primary-alt);
+  border-color: var(--background-modifier-border-hover);
+}
+
+/* No accent fill, no extra badge — only a subtler border, so the root reads as "this one matters"
+   without looking like a different kind of thing. The title's own font-weight change is declared
+   further down, after `.bases-structure-title`'s base rules (see the note there). */
+.bases-structure-node.is-root {
+  border-color: var(--background-modifier-border-hover);
+}
+
+/* Orphans (no parent) get a quieter outline and muted title text — no label, no badge. */
+.bases-structure-node.is-orphan {
+  border-style: dashed;
+}
+
+/* The keyboard's roving-focus active node (task 16, see `src/view/keyboard.ts`) — a focus ring on
+   the node itself, not the container (nothing here sets `outline`/`box-shadow` on
+   `.bases-structure-body`). Its hover-only affordances ("+"/toggle) are also made visible below,
+   alongside the existing hover/focus-within rules, so a keyboard user can see the "+" button
+   without needing a mouse over the node too. */
+.bases-structure-node.is-active {
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* Drag-to-move (see `src/view/drag.ts`): the dragged source, its valid drop targets, the target
+   currently under the pointer, and everything else — applied together while a drag is in
+   progress, always fully cleaned up on drop/Escape/pointercancel. */
+.bases-structure-node.is-dragging {
+  opacity: 0.5;
+}
+
+/* The dragged node's whole branch (task 4) — same dimming as `.is-dragging`, lighter, so it reads
+   as "coming along" rather than as the thing actually being picked up. */
+.bases-structure-node.is-dragging-branch {
+  opacity: 0.75;
+}
+
+/* A solid (not dashed) accent border marks every valid drop target; the one currently under the
+   pointer additionally gets a thin accent ring so it's unambiguous which target a drop would
+   land on. Invalid targets (`.is-drag-blocked`) are intentionally left unstyled — only the
+   dragged node itself dims. */
+.bases-structure-node.is-drop-target {
+  border-color: var(--color-accent);
+  border-style: solid;
+}
+
+.bases-structure-node.is-drop-hover {
+  background-color: var(--background-modifier-hover);
+  border-color: var(--color-accent);
+  border-style: solid;
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+/* Set on the tree's own container for the whole active gesture (`drag.ts`'s `beginDrag`/
+   `clearAllClasses`) — a drag that passes over several node titles must never leave the browser's
+   own text selection behind. */
+.bases-structure-body.is-drag-active {
+  user-select: none;
+}
+
+/* The floating chip that follows the pointer while dragging — positioned in `drag.ts` via inline
+   `left`/`top`, not here. */
+.bases-structure-drag-ghost {
+  position: fixed;
+  z-index: 100;
+  padding: var(--size-2-1) var(--size-2-2);
+  color: var(--text-normal);
+  pointer-events: none;
   background-color: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
-  padding: var(--size-4-2);
+  box-shadow: var(--shadow-s);
+  transform: translate(-50%, -50%);
+}
+
+/* Shift-drag (task 10): the ghost alone signals convert mode — an accent border, same color the
+   drop targets themselves already use, so nothing new appears on the nodes. */
+.bases-structure-drag-ghost.is-convert {
+  border-color: var(--color-accent);
+  border-width: 2px;
+}
+
+/* The "Move to…" suggest modal's folder subtext (see `StructureActions`'s `MoveSuggestModal`). */
+.bases-structure-suggest-folder {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+/* Applied for one render right after a successful create (see `RenderInput.focusPath`); the
+   outline fades to transparent over its own duration rather than being removed by a timer. */
+.bases-structure-node.is-new {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  animation: bases-structure-fade-highlight 1.5s ease-out forwards;
+}
+
+@keyframes bases-structure-fade-highlight {
+  from {
+    outline-color: var(--color-accent);
+  }
+
+  to {
+    outline-color: transparent;
+  }
+}
+
+.bases-structure-title {
+  flex: 1 1 auto;
+
+  /* Flex items default to `min-width: auto`, and combined with `overflow-wrap: break-word` that
+     resolves to a near-zero automatic minimum — the browser then happily shrinks the title down
+     to a one-character column instead of wrapping at word boundaries. Pinning `min-width: 0`
+     forces wrapping to respect the node's actual (measured) width instead. */
+  min-width: 0;
+
+  /* No line-clamp/ellipsis: cutting a title short (or gluing "…" onto it) can leave it unclear
+     what the note actually is, so every node — graph or outline — always shows its full title.
+     `overflow-wrap: break-word` only kicks in as a last resort, splitting a single word that's
+     still wider than the node's own max-width on its own line; ordinary text keeps wrapping at
+     word boundaries, never mid-word. A long title now simply makes its own node taller instead of
+     clipping — `layoutTree`/`layoutTreeVertical` already measure each node's real height and space
+     siblings/edges from that (see `graph-renderer.ts`'s `measureAll`), so this needs no layout
+     changes, just room to grow. */
+  overflow-wrap: break-word;
+  color: var(--text-normal);
+  text-decoration: none;
+}
+
+.bases-structure-title:hover {
+  text-decoration: underline;
+}
+
+.bases-structure-title:focus-visible {
+  border-radius: var(--radius-s);
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Root/orphan title treatment — placed after the base `.bases-structure-title` rules above so
+   ascending specificity order holds (`.bases-structure-node.is-root .bases-structure-title` is
+   more specific than a plain `.bases-structure-title:hover`/`:focus-visible`). `.is-root`/
+   `.is-orphan` themselves (border colour/style) are set on `.bases-structure-node` further up;
+   only the title's own `font-weight`/`color` has to target `.bases-structure-title` directly,
+   since it's an `<a class="internal-link">` with its own explicit styling that wins over
+   anything set only on the ancestor. */
+.bases-structure-node.is-root .bases-structure-title {
+  font-weight: var(--font-semibold);
+}
+
+.bases-structure-node.is-orphan .bases-structure-title {
+  color: var(--text-muted);
+}
+
+.bases-structure-alsoin {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  margin-top: var(--size-2-1);
+  color: var(--text-faint);
+  font-size: var(--font-smallest);
+}
+
+.bases-structure-alsoin-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+
+  --bases-structure-icon-size: 10px;
+}
+
+/* I8 (outline only — the graph draws these as dashed edges instead, see `graph-renderer.ts`'s
+   `drawExtraEdge`): a node's *extra* candidate parents, same icon-led chip shape as `.bases-structure-alsoin`
+   above — see `addExtrasChip`'s own doc comment for why this one's text carries an "also under …"
+   prefix the alsoIn chip doesn't. */
+.bases-structure-extras {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  margin-top: var(--size-2-1);
+  color: var(--text-faint);
+  font-size: var(--font-smallest);
+}
+
+.bases-structure-extras-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+
+  --bases-structure-icon-size: 10px;
+}
+
+/* I8 (outline only — the graph marks a two-way edge with arrowheads on both ends instead, see
+   `graph-renderer.ts`'s `TREE_ARROW_MARKER_URL`): a small icon just before the title. */
+.bases-structure-two-way-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-right: var(--size-2-1);
+  color: var(--text-faint);
+
+  --bases-structure-icon-size: 10px;
+}
+
+/* Task 5: always on. Same icon-led shape as `.bases-structure-two-way-icon` (small,
+   muted-but-visible, right before the title), always in the DOM's normal flow (not hover-revealed,
+   unlike the toggle/"+") since a diagnostic is worth surfacing at rest, not just on hover.
+   `--text-error` by default (a hard violation); Task 7's `.is-warning` below softens it to
+   `--text-warning` to match the edge classes' own severity when every diagnostic is a drift. */
+.bases-structure-problem {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-right: var(--size-2-1);
+  color: var(--text-error);
+
+  --bases-structure-icon-size: 10px;
+}
+
+.bases-structure-problem.is-warning {
+  color: var(--text-warning);
+}
+
+/* Toggle and "+" share the same 20x20 icon box (see the `.bases-structure`
+   `--bases-structure-icon-size` rule above) and the same "invisible until the node is hovered/
+   focused" behaviour: always in the DOM
+   (so revealing them never shifts layout), `opacity: 0` at rest, `.55` once the node is
+   hovered/contains focus, and `1` on their own hover/focus-visible. Keyboard focus always shows
+   them, per task 15's decisions. */
+.bases-structure-toggle,
+.bases-structure-add {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.bases-structure-toggle {
+  margin: 0 var(--size-2-1) 0 calc(-1 * var(--size-2-1));
+  color: var(--text-muted);
+}
+
+.bases-structure-add {
+  margin-left: var(--size-2-1);
+  color: var(--text-faint);
+}
+
+.bases-structure-node:hover .bases-structure-toggle,
+.bases-structure-node:focus-within .bases-structure-toggle,
+.bases-structure-node.is-active .bases-structure-toggle,
+.bases-structure-node:hover .bases-structure-add,
+.bases-structure-node:focus-within .bases-structure-add,
+.bases-structure-node.is-active .bases-structure-add {
+  opacity: 0.55;
+}
+
+/* Own hover/focus always wins over the node-hover reveal above, including while hovering the
+   button *inside* an already-hovered node — qualifying with the same `.bases-structure-node`
+   ancestor keeps this at equal specificity (rather than losing to it) so source order (this rule
+   comes later) is what decides, not an accidental specificity gap. */
+.bases-structure-node .bases-structure-toggle:hover,
+.bases-structure-node .bases-structure-toggle:focus-visible,
+.bases-structure-node .bases-structure-add:hover,
+.bases-structure-node .bases-structure-add:focus-visible {
+  opacity: 1;
+}
+
+.bases-structure-node .bases-structure-toggle:hover,
+.bases-structure-node .bases-structure-add:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+.bases-structure-node .bases-structure-toggle:focus-visible,
+.bases-structure-node .bases-structure-add:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* I10: the touch-only node-menu button (opens the same menu a `contextmenu` right-click does —
+   see `openNodeMenuFromButton`). A mouse/pen user already has that right-click, so this stays out
+   of the layout entirely (`display: none`) outside `(hover: none)` below, unlike the toggle/"+"
+   (which stay in flow at `opacity: 0`) — there is no hover state on a touch device to reveal it
+   with, so it would otherwise just sit invisible and untappable. */
+.bases-structure-node-menu {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-left: var(--size-2-1);
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.bases-structure-node-menu:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Touch devices (I10): no `:hover` ever fires, so the toggle/"+" would otherwise stay invisible
+   forever — show them at the same opacity a hover reveal gives on desktop, and reveal the
+   touch-only node-menu button in their place for what right-click covers there. */
+@media (hover: none) {
+  .bases-structure-toggle,
+  .bases-structure-add {
+    opacity: 0.55;
+  }
+
+  .bases-structure-node-menu {
+    display: inline-flex;
+    opacity: 0.55;
+  }
+}
+
+.bases-structure-orphans {
+  color: var(--text-muted);
+}
+
+/* The inline "name this note" input the "+" flow opens inside the node it was clicked on.
+   `StructureActions.openDraft` marks the node itself `.is-drafting` for the draft's whole
+   lifetime (removed in `teardownDraft`, its one teardown path) — that drives the node's own
+   layout here, rather than the input trying to squeeze in alongside a still-visible title, "+",
+   toggle and alsoIn chip. */
+.bases-structure-node.is-drafting > .bases-structure-title,
+.bases-structure-node.is-drafting > .bases-structure-add,
+.bases-structure-node.is-drafting > .bases-structure-node-menu,
+.bases-structure-node.is-drafting > .bases-structure-toggle,
+.bases-structure-node.is-drafting > .bases-structure-alsoin,
+.bases-structure-node.is-drafting > .bases-structure-extras,
+.bases-structure-node.is-drafting > .bases-structure-two-way-icon {
+  display: none;
+}
+
+/* A drafting node gets a sensible typing width instead of its usual content-driven one
+   (`width: max-content`, capped by `max-width: 260px` — see the base `.bases-structure-node`
+   rule). Nothing in this file sets an inline `width` on `.bases-structure-node` any more (the
+   graph renderer's `positionNodes` stopped doing that — see its own doc comment, D1 follow-up), so
+   `!important` here is a defensive habit rather than a fight it strictly needs to win today. */
+.bases-structure-node.is-drafting {
+  width: auto !important;
+  min-width: 12rem;
+}
+
+.bases-structure-draft {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bases-structure-draft-input {
+  width: 100%;
+  padding: 0;
+  color: var(--text-normal);
+  background-color: transparent;
+  border: none;
+  border-bottom: 1px solid var(--interactive-accent);
+  font: inherit;
+}
+
+.bases-structure-draft-input:focus-visible {
+  outline: none;
+}
+
+/* The "Undo" button inside the Notice a successful create shows. */
+.bases-structure-undo {
+  margin-left: var(--size-4-2);
+  padding: var(--size-2-1) var(--size-2-2);
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.bases-structure-undo:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+/* Graph renderer */
+
+.bases-structure-graph {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+  overflow: auto;
+
+  /* M7: grab-to-pan on the empty background (see `pan.ts`) — `grabbing` only while a pan is
+     actually in progress (`.is-panning`, toggled by `pan.ts` itself), so a plain hover still
+     shows the open-hand affordance. */
+  cursor: grab;
+}
+
+.bases-structure-graph.is-panning {
+  cursor: grabbing;
+}
+
+/* Icon-only toolbar (no text labels) plus a muted zoom percentage — the whole panel is invisible
+   at rest and fades in on hovering the graph or when a control holds focus, so it never competes
+   with the tree for attention. */
+.bases-structure-toolbar {
+  position: sticky;
+  top: var(--size-4-2);
+  right: var(--size-4-2);
+  z-index: 2;
+  display: flex;
+  align-self: flex-end;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: var(--size-2-1);
+  width: fit-content;
+  margin: var(--size-4-2);
+  padding: var(--size-2-1);
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.bases-structure-graph:hover .bases-structure-toolbar,
+.bases-structure-graph:focus-within .bases-structure-toolbar {
+  opacity: 0.55;
+}
+
+/* Same equal-specificity trick as the toggle/add rules above: hovering the toolbar itself (which
+   is always also hovering the graph it sits in) must win over the partial reveal above it. */
+.bases-structure-graph .bases-structure-toolbar:hover,
+.bases-structure-graph .bases-structure-toolbar:focus-within {
+  opacity: 1;
+}
+
+.bases-structure-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-muted);
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.bases-structure-toolbar-btn:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+.bases-structure-toolbar-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.bases-structure-zoom-label {
+  min-width: 3em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+}
+
+/* M6: sized in `graph-renderer.ts`'s `applyZoom` to `layout size × zoom` — a flex item (so
+   `.bases-structure-graph`'s `overflow: auto` measures it, not the visually-scaled canvas inside,
+   for how much there is to scroll) containing the canvas at its own full, unscaled size. */
+.bases-structure-canvas-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.bases-structure-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.bases-structure-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Plain tree edge: a quiet 1px line with no arrowhead — direction is implied by the left-to-right
+   layout, so a marker would only add noise. `.is-two-way` is the one case a tree edge carries
+   markers at all (see the `#bases-structure-arrow-tree` marker built in `graph-renderer.ts`), and
+   uses the brighter "hover" border colour to set it apart from a plain parent/child link.
+   `.is-edge-active` (toggled on hovering either endpoint node) always wins the opacity tug-of-war
+   with `.is-extra`, since it's declared after it below. */
+.bases-structure-edge {
+  fill: none;
+  stroke: var(--background-modifier-border);
+  stroke-width: 1;
+}
+
+.bases-structure-edge.is-two-way {
+  stroke: var(--background-modifier-border-hover);
+}
+
+/* Secondary ("also lives here") edge: dashed, accent-tinted and quiet by default — it reads as a
+   second, weaker relationship rather than a second tree. `marker-end`
+   (`#bases-structure-arrow-extra`) is set in `graph-renderer.ts`, at the end only, so it reads as
+   "this node also hangs off that parent". */
+.bases-structure-edge.is-extra {
+  stroke: var(--color-accent);
+  stroke-dasharray: 4 3;
+  opacity: 0.45;
+}
+
+.bases-structure-edge.is-edge-active {
+  opacity: 1;
+}
+
+/* Task 5 ("Draw diagnostics"): a schema violation the graph can point straight at — dashed, in a
+   theme colour, never a literal one. `.is-error` (illegal-parent/broken-link) reads more urgent
+   (tighter dashes) than `.is-warning` (inherit-mismatch); neither animates, matching the view's
+   otherwise quiet visual language. */
+.bases-structure-edge.is-error {
+  stroke: var(--text-error);
+  stroke-dasharray: 4 3;
+}
+
+.bases-structure-edge.is-warning {
+  stroke: var(--text-warning);
+  stroke-dasharray: 1 4;
+}
+
+/* The mid-edge "✕" marker every diagnostic edge (or edge marked `.is-error`/`.is-warning`) gets —
+   an SVG `<text>` with a nested `<title>` carrying the diagnostic's own message as a native hover
+   tooltip. Sized off the same icon variable every other marker in the view uses, centred on its
+   own `x`/`y` (set in `graph-renderer.ts`). */
+.bases-structure-edge-problem {
+  font-size: var(--bases-structure-icon-size);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: auto;
+}
+
+.bases-structure-edge-problem.is-error {
+  fill: var(--text-error);
+}
+
+.bases-structure-edge-problem.is-warning {
+  fill: var(--text-warning);
+}
+
+.bases-structure-arrowhead-tree {
+  fill: var(--background-modifier-border-hover);
+}
+
+.bases-structure-arrowhead-extra {
+  fill: var(--color-accent);
+}
+
+.bases-structure-nodes {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* D2 ("Show link types"): one span per labelled run of same-type siblings, positioned (via inline
+   `left`/`top`, set in `graph-renderer.ts`'s `positionLabels`) at the midpoint of its own tree
+   edge — same absolute coordinate space as `.bases-structure-nodes`, so pan/zoom (the canvas's own
+   `transform: scale()`) applies to it exactly like a node. */
+.bases-structure-edge-labels {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+/* A quiet caption sitting on the line: small, muted text on an opaque background (so it reads over
+   the SVG edge underneath, not blended with it), no border — `translate(-50%, -50%)` centres it on
+   its own `left`/`top` without the renderer needing to know the label's measured size again once
+   it's already been positioned. */
+.bases-structure-edge-label {
+  position: absolute;
+  padding: 0 var(--size-2-1);
+  color: var(--text-faint);
+  background-color: var(--background-primary);
+  font-size: var(--font-smallest);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+/* Added by the graph renderer (as a class, alongside inline `left`/`top` — no inline `width` any
+   more, see `positionNodes`'s own doc comment) only once a node has been measured and positioned —
+   an unsized node that is *already* absolutely positioned at measurement time collapses to a
+   shrink-to-fit width that can be a single character wide, which then wraps its whole title one
+   letter per line. */
+.bases-structure-node.is-positioned {
+  position: absolute;
+}
+
+.bases-structure-empty {
+  padding: var(--size-4-6);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Outline renderer: a compact indented tree — the same node cards, actions and drag as the graph,
+   laid out as full-width rows with indentation-only depth instead of the graph's positioned
+   boxes. */
+
+.bases-structure-outline {
+  display: flex;
+  flex-direction: column;
+}
+
+.bases-structure-outline-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Depth is indentation only, with a 1px guide line per level. */
+.bases-structure-outline-list .bases-structure-outline-list {
+  padding-left: var(--size-4-4);
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+/* The node card fills its row so hovering anywhere on the row (not just over the title text)
+   reveals the "+"/toggle affordances, and no card decoration (border/background) is layered on
+   top of it row after row in a dense tree. */
+.bases-structure-outline .bases-structure-node {
+  width: 100%;
+  max-width: none;
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.bases-structure-outline .bases-structure-node:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+/* Root/orphan title weight and colour are handled by the shared `.bases-structure-node.is-root
+   .bases-structure-title` / `.is-orphan .bases-structure-title` rules above the "Graph renderer"
+   section — they apply here too since specificity is the same and there's nothing outline-only
+   about them. */
+
+/* A leaf row has no toggle, so without this its title would sit one whole toggle-box narrower
+   than a sibling's that has one, at the same depth — this reserves that exact box (same width
+   and left/right margins as `.bases-structure-toggle`, declared with the "+" earlier in this
+   file) with an empty placeholder instead, so a title's x position only ever depends on depth.
+   Outline only: the graph positions nodes individually and has no depth-based indentation for a
+   missing toggle to throw off. */
+.bases-structure-toggle-spacer {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 20px;
+  margin: 0 var(--size-2-1) 0 calc(-1 * var(--size-2-1));
 }

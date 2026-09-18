@@ -25,6 +25,21 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codegraph prompt-hook"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "permissions": {
+    "allow": ["mcp__codegraph__*"]
+  },
+  "enableAllProjectMcpServers": false,
+  "disabledMcpjsonServers": ["context7", "github", "semgrep", "deepwiki"]
 }

@@ -1,0 +1,580 @@
+// The Bases view entry point: parses the view's config into a `Schema`, reads a `Snapshot` from
+// the current query results, builds the pure `Structure`, and hands it to a renderer. Bases hides
+// an empty `.bases-view` inside embeds (`display: none`), which stops the query from ever
+// running — so the two child elements are created in the constructor, before any data arrives.
+//
+// `onDataUpdated` can fire at any time, including while a create draft is open (see
+// `actions-ui.ts`'s `StructureActions`) — both renderers reconcile node elements by path rather
+// than rebuilding every one, but a render that ran mid-draft would still hand the draft's own
+// parent node a fresh `Structure` while the user is typing into it. While
+// `StructureActions.hasOpenDraft` is true, a data-driven render is deferred (`pendingRender`)
+// instead of run immediately, and flushed exactly once when the draft closes for any reason —
+// cancel, commit, or the view unloading — via `ActionsDeps.onDraftClosed`.
+
+import type { QueryController } from 'obsidian';
+import { BasesView, Notice } from 'obsidian';
+import type { Diagnostic } from '../core/diagnostics.js';
+import { collectDiagnostics } from '../core/diagnostics.js';
+import { operationTargets, type ConvertContext } from '../core/plan-convert.js';
+import type { PlanEnv } from '../core/plan-types.js';
+import type { Schema, SchemaIssue } from '../core/schema.js';
+import { parseSchema } from '../core/schema.js';
+import type { Snapshot } from '../core/snapshot.js';
+import { displayName } from '../core/snapshot.js';
+import type { Structure, StructureIssue } from '../core/structure.js';
+import { buildStructure } from '../core/structure.js';
+import type StructureViewPlugin from '../main.js';
+import { findContainingFile, findHostFile } from '../obsidian/root-finder.js';
+import { readSnapshot } from '../obsidian/snapshot-reader.js';
+import type { FreshInput } from './actions-ui.js';
+import { StructureActions } from './actions-ui.js';
+import { attachDrag } from './drag.js';
+import { GraphRenderer } from './graph-renderer.js';
+import { attachKeyboard } from './keyboard.js';
+import type { NodeElementContext } from './node-element.js';
+import { OutlineRenderer } from './outline-renderer.js';
+import type { ViewUiState } from './view-state.js';
+import { getUiState } from './view-state.js';
+
+/** Fallback `Structure`/`ViewUiState` for `attachStructureKeyboard`'s deps closures, for the
+ * (never actually reached in practice — `render()` always sets `lastInput` before the keyboard
+ * handler is attached, see `resolveRenderer`) case the type system still has to account for.
+ * `EMPTY_STRUCTURE` is a shared constant since keyboard.ts only ever reads a `Structure`, never
+ * mutates it; the state fallback is built fresh per call since `ViewUiState.collapsed` is a
+ * mutable `Set` and a shared singleton could otherwise leak mutations across calls. */
+const EMPTY_STRUCTURE: Structure = {
+  root: null,
+  tops: [],
+  orphans: [],
+  nodes: new Map(),
+  issues: [],
+};
+
+function emptyViewState(): ViewUiState {
+  return {
+    collapsed: new Set(),
+    zoom: 1,
+    zoomTouched: false,
+    scrollLeft: 0,
+    scrollTop: 0,
+    active: null,
+  };
+}
+
+export interface RenderInput {
+  readonly schema: Schema;
+  readonly snapshot: Snapshot;
+  readonly structure: Structure;
+  readonly state: ViewUiState;
+  /** Always on (no view option, no setting) — every diagnostic `collectDiagnostics` finds for the
+   * exact `schema`/`snapshot`/`structure` this render shows, computed once here and read by both
+   * renderers instead of each recomputing it. */
+  readonly diagnostics: readonly Diagnostic[];
+  /** The path to flag `is-new` in this render only — set for the one render right after a
+   * successful create, then cleared (see `StructureActions.consumeFocus`). */
+  readonly focusPath?: string;
+  /** I11: set for the one render `showOptimistic` triggers while a draft is open (its own bypass
+   * of `deferrableRender`'s gate — see `resolveActions`) — tells a renderer not to move real DOM
+   * focus onto the active node this render, since focus may currently be on the open draft's own
+   * input (e.g. a Tab-created child draft, anchored on the active node itself). Node
+   * classes/tabindex bookkeeping still runs normally; only the real `.focus()` call is skipped. */
+  readonly suppressFocus?: boolean;
+}
+
+export interface StructureRenderer {
+  update(input: RenderInput): void;
+  /** The rendered element for `path` (whichever of the shared `.bases-structure-node` cards
+   * currently represents it), or `null` when it isn't currently in the DOM (collapsed away, or
+   * not part of the structure). Consumed by the keyboard task to anchor menus/drafts. */
+  getNodeElement(path: string): HTMLElement | null;
+  destroy(): void;
+}
+
+export const STRUCTURE_VIEW_ID = 'structure';
+
+const MAX_ISSUES_SHOWN = 5;
+
+/** Exported for direct unit testing of the `path === null` branch: `buildStructure` doesn't
+ * currently produce a structure issue without a path, but the formatting stays generic per the
+ * design spec ("Ошибки конфига") in case a future issue kind needs it. */
+export function formatStructureIssue(issue: StructureIssue, snapshot: Snapshot): string {
+  if (issue.path === null) {
+    return issue.message;
+  }
+  return `${displayName(snapshot, issue.path)}: ${issue.message}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A schema issue with no key (e.g. the top-level "set parent or types" issue) renders as just
+ * the message — a leading ": " with nothing before it would read as a formatting bug, not as
+ * "this issue has no specific key". */
+function formatSchemaIssue(issue: SchemaIssue): string {
+  return issue.key === '' ? issue.message : `${issue.key}: ${issue.message}`;
+}
+
+/** Every descendant of `path` (not including `path` itself), walking the public `children` field
+ * each `StructureNode` already carries — the same primary-parent-tree traversal the planners use
+ * for a subtree (`core/plan-shared.ts`'s `isSelfOrDescendant` walks the same tree upward, and a
+ * node's primary parent is unique, so this can't cycle or double-visit). Drives
+ * `DragDeps.descendantsOf`, so the drag gesture can mark the whole branch it would carry. */
+function collectDescendants(structure: Structure, path: string): readonly string[] {
+  const children = structure.nodes.get(path)?.children ?? [];
+  return children.flatMap((child) => [child, ...collectDescendants(structure, child)]);
+}
+
+function collectIssueLines(
+  schemaIssues: readonly SchemaIssue[],
+  structureIssues: readonly StructureIssue[],
+  snapshot: Snapshot,
+): string[] {
+  return [
+    ...schemaIssues.map((issue) => formatSchemaIssue(issue)),
+    ...structureIssues.map((issue) => formatStructureIssue(issue, snapshot)),
+  ];
+}
+
+export class StructureView extends BasesView {
+  override readonly type = STRUCTURE_VIEW_ID;
+
+  private readonly plugin: StructureViewPlugin;
+  private readonly containerEl: HTMLElement;
+  private readonly issuesEl: HTMLElement;
+  private readonly bodyEl: HTMLElement;
+  private renderer: StructureRenderer | null = null;
+  private rendererLayout: Schema['layout'] | null = null;
+  private actions: StructureActions | null = null;
+  private lastInput: RenderInput | null = null;
+  private dragDispose: (() => void) | null = null;
+  private keyboardDispose: (() => void) | null = null;
+  /** Set by `onDataUpdated` when a data-driven render arrives while a create draft is open (see
+   * the class doc comment's carried-over fix); flushed by `flushPendingRender` once the draft
+   * closes, however it closes — cancel, commit, or the view unloading. */
+  private pendingRender = false;
+  /** I11: the plan's own simulated result, shown by `resolveActions`'s `showOptimistic` dep right
+   * after a plan verifies — `render()` builds from this instead of the real vault data until
+   * `onDataUpdated` clears it again (real data always wins once Bases actually reports it), or a
+   * failed commit reverts it back to the pre-plan snapshot (see `actions-ui.ts`'s
+   * `commitWithOptimism`). */
+  private optimistic: Snapshot | null = null;
+
+  constructor(controller: QueryController, parentEl: HTMLElement, plugin: StructureViewPlugin) {
+    super(controller);
+    this.plugin = plugin;
+    this.containerEl = parentEl.createDiv('bases-structure');
+    this.issuesEl = this.containerEl.createDiv('bases-structure-issues');
+    this.bodyEl = this.containerEl.createDiv('bases-structure-body');
+    this.register(() => {
+      this.dragDispose?.();
+      this.keyboardDispose?.();
+      this.actions?.destroy();
+      this.renderer?.destroy();
+      this.containerEl.empty();
+      this.containerEl.remove();
+    });
+  }
+
+  /** Bases can call this at any time, including while the user has a create draft open and is
+   * mid-keystroke (e.g. a metadata plugin filling in fields on the note the draft is about to
+   * chain from) — both renderers reconcile node elements by path rather than rebuilding every
+   * one, but a render mid-draft would still hand its own parent node a fresh `Structure` out from
+   * under the typed input. Routes through `deferrableRender` for exactly that reason. Clears
+   * `optimistic` first (I11) — a data-driven render always shows real data, never a lingering
+   * prediction. */
+  override onDataUpdated(): void {
+    this.optimistic = null;
+    this.deferrableRender();
+  }
+
+  /** The one gate every render request other than a create commit's own close-triggered flush
+   * (`flushPendingRender`, run from inside `onDraftClosed` — see its own doc comment) must go
+   * through: while `hasOpenDraft` is true, defer — remember that a render is owed and let
+   * `flushPendingRender` run it once the draft actually closes. Rendering immediately here instead
+   * would run a full render over the open draft's own parent node without going through
+   * `teardownDraft` first — the only path that detaches the input's own blur listener before
+   * removing it, and reconciliation (see `graph-renderer.ts`'s/`outline-renderer.ts`'s own file
+   * comments) only preserves an element that stays part of the *new* render's own output, not one
+   * an unrelated draft merely happens to be attached to. Skipping `teardownDraft` silently loses
+   * the typed name, and in a real browser the synchronous `blur` a detached-but-still-listening
+   * input fires can even re-enter `cancelDraft`/`teardownDraft` mid-removal (`removeChild` on a
+   * node "moved in a 'blur' event handler"). Wired as `ActionsDeps.refresh` (used by every action
+   * that isn't the create commit closing its own draft: `commitAndNotify` for move/retype,
+   * `undoLast`, and the notice button's own `runUndoFromNotice`) so none of them can run a render
+   * out from under an unrelated open draft either — e.g. dragging a node while a create draft is
+   * open elsewhere, or an older notice's undo settling after a new draft opened. */
+  private deferrableRender(): void {
+    if (this.actions?.hasOpenDraft === true) {
+      this.pendingRender = true;
+      return;
+    }
+    this.safeRender();
+  }
+
+  private safeRender(): void {
+    try {
+      this.render();
+    } catch (error) {
+      console.error('[bases-structure]', error);
+      this.bodyEl.empty();
+      this.bodyEl.setText(`Structure view failed: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Wired as `ActionsDeps.onDraftClosed`: runs the render `onDataUpdated` deferred, exactly once,
+   * the moment a draft closes for any reason — including the view's own `onunload` (`actions`'s
+   * `destroy()` also funnels through `cancelDraft`), so a pending render is never silently lost.
+   * Returns whether it actually rendered (I6) — `StructureActions.runCommit` uses this to skip its
+   * own following `refresh()` when this already did the exact same work moments earlier. */
+  private flushPendingRender(): boolean {
+    if (!this.pendingRender) {
+      return false;
+    }
+    this.pendingRender = false;
+    this.safeRender();
+    return true;
+  }
+
+  /** Parses the schema and re-reads the snapshot/structure straight from the vault's current
+   * state — the one computation both `render()` (which also needs `issues`/`host` for the rest of
+   * its own work) and `readFreshInput()` (I5: an action plans against this, not the last render's
+   * possibly-stale `RenderInput`) share, so they can never disagree about what "current" means. */
+  private computeCurrentData(): {
+    readonly schema: Schema;
+    readonly issues: readonly SchemaIssue[];
+    readonly host: ReturnType<typeof findHostFile>;
+    readonly snapshot: Snapshot;
+    readonly structure: Structure;
+  } {
+    const { schema, issues } = parseSchema((key) => this.config.get(key));
+    const host = findHostFile(this.app, this.containerEl);
+    const snapshot = readSnapshot(
+      this.app,
+      this.data.data.map((entry) => entry.file),
+      host,
+    );
+    const structure = buildStructure(schema, snapshot);
+    return { schema, issues, host, snapshot, structure };
+  }
+
+  /** The `getUiState` key (I9): must include the `.base` file itself, or two different `.base`
+   * files opened directly (no host note at all, so `host` is `null` for both) with a view of the
+   * same name would collide on the exact same key and silently share collapsed/zoom/scroll/active
+   * state. Embedded in a host note, `host.path` already disambiguates (a note only has one Bases
+   * embed of a given view name at a time in practice), so the key stays exactly what it was before
+   * this fix. Opened directly, `host` is `null` — `BasesView`/`BasesViewConfig`/`QueryController`'s
+   * public surface has nothing file-related to fall back to (see `findContainingFile`'s own doc
+   * comment for what was actually checked), so this uses the `.base` file's own path via that
+   * broader, `FileView`-based lookup; if even that somehow finds nothing, the key degrades to the
+   * pre-I9 host+view-name shape (`''::name`) — a known, documented limitation, not a crash. */
+  private resolveStateKey(host: ReturnType<typeof findHostFile>): string {
+    const basePath =
+      host !== null ? host.path : (findContainingFile(this.app, this.containerEl)?.path ?? '');
+    return `${basePath}::${this.config.name}`;
+  }
+
+  private render(): void {
+    const {
+      schema,
+      issues,
+      host,
+      snapshot: realSnapshot,
+      structure: realStructure,
+    } = this.computeCurrentData();
+    const { snapshot, structure } = this.resolveDisplayData(schema, realSnapshot, realStructure);
+    this.renderIssues(issues, structure.issues, snapshot);
+    const state = getUiState(this.resolveStateKey(host));
+    // Computed from exactly what this render shows (the optimistic snapshot/structure while I11's
+    // prediction is up, the real ones otherwise) — never the "current data" `computeCurrentData`
+    // read, which `resolveDisplayData` may have just overridden.
+    const diagnostics = collectDiagnostics(schema, snapshot, structure);
+    const input: RenderInput = { schema, snapshot, structure, state, diagnostics };
+    this.lastInput = input;
+    const actions = this.resolveActions(host?.path ?? '', () => this.lastInput ?? input);
+    const ctx: NodeElementContext = {
+      app: this.app,
+      sourcePath: host?.path ?? '',
+      hoverParent: this,
+      snapshot,
+      onAdd: (path, anchorEl, buttonEl) => {
+        actions.startCreate(path, anchorEl, buttonEl);
+      },
+      onMenu: (path, nodeEl, buttonEl) => {
+        actions.openNodeMenuFromButton(path, nodeEl, buttonEl);
+      },
+      // Task 11: the same menu `onMenu` opens, from a right click landing on a node instead of
+      // the touch-only button — see `node-element.ts`'s own delegated `contextmenu` listener.
+      onContextMenu: (path, event, nodeEl) => {
+        actions.showNodeMenu(path, event, nodeEl);
+      },
+    };
+    const renderer = this.resolveRenderer(schema.layout, ctx);
+    const focusPath = actions.resolveFocus(structure);
+    renderer.update(this.finalizeRenderInput(input, focusPath, actions.hasOpenDraft));
+    // Must run on *every* render (I7), not just the one right after a commit: the render right
+    // after `commitPlan` resolves almost never has Bases' own data caught up with the note it just
+    // wrote (see `StructureActions.runCommit`), so the pending create's path usually isn't in
+    // `structure` yet on that first pass — this only actually completes it once a later render
+    // (from `onDataUpdated`) does contain it.
+    actions.completePending(structure, this.bodyEl);
+  }
+
+  /** Merges the two render-only flags `render()` computes just before handing input to the
+   * renderer — `focusPath` (I7's `is-new` highlight) and `suppressFocus` (I11's open-draft focus
+   * guard — a `showOptimistic` render can run while a draft is open, e.g. a Tab-created child
+   * draft anchored on the active node itself; see `RenderInput`'s own doc comment for why the
+   * renderer must not move real focus that render). Neither belongs in `this.lastInput`: both
+   * describe only this one call, not the view's ongoing state. */
+  private finalizeRenderInput(
+    input: RenderInput,
+    focusPath: string | null,
+    suppressFocus: boolean,
+  ): RenderInput {
+    if (focusPath === null && !suppressFocus) {
+      return input;
+    }
+    return {
+      ...input,
+      ...(focusPath === null ? {} : { focusPath }),
+      ...(suppressFocus ? { suppressFocus: true } : {}),
+    };
+  }
+
+  /** I11: `render()`'s own snapshot/structure — the plan's simulated result while `optimistic` is
+   * showing (set by the `showOptimistic` dep below, right after a plan verifies), the real,
+   * freshly-read data otherwise. Never predicts independently: `buildStructure` here only turns
+   * the exact snapshot `showOptimistic` was given into a `Structure`, the same computation a later
+   * real `onDataUpdated` runs once Bases actually reports that data. */
+  private resolveDisplayData(
+    schema: Schema,
+    realSnapshot: Snapshot,
+    realStructure: Structure,
+  ): { readonly snapshot: Snapshot; readonly structure: Structure } {
+    if (this.optimistic === null) {
+      return { snapshot: realSnapshot, structure: realStructure };
+    }
+    return { snapshot: this.optimistic, structure: buildStructure(schema, this.optimistic) };
+  }
+
+  /** `ActionsDeps.freshInput()` — re-reads the vault right now, independent of when the last
+   * `render()` happened to run (I5). Never touches the DOM/UI state, so it's safe to call at any
+   * time, including while a create draft is open. */
+  private readFreshInput(): FreshInput {
+    const { schema, snapshot, structure } = this.computeCurrentData();
+    return { schema, snapshot, structure };
+  }
+
+  /** Created once, on the first render, and reused for the view's whole lifetime — unlike the
+   * renderer, a layout switch doesn't need a fresh instance. `getInput` always resolves to the
+   * latest render's data (see `render()`); only `hostPath` is fixed at creation, since a Bases
+   * embed's host note doesn't move without the view itself being torn down and recreated. */
+  private resolveActions(hostPath: string, getInput: () => RenderInput): StructureActions {
+    this.actions ??= new StructureActions({
+      app: this.app,
+      undo: this.plugin.undo,
+      getInput,
+      freshInput: () => this.readFreshInput(),
+      hostPath,
+      // M11: routes through the safe path (eventually `safeRender`, not a bare `this.render()`) —
+      // a render error after a successful commit (or undo) must show up as the render's own
+      // failure message, not get swallowed into `commitAndNotify`'s generic "could not apply the
+      // change" catch (which only wraps `commitPlan` itself throwing, not whatever `refresh()`
+      // does afterward). `deferrableRender`, not `safeRender` directly, so a move/retype/undo that
+      // settles while an unrelated draft is open (elsewhere, or opened after this action started)
+      // defers the same way a Bases-driven `onDataUpdated` already does — see its own doc comment.
+      refresh: () => {
+        this.deferrableRender();
+      },
+      // I11: bypasses `deferrableRender`'s own open-draft gate, deliberately — this is called
+      // while the very draft that's about to close is still technically open (mid-commit, before
+      // `closeCommittedDraft` runs), and the whole point is to show the prediction *before* that
+      // settles. Safe to render straight through: reconciliation (see `graph-renderer.ts`'s/
+      // `outline-renderer.ts`'s own file comments) reuses the draft's own parent node element
+      // rather than rebuilding it, so the open draft's DOM survives untouched.
+      showOptimistic: (snapshot) => {
+        this.optimistic = snapshot;
+        this.safeRender();
+      },
+      // I11: undo is a real vault mutation, not a planned+simulated one — it never goes through
+      // `showOptimistic`, so this is the only way a prior prediction (from an earlier, unrelated
+      // create/move/retype) gets cleared once the very change it predicted is undone. Doesn't
+      // render itself — `undoLast`/`runUndoFromNotice` always call `refresh()` right after.
+      clearOptimistic: () => {
+        this.optimistic = null;
+      },
+      onDraftClosed: () => this.flushPendingRender(),
+    });
+    return this.actions;
+  }
+
+  /** Recreates the renderer whenever the resolved layout changes (including the very first
+   * render). `ctx` only has to be correct at the moment of construction — each renderer keeps its
+   * own working copy and refreshes it from every `RenderInput` it's given afterwards. */
+  private resolveRenderer(layout: Schema['layout'], ctx: NodeElementContext): StructureRenderer {
+    if (this.renderer === null || this.rendererLayout !== layout) {
+      this.dragDispose?.();
+      this.keyboardDispose?.();
+      this.renderer?.destroy();
+      this.renderer =
+        layout === 'outline'
+          ? new OutlineRenderer(this.bodyEl, ctx, { ownerId: this.plugin.manifest.id })
+          : new GraphRenderer(this.bodyEl, ctx, { ownerId: this.plugin.manifest.id });
+      this.rendererLayout = layout;
+      this.dragDispose = this.attachNodeDrag();
+      this.keyboardDispose = this.attachStructureKeyboard(this.renderer);
+    }
+    return this.renderer;
+  }
+
+  /** `operationTargets`'s own `env` only matters for its `'convert'` half (a plain move never
+   * consults it) and only for `checkRetypeFolder`'s occupancy check — `exists`, never
+   * `defaultFolder` (see `plan-create.ts`'s the only reader of that field). A fixed `''` here is
+   * therefore honest, not a shortcut: `defaultFolder` is create-only. */
+  private convertEnv(): PlanEnv {
+    return {
+      defaultFolder: '',
+      exists: (path) => this.app.vault.getAbstractFileByPath(path) !== null,
+    };
+  }
+
+  /** `targetsFor`/`onDrop` always resolve against `this.lastInput`/`this.actions` at drag time
+   * (not whatever was current when `attachDrag` was called) — the same "read the latest render"
+   * approach `resolveActions`'s `getInput` uses, since a single `attachDrag` call is reused across
+   * every render until the renderer itself is next recreated (see `resolveRenderer`).
+   * `operationTargets` (not `moveTargets` directly) is the single source of truth for both modes
+   * (task 10) — a plain move only ever highlights where the node's *current* type fits; Shift
+   * highlights every parent where some type conversion would keep the whole branch valid. */
+  private attachNodeDrag(): () => void {
+    return attachDrag({
+      container: this.bodyEl,
+      targetsFor: (path, mode) => {
+        if (this.lastInput === null) {
+          return new Set();
+        }
+        const context: ConvertContext = {
+          schema: this.lastInput.schema,
+          structure: this.lastInput.structure,
+          snapshot: this.lastInput.snapshot,
+          env: this.convertEnv(),
+        };
+        return operationTargets(context, path, mode);
+      },
+      descendantsOf: (path) => {
+        if (this.lastInput === null) {
+          return [];
+        }
+        return collectDescendants(this.lastInput.structure, path);
+      },
+      onDrop: (node, parent, mode, event) => {
+        if (mode === 'convert') {
+          // Pop-out convention (M3): `this.bodyEl.doc` — the same document `attachDrag` itself
+          // scoped the whole gesture to — not the bare global `document`.
+          this.actions?.startConvert(
+            node,
+            parent,
+            { x: event.clientX, y: event.clientY },
+            this.bodyEl.doc,
+          );
+          return;
+        }
+        this.actions?.startMove(node, parent);
+      },
+      onInvalidDrop: (node, parent, mode) => {
+        this.actions?.explainInvalidDrop(node, parent, mode);
+      },
+    });
+  }
+
+  /** Wires `keyboard.ts`'s roving-focus control (task 16) to the same `bodyEl` container the drag
+   * gesture uses, attached/disposed alongside it in `resolveRenderer`. Every dep here either reads
+   * the latest render (`this.lastInput`, same fallback pattern as `attachNodeDrag`'s `targetsFor`)
+   * or forwards straight to `this.actions` — `addSibling` is the one exception, resolved below.
+   * `renderer` is `resolveRenderer`'s own freshly-assigned `this.renderer`, passed in (rather than
+   * read back off `this.renderer` inside the closure) purely so `renderCollapse` only has to guard
+   * one nullable (`this.lastInput`), not two that are always either both set or both unset. */
+  private attachStructureKeyboard(renderer: StructureRenderer): () => void {
+    return attachKeyboard({
+      container: this.bodyEl,
+      getStructure: () => this.lastInput?.structure ?? EMPTY_STRUCTURE,
+      getState: () => this.lastInput?.state ?? emptyViewState(),
+      // I6: collapse/expand only ever change `state.collapsed`, already reflected by mutating the
+      // same `ViewUiState` object the last render's `RenderInput` still holds — re-drawing from it
+      // is a renderer's own cheap `update()`, with no schema re-parse/snapshot re-read/
+      // `buildStructure` (a full `render()`, as this used to call, was one of I6's several
+      // multipliers: every keyboard collapse/expand rebuilt the whole structure from scratch).
+      renderCollapse: () => {
+        if (this.lastInput !== null) {
+          renderer.update(this.lastInput);
+        }
+      },
+      open: (path, newTab) => {
+        this.actions?.openNode(path, newTab);
+      },
+      addChild: (path, anchorEl) => {
+        this.actions?.startCreate(path, anchorEl);
+      },
+      addSibling: (path, anchorEl) => {
+        this.handleAddSibling(path, anchorEl);
+      },
+      movePicker: (path) => {
+        this.actions?.startMovePicker(path);
+      },
+      retype: (path, anchorEl) => {
+        this.actions?.startRetype(path, anchorEl);
+      },
+      undo: () => {
+        this.actions?.undoLast();
+      },
+      // U3: the outline has no growth axis of its own and must ignore `Schema.direction`
+      // entirely (see the spec) — arrow keys there always use the standard, left-to-right
+      // mapping regardless of what a hand-edited `.base` file sets, since its own UI option is
+      // hidden for the outline layout in the first place.
+      getDirection: () =>
+        this.rendererLayout === 'graph' ? (this.lastInput?.schema.direction ?? 'right') : 'right',
+    });
+  }
+
+  /** Adding a sibling means creating under `path`'s own *parent* — a root/top node has none, so
+   * that case shows a Notice instead (see task 16's decisions) rather than silently doing nothing
+   * or falling back to some other parent. The draft opens anchored to the parent's own rendered
+   * element (via the renderer's `getNodeElement`), not `anchorEl` (the active node's own element
+   * `keyboard.ts` passes) — a new sibling visually belongs under the parent, the same place a
+   * "+" click there would open one; `anchorEl` is only a fallback for the practically-unreachable
+   * case the parent isn't currently rendered. */
+  private handleAddSibling(path: string, anchorEl: HTMLElement): void {
+    const input = this.lastInput;
+    if (input === null) {
+      return;
+    }
+    const parent = input.structure.nodes.get(path)?.parent ?? null;
+    if (parent === null) {
+      const name = displayName(input.snapshot, path);
+      new Notice(`Structure: "${name}" has no parent to add a sibling to`);
+      return;
+    }
+    const parentAnchor = this.renderer?.getNodeElement(parent) ?? anchorEl;
+    this.actions?.startCreate(parent, parentAnchor);
+  }
+
+  private renderIssues(
+    schemaIssues: readonly SchemaIssue[],
+    structureIssues: readonly StructureIssue[],
+    snapshot: Snapshot,
+  ): void {
+    this.issuesEl.empty();
+    const lines = collectIssueLines(schemaIssues, structureIssues, snapshot);
+    if (lines.length === 0) {
+      this.issuesEl.addClass('is-hidden');
+      return;
+    }
+    this.issuesEl.removeClass('is-hidden');
+    for (const line of lines.slice(0, MAX_ISSUES_SHOWN)) {
+      this.issuesEl.createDiv({ text: line });
+    }
+    const remaining = lines.length - MAX_ISSUES_SHOWN;
+    if (remaining > 0) {
+      this.issuesEl.createDiv({ text: `+${remaining} more` });
+    }
+  }
+}

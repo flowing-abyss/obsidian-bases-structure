@@ -1,0 +1,419 @@
+import { describe, expect, it } from 'vitest';
+import {
+  KNOWLEDGE_BASE_CONFIG,
+  knowledgeBaseSnapshot,
+} from './__tests__/knowledge-base.fixture.js';
+import { note, snapshot } from './__tests__/notes.js';
+import type { DiagnosticKind } from './diagnostics.js';
+import { collectDiagnostics } from './diagnostics.js';
+import type { Schema } from './schema.js';
+import { parseSchema } from './schema.js';
+import type { Snapshot } from './snapshot.js';
+import { buildStructure } from './structure.js';
+
+function makeRead(config: Record<string, unknown>): (key: string) => unknown {
+  return (key: string): unknown => config[key];
+}
+
+/** The design spec's real schema, verbatim: `inherit: [category, meta, problem]` over
+ * Category -> Meta-note -> Problem -> Hierarchy, matching `knowledge-base.fixture.ts`. */
+const vaultConfig = {
+  inherit: ['category', 'meta', 'problem'],
+  types: {
+    Category: {
+      tag: 'system/category',
+      children: { 'Meta-note': 'category', Hierarchy: 'category' },
+    },
+    'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+    Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+    Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+  },
+};
+
+function vaultSchema(): Schema {
+  return parseSchema(makeRead(vaultConfig)).schema;
+}
+
+function diagnosticsFor(schema: Schema, snap: Snapshot) {
+  const structure = buildStructure(schema, snap);
+  return collectDiagnostics(schema, snap, structure);
+}
+
+describe('collectDiagnostics — illegal-parent', () => {
+  it('flags a parent link the schema does not allow', () => {
+    // "h.md" (Hierarchy) has `category: [[p.md]]`; Category -> Hierarchy is a legal "category"
+    // edge, but "p.md" is a Problem, and Problem's own edge into Hierarchy is "problem", not
+    // "category".
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('p.md', { basename: 'Problem', tags: ['system/high/problem'] }),
+      note('h.md', {
+        basename: 'Hierarchy',
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['p.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'illegal-parent',
+        node: 'h.md',
+        target: 'p.md',
+        property: 'category',
+        message: '"Problem" cannot be the category of "Hierarchy"',
+      },
+    ]);
+  });
+
+  it('does not flag a flattened inherited copy under a property that is not this note type’s own edge', () => {
+    // A Problem note carries a "category" copy (per `inherit`), even though "category" is never
+    // Problem's own edge property (that's "meta") — the copy must not be mistaken for an illegal
+    // direct edge just because Category never lists Problem as a child.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('cat.md', { tags: ['system/category'] }),
+      note('meta.md', { tags: ['system/high/meta'], propertyLinks: { category: ['cat.md'] } }),
+      note('prob.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['cat.md'], meta: ['meta.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+
+  it('flags a meta-note whose meta points at another meta-note', () => {
+    // meta2 has `meta: [[meta1]]`; both are Meta-notes, and no rule connects a Meta-note to
+    // another Meta-note through any property — the old scoping never inspected "meta" on a
+    // Meta-note at all (it's not Meta-note's own edge property), so this went unreported.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('meta1.md', { tags: ['system/high/meta'] }),
+      note('meta2.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { meta: ['meta1.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toEqual([
+      {
+        kind: 'illegal-parent',
+        node: 'meta2.md',
+        target: 'meta1.md',
+        property: 'meta',
+        message: '"Meta-note" cannot be the meta of "Meta-note"',
+      },
+    ]);
+  });
+
+  it('keeps a legitimate inherited copy quiet', () => {
+    // A Problem under a Meta-note carries "category" copied from that meta-note — the same shape
+    // "Fix inheritance" would produce, so it must never be mistaken for an illegal edge.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('cat2.md', { tags: ['system/category'] }),
+      note('meta3.md', { tags: ['system/high/meta'], propertyLinks: { category: ['cat2.md'] } }),
+      note('prob2.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['cat2.md'], meta: ['meta3.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('does not flag an orphaned problem whose category is a plausible value it just isn’t wired up to yet', () => {
+    // A Problem with no "meta" at all — nothing to inherit "category" from yet — but a
+    // "category" value naming a real Category note. "category" is a key Problem can hold by
+    // inheritance (through a Meta-note ancestor), and the target is a genuine Category note, so
+    // this is a plausible-but-not-yet-connected value, never a hard error: there's no ancestor to
+    // compare it against (nothing to be "illegal-parent" red or "inherit-mismatch" amber about).
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('kb.md', { tags: ['system/category'] }),
+      note('orphanProb.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['kb.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('never turns a broken ancestor into a red error on an otherwise-healthy descendant', () => {
+    // meta2 is a genuine orphan: no "category" of its own, and a stray "meta" pointing at
+    // another Meta-note (illegal, per the earlier test). prob is a perfectly normal child of
+    // meta2 via "meta", carrying the right "category" — correct once meta2's own link is fixed.
+    // Before this fix, prob's "category" read as illegal-parent too, because meta2's brokenness
+    // left prob's *current* expected set empty. "category" is schema-reachable for Problem and
+    // "cat" is a real Category note, so prob's own link is never illegal — but meta2 supplies no
+    // "category" to compare against right now, so the shared derivation still reads it as a
+    // drifted (amber) value, same as any other inherited key nothing currently substantiates.
+    // Amber has a repair action ("Fix inheritance"); red does not — prob must never be red.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('meta1.md', { tags: ['system/high/meta'] }),
+      note('meta2.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { meta: ['meta1.md'] },
+      }),
+      note('cat.md', { tags: ['system/category'] }),
+      note('prob.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { meta: ['meta2.md'], category: ['cat.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics.find((diagnostic) => diagnostic.node === 'meta2.md')).toMatchObject({
+      kind: 'illegal-parent',
+      property: 'meta',
+    });
+    expect(diagnostics.find((diagnostic) => diagnostic.node === 'prob.md')).toMatchObject({
+      kind: 'inherit-mismatch',
+      keys: ['category'],
+    });
+  });
+});
+
+describe('collectDiagnostics — broken-link', () => {
+  it('flags a link that resolves to nothing', () => {
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('h.md', {
+        tags: ['system/high/hierarchy'],
+        unresolvedLinks: { category: ['missing'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'broken-link',
+        node: 'h.md',
+        target: 'missing',
+        property: 'category',
+        message: '"h" links to "missing" as category, but no such note exists.',
+      },
+    ]);
+  });
+});
+
+describe('collectDiagnostics — untyped', () => {
+  it('flags a note that matches no type', () => {
+    // "host.md" matches no type at all, but qualifies as the tree's root because "meta.md"'s own
+    // "category" property points at it (an untyped root "fits" any candidate rule).
+    const schema = vaultSchema();
+    const snap = snapshot(
+      [
+        note('host.md'),
+        note('meta.md', { tags: ['system/high/meta'], propertyLinks: { category: ['host.md'] } }),
+      ],
+      { host: 'host.md', results: ['meta.md'] },
+    );
+
+    const structure = buildStructure(schema, snap);
+    expect(structure.root).toBe('host.md');
+
+    const diagnostics = collectDiagnostics(schema, snap, structure);
+
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'untyped',
+        node: 'host.md',
+        message: '"host" does not match any of the schema\'s types.',
+      },
+    ]);
+  });
+});
+
+describe('collectDiagnostics — inherit-mismatch', () => {
+  it('flags inherited values that disagree with the parent', () => {
+    // h2.md nests under h1.md via file.backlinks (not via "category"), so its "category" is a
+    // plain inherited copy of h1.md's own value — and h2.md's own value disagrees with it.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('c1.md'),
+      note('c2.md'),
+      note('h1.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['c1.md'] },
+        links: ['h2.md'],
+      }),
+      note('h2.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['c2.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'inherit-mismatch',
+        node: 'h2.md',
+        keys: ['category'],
+        message: '"h2" does not match its parent for category.',
+      },
+    ]);
+  });
+
+  it('flags a shorter inherited set as a mismatch even when every value it does have is valid', () => {
+    // h1.md contributes two category targets; h2.md's own copy only kept one of them.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('c1.md'),
+      note('c2.md'),
+      note('h1.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['c1.md', 'c2.md'] },
+        links: ['h2.md'],
+      }),
+      note('h2.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['c1.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'inherit-mismatch',
+        node: 'h2.md',
+        keys: ['category'],
+        message: '"h2" does not match its parent for category.',
+      },
+    ]);
+  });
+
+  it('reports nothing for a consistent tree', () => {
+    const { schema } = parseSchema(makeRead(KNOWLEDGE_BASE_CONFIG));
+    const snap = knowledgeBaseSnapshot();
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+
+  it('does not flag a key neither parent nor child has', () => {
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('cat.md', { tags: ['system/category'] }),
+      note('meta.md', { tags: ['system/high/meta'], propertyLinks: { category: ['cat.md'] } }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+
+  it('still reports a plain disagreement as an inherit mismatch', () => {
+    // A Hierarchy under a Problem (via "problem") whose own "category" names a note that's
+    // neither the direct-edge case (untyped, so no rule connects it to Hierarchy) nor the value
+    // the Problem's own chain would supply — a genuine drift, not a wrong-type link. "meta" is
+    // carried through untouched (matching what the Problem chain supplies) so only "category"
+    // ends up mismatched.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('rightCat.md', { tags: ['system/category'] }),
+      note('wrongCat.md'),
+      note('meta4.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { category: ['rightCat.md'] },
+      }),
+      note('prob3.md', {
+        tags: ['system/high/problem'],
+        propertyLinks: { category: ['rightCat.md'], meta: ['meta4.md'] },
+      }),
+      note('h3.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: {
+          category: ['wrongCat.md'],
+          meta: ['meta4.md'],
+          problem: ['prob3.md'],
+        },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics[0]).toMatchObject({
+      kind: 'inherit-mismatch',
+      keys: ['category'],
+    });
+  });
+
+  it('does not flag the root for inheritance', () => {
+    // "cat.md" is the tree's root (no parent to inherit from at all) and holds a "category" value
+    // of its own — that must never be compared against an "expected: []" from having no parent.
+    const schema = vaultSchema();
+    const snap = snapshot(
+      [
+        note('cat.md', { tags: ['system/category'], propertyLinks: { category: ['other.md'] } }),
+        note('other.md', { tags: ['system/category'] }),
+      ],
+      { host: 'cat.md', results: ['other.md'] },
+    );
+
+    const structure = buildStructure(schema, snap);
+    expect(structure.root).toBe('cat.md');
+
+    const diagnostics = collectDiagnostics(schema, snap, structure);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+});
+
+describe('collectDiagnostics — mixed kinds', () => {
+  it('reports all four kinds together, one per offending note, without any interfering', () => {
+    const schema = vaultSchema();
+    const snap = snapshot(
+      [
+        note('host.md'),
+        note('metaA.md', { tags: ['system/high/meta'], propertyLinks: { category: ['host.md'] } }),
+        note('pB.md', { tags: ['system/high/problem'] }),
+        note('hB.md', { tags: ['system/high/hierarchy'], propertyLinks: { category: ['pB.md'] } }),
+        note('hC.md', {
+          tags: ['system/high/hierarchy'],
+          unresolvedLinks: { category: ['missing'] },
+        }),
+        note('c1D.md'),
+        note('c2D.md'),
+        note('h1D.md', {
+          tags: ['system/high/hierarchy'],
+          propertyLinks: { category: ['c1D.md'] },
+          links: ['h2D.md'],
+        }),
+        note('h2D.md', {
+          tags: ['system/high/hierarchy'],
+          propertyLinks: { category: ['c2D.md'] },
+        }),
+      ],
+      {
+        host: 'host.md',
+        results: ['metaA.md', 'pB.md', 'hB.md', 'hC.md', 'h1D.md', 'h2D.md'],
+      },
+    );
+
+    const diagnostics = diagnosticsFor(schema, snap);
+    const kinds: readonly DiagnosticKind[] = diagnostics.map((diagnostic) => diagnostic.kind);
+
+    expect(new Set(kinds)).toStrictEqual(
+      new Set<DiagnosticKind>(['untyped', 'illegal-parent', 'broken-link', 'inherit-mismatch']),
+    );
+    expect(diagnostics).toHaveLength(4);
+  });
+});

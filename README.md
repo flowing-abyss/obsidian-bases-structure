@@ -1,21 +1,39 @@
-# Abyssmith
+# Bases Structure
 
-An Obsidian plugin template built for agent-driven development. Clone this repository, tell your agent what to build, and development starts immediately. Skills, hooks, and quality gates come already wired in.
+[![Release](https://github.com/flowing-abyss/obsidian-bases-structure/actions/workflows/release.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-bases-structure/actions/workflows/release.yml)
+[![Downloads](https://img.shields.io/github/downloads/flowing-abyss/obsidian-bases-structure/total?style=flat-square&label=downloads&color=blue)](https://github.com/flowing-abyss/obsidian-bases-structure/releases)
 
-## What makes this different
+A Bases view that draws a note hierarchy starting from the note it is embedded in. You describe the types in the view itself, by tag, folder or property. A child points at its parent through a link property, or the parent links the child in its own text. Notes can be added, moved and retyped straight on the graph.
 
-**Real Obsidian runs in CI.** Every push builds the plugin and launches it inside an actual Obsidian instance on Ubuntu, Windows, and macOS, plus the real Android app on a device emulator. Each run confirms the plugin genuinely loads.
-
-**The template is agent-native.** Skills, project instructions, and lifecycle hooks are pre-wired for Claude Code, Codex, OpenCode, and Pi. They enforce this project's pnpm-only policy automatically and run the full verification gate before an agent claims a branch complete.
-
-**Every release ships fully verified.** Strict TypeScript, a complete lint, type, test, and build gate run before every push; commits themselves just lint and format the staged files, so edits stay fast. The release command bumps the version only after the plugin passes its full local suite and the real-Obsidian end-to-end tests.
-
-**One command finishes setup.** `pnpm install` wires up git hooks and every agent's configuration together.
-
-## Get started
-
-```bash
-pnpm install
+```yaml
+- type: structure
+  name: Structure
+  inherit:
+    - project
+  types:
+    Area:
+      tag: area
+      children:
+        Project: area
+    Project:
+      tag: project
+      children:
+        Task: project
+    Task:
+      tag: task
+      children:
+        Task: parent
+        Note: file.backlinks
+    Note:
+      tag: note
 ```
 
-Then tell your agent what you're building.
+```
+Home                ← area, embeds the base
+├── Website          ← project: area: [[Home]]
+│   ├── Design       ← task: project: [[Website]]
+│   │   ├── Logo     ← task: parent: [[Design]], project inherited
+│   │   └── Palette  ← note, because Design links [[Palette]] in its text
+│   └── Launch
+└── Garden
+```
