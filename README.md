@@ -3,7 +3,7 @@
 [![Release](https://github.com/flowing-abyss/obsidian-bases-structure/actions/workflows/release.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-bases-structure/actions/workflows/release.yml)
 [![Downloads](https://img.shields.io/github/downloads/flowing-abyss/obsidian-bases-structure/total?style=flat-square&label=downloads&color=blue)](https://github.com/flowing-abyss/obsidian-bases-structure/releases)
 
-A Bases view that draws a note hierarchy from the note it's embedded in. Types are defined right in the view — by tag, folder, or property — and each child points to its parent with a link property. Add, move, and retype notes right on the graph.
+A Bases view that draws a note hierarchy starting from the note it is embedded in. You describe the types in the view itself, by tag, folder or property. A child points at its parent through a link property, or the parent links the child in its own text. Notes can be added, moved and retyped straight on the graph.
 
 ```yaml
 - type: structure
@@ -23,13 +23,17 @@ A Bases view that draws a note hierarchy from the note it's embedded in. Types a
       tag: task
       children:
         Task: parent
+        Note: file.backlinks
+    Note:
+      tag: note
 ```
 
 ```
-Home               ← area, embeds the base
-├── Website        ← project: area: [[Home]]
-│   ├── Design     ← task: project: [[Website]]
-│   │   └── Logo   ← task: parent: [[Design]], project inherited
+Home                ← area, embeds the base
+├── Website          ← project: area: [[Home]]
+│   ├── Design       ← task: project: [[Website]]
+│   │   ├── Logo     ← task: parent: [[Design]], project inherited
+│   │   └── Palette  ← note, because Design links [[Palette]] in its text
 │   └── Launch
 └── Garden
 ```

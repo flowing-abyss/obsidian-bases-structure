@@ -1,8 +1,8 @@
 {
   "name": "bases-structure",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Draw and edit a typed note hierarchy as a Bases view.",
+  "description": "Draw a typed note hierarchy as a Bases view, then add, move and retype notes right on the graph.",
   "main": "main.js",
   "type": "module",
   "scripts": {
