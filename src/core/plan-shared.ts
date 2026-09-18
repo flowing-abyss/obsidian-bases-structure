@@ -1,13 +1,18 @@
-// Internal helpers shared by the move and retype planners (plan-move.ts / plan-retype.ts): the
-// text-edge rejection message, small array/set comparisons, the edge-key write pair (the write
-// itself plus the old-key cleanup), the generic `schema.inherit` recompute for a single node, and
-// the "did some other node move too" verification check. Not part of the public planning API —
-// planAction/childOptions (planner.ts), planMove/moveTargets (plan-move.ts), and
-// planRetype/retypeOptions (plan-retype.ts) are. No Obsidian imports.
+// Internal helpers shared by the move, convert, and fix-inherit planners (plan-move.ts /
+// plan-convert.ts / plan-fix-inherit.ts / plan-retype.ts): the ancestor-walk used by every
+// planner's "not into your own branch" check, the text-edge rejection message, small array/set
+// comparisons, the edge-key write pair (the write itself plus the old-key cleanup) shared by
+// move/convert's own-N edge handling, the append/removal pair for a text-kind edge, the generic
+// `schema.inherit` recompute for a single node, and the "did some other node move too"
+// verification check. Not part of the public planning API — planAction/childOptions
+// (planner.ts), planMove/moveTargets (plan-move.ts), planConvert/convertOptions
+// (plan-convert.ts), planFixInherit (plan-fix-inherit.ts), and planRetype/retypeOptions
+// (plan-retype.ts) are. No Obsidian imports.
 
 import {
   edgeKeyPatch,
   listShape,
+  oldContribOf,
   resultingTargets,
   unionInheritedTargets,
   type SubtreeContext,
@@ -16,6 +21,22 @@ import type { KeyWrite, Plan } from './plan-types.js';
 import type { EdgeRule, Schema } from './schema.js';
 import { displayName, type Snapshot } from './snapshot.js';
 import type { Structure } from './structure.js';
+
+/** `true` when walking up from `path` (inclusive) via primary parents reaches `ancestor` — i.e.
+ * `path` is `ancestor` itself or one of its descendants. Shared by every planner that needs to
+ * reject "into your own branch": plan-move.ts's `validateMove`, plan-convert.ts's
+ * `checkConvertParent`, and plan-fix-inherit.ts's `verifyFixInherit` (there walking from a
+ * diagnostic's node up to the branch root being fixed — same walk, different question). */
+export function isSelfOrDescendant(structure: Structure, ancestor: string, path: string): boolean {
+  let current: string | null = path;
+  while (current !== null) {
+    if (current === ancestor) {
+      return true;
+    }
+    current = structure.nodes.get(current)?.parent ?? null;
+  }
+  return false;
+}
 
 /** The rejection reason for a required relationship that lives in note text (a `'links'` or
  * `'backlinks'` rule) and so can't be written automatically — `'backlinks'` names the parent
@@ -173,6 +194,121 @@ export function buildEdgeWrites(schema: Schema, inputs: EdgeWriteInputs): readon
   return [computeEdgeWrite(inputs, cur), computeOldEdgeCleanup(schema, inputs, nLinks)].filter(
     isLinksWrite,
   );
+}
+
+export interface RuleEdgeInputs {
+  readonly schema: Schema;
+  readonly snapshot: Snapshot;
+  readonly node: string;
+  readonly newParent: string;
+  readonly rule: EdgeRule;
+  readonly oldParent: string | null; // O — used only for the old-key cleanup (I3)
+  readonly oldEdge: EdgeRule | null; // E
+}
+
+/** N's own edge-key write for a `'property'`-kind *new* rule — mirrors `buildEdgeWrites`, over a
+ * `rule` rather than a bare `key`. A text-kind new rule (`'backlinks'`/`'links'`) has no
+ * frontmatter property to patch here at all; see `oldEdgeCleanupOnly` for that case's old-parent
+ * cleanup instead. Shared by move (`planMove`) and convert (`planConvert`)'s own-N edge handling
+ * — both need the exact same stale set for the exact same reason, so a fix to one can't silently
+ * miss the other.
+ *
+ * Round 2 C1: the edge key's stale set is the old parent itself plus whatever it used to
+ * contribute to this specific key (`U_old(k)`, just the *single* old parent — not the node's
+ * other old property parents, which never contributed to `k` in a way this action invalidates).
+ * Round 3 fix: `oldContribOf` only ever falls back to O's *own* raw values for `k` when nothing
+ * else claims it — that fallback is the `inherit`-cascade mechanism, so it only applies when `k`
+ * is actually a `schema.inherit` key. For a plain (non-inherited) edge property, O's own values
+ * for that same property name are unrelated data that happens to share a name, not something O
+ * ever contributed to N — including them here deleted a value N held for its own reasons (e.g.
+ * O and N both happening to link the same third note through a same-named, non-inherited key).
+ * Round 4 fix: that fallback also has to be skipped when `k` *is* N's old edge property itself
+ * (`oldEdge.property === k`) — the "copy O's own raw value for k" branch exists only to model
+ * chain-forwarding through a *different* property than the edge (mirrors `plan-create.ts`'s
+ * `addInheritWrites`, which skips this exact copy when `key === rule.property`, and `derive.ts`'s
+ * `inheritKeysFor`, which excludes a node's own edge property from the generic recompute). When
+ * O was N's old parent through k directly (typically an untyped host or root, whose own type
+ * never claims k as an edge property), N's own values under k are N's, not something O
+ * contributed — folding O's raw value in here silently deleted it. */
+export function propertyEdgeWrites(
+  ctx: SubtreeContext,
+  inputs: RuleEdgeInputs,
+): readonly KeyWrite[] {
+  const { schema, snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
+  const staleForNewKey = new Set(
+    oldParent === null
+      ? []
+      : [
+          oldParent,
+          ...(schema.inherit.includes(rule.property) && oldEdge?.property !== rule.property
+            ? oldContribOf(ctx, oldParent, rule.property)
+            : []),
+        ],
+  );
+  return buildEdgeWrites(schema, {
+    snapshot,
+    node,
+    oldParent,
+    newParent,
+    oldEdge,
+    key: rule.property,
+    staleForNewKey,
+  });
+}
+
+/** The old parent's frontmatter cleanup alone, for an action whose *new* rule isn't
+ * `'property'`-kind — there's no new-key write to bundle it with (`propertyEdgeWrites`, used when
+ * the new rule *is* `'property'`, produces both together via `buildEdgeWrites`). A no-op unless
+ * the *old* edge was itself `'property'`-kind (`computeOldEdgeCleanup` returns `null` otherwise)
+ * — delegates to it directly. Shared by move and convert, same reason as `propertyEdgeWrites`. */
+export function oldEdgeCleanupOnly(schema: Schema, inputs: RuleEdgeInputs): readonly KeyWrite[] {
+  const { snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
+  const nLinks = snapshot.notes.get(node)?.propertyLinks ?? {};
+  const cleanup = computeOldEdgeCleanup(
+    schema,
+    {
+      snapshot,
+      node,
+      oldParent,
+      newParent,
+      oldEdge,
+      key: rule.property,
+      staleForNewKey: new Set(),
+    },
+    nLinks,
+  );
+  return cleanup === null ? [] : [cleanup];
+}
+
+export interface TextEdgeChangeInputs {
+  readonly rule: EdgeRule;
+  readonly node: string;
+  readonly newParent: string;
+  readonly oldParent: string | null;
+  readonly oldEdge: EdgeRule | null;
+}
+
+/** The append/removal pair establishing and clearing a text-kind (`'backlinks'`/`'links'`) edge
+ * to `node`'s new parent — shared by move (`planMove`) and convert (`planConvert`)'s own-N edge
+ * handling. The append is keyed off the *new* rule's own kind: `'backlinks'` writes to the new
+ * parent's own body (the parent mentions the child), `'links'` writes to the node's own body (the
+ * child mentions the parent) — mirrors `textLinkReason`'s ordering. The removal is keyed off the
+ * *old* edge's own kind instead, since the two can differ — a node's possible parent types can mix
+ * property and text-kind rules, so an action can freely cross from one kind to the other;
+ * conflating the two would either remove nothing (old edge was actually `'property'`) or target a
+ * mention that was never written (old edge was the other text kind). Omitted entirely when there
+ * was no old parent, or the old edge was itself `'property'`-kind (nothing in note text to clear). */
+export function buildTextEdgeChanges(
+  inputs: TextEdgeChangeInputs,
+): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
+  const { rule, node, newParent, oldParent, oldEdge } = inputs;
+  const appends: Plan['appends'] =
+    rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, node, newParent)];
+  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
+    oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
+      ? [textEdgeRemoval(oldEdge.kind, node, oldParent)]
+      : [];
+  return { appends, bodyLinkRemovals };
 }
 
 export interface InheritWriteInputs {

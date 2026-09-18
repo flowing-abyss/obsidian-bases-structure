@@ -15,12 +15,12 @@ import {
   type SubtreeContext,
 } from './derive.js';
 import { collectDiagnostics } from './diagnostics.js';
-import { recordAllOverrides } from './plan-shared.js';
+import { isSelfOrDescendant, recordAllOverrides } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanResult } from './plan-types.js';
 import type { Schema } from './schema.js';
 import { applyPlan } from './simulate.js';
 import { displayName, type Snapshot } from './snapshot.js';
-import { buildStructure, type Structure, type StructureNode } from './structure.js';
+import { buildStructure, type StructureNode } from './structure.js';
 
 type FixInheritAction = Extract<Action, { kind: 'fix-inherit' }>;
 
@@ -57,20 +57,6 @@ function ownInheritWrites(
   return writes;
 }
 
-/** `true` when walking up from `path` (inclusive) via primary parents reaches `root` — bounds
- * verification to `root`'s own branch, the same "self or descendant" walk `plan-move.ts` uses for
- * its own validation. */
-function isInBranch(structure: Structure, root: string, path: string): boolean {
-  let current: string | null = path;
-  while (current !== null) {
-    if (current === root) {
-      return true;
-    }
-    current = structure.nodes.get(current)?.parent ?? null;
-  }
-  return false;
-}
-
 /** `null` on success; otherwise a stable reason naming the first (in `structure.nodes` order)
  * still-mismatched node in `node`'s own branch — the action repairs one branch, not the whole
  * graph, so a mismatch outside it is never a reason to reject. */
@@ -85,7 +71,8 @@ function verifyFixInherit(
   const diagnostics = collectDiagnostics(schema, after, structure);
   const stillMismatched = diagnostics.find(
     (diagnostic) =>
-      diagnostic.kind === 'inherit-mismatch' && isInBranch(structure, node, diagnostic.node),
+      diagnostic.kind === 'inherit-mismatch' &&
+      isSelfOrDescendant(structure, node, diagnostic.node),
   );
   if (stillMismatched === undefined) {
     return null;

@@ -8,7 +8,6 @@
 import {
   bareContext,
   deriveSubtreeWrites,
-  oldContribOf,
   propertyParentsOf,
   ruleBetween,
   type SubtreeContext,
@@ -23,13 +22,14 @@ import {
   retypedChildWrites,
 } from './plan-retype.js';
 import {
-  buildEdgeWrites,
-  computeOldEdgeCleanup,
+  buildTextEdgeChanges,
   firstChangedOtherNode,
   inheritWritesFor,
+  isSelfOrDescendant,
+  oldEdgeCleanupOnly,
+  propertyEdgeWrites,
   recordAllOverrides,
-  textEdgeAppend,
-  textEdgeRemoval,
+  type RuleEdgeInputs,
 } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanEnv, PlanResult } from './plan-types.js';
 import type { EdgeRule, Schema, TypeDef, TypeMatch } from './schema.js';
@@ -50,20 +50,6 @@ export interface ConvertContext {
 }
 
 const EMPTY_MATCH: TypeMatch = { tags: [], folder: null, properties: [] };
-
-/** `true` when walking up from `path` (inclusive) via primary parents reaches `ancestor` — i.e.
- * `path` is `ancestor` itself or one of its descendants. Local copy of plan-move.ts's own check:
- * not exported there, and this file isn't on the brief's list of files to modify. */
-function isSelfOrDescendant(structure: Structure, ancestor: string, path: string): boolean {
-  let current: string | null = path;
-  while (current !== null) {
-    if (current === ancestor) {
-      return true;
-    }
-    current = structure.nodes.get(current)?.parent ?? null;
-  }
-  return false;
-}
 
 // -- Validation -----------------------------------------------------------------------------
 
@@ -174,67 +160,6 @@ function validateConvert(context: ConvertContext, action: ConvertAction): Conver
 
 // -- N's own edge to the new parent (plan-move.ts's glue, over the *new* type/parent) ---------
 
-interface ConvertEdgeInputs {
-  readonly schema: Schema;
-  readonly snapshot: Snapshot;
-  readonly node: string;
-  readonly newParent: string;
-  readonly rule: EdgeRule;
-  readonly oldParent: string | null;
-  readonly oldEdge: EdgeRule | null;
-}
-
-/** N's own edge-key write for a `'property'`-kind new rule — mirrors plan-move.ts's
- * `propertyEdgeWrites`: the stale set is the old parent, plus (only when the key is a
- * `schema.inherit` key and the old edge wasn't itself through it) the old parent's own
- * contribution to that key. */
-function convertPropertyEdgeWrites(
-  ctx: SubtreeContext,
-  inputs: ConvertEdgeInputs,
-): readonly KeyWrite[] {
-  const { schema, snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
-  const staleForNewKey = new Set(
-    oldParent === null
-      ? []
-      : [
-          oldParent,
-          ...(schema.inherit.includes(rule.property) && oldEdge?.property !== rule.property
-            ? oldContribOf(ctx, oldParent, rule.property)
-            : []),
-        ],
-  );
-  return buildEdgeWrites(schema, {
-    snapshot,
-    node,
-    oldParent,
-    newParent,
-    oldEdge,
-    key: rule.property,
-    staleForNewKey,
-  });
-}
-
-/** The old parent's frontmatter cleanup alone, for a `'convert'` whose *new* rule isn't
- * `'property'`-kind — mirrors plan-move.ts's `oldEdgeCleanupOnly`. */
-function convertOldEdgeCleanupOnly(schema: Schema, inputs: ConvertEdgeInputs): readonly KeyWrite[] {
-  const { snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
-  const nLinks = snapshot.notes.get(node)?.propertyLinks ?? {};
-  const cleanup = computeOldEdgeCleanup(
-    schema,
-    {
-      snapshot,
-      node,
-      oldParent,
-      newParent,
-      oldEdge,
-      key: rule.property,
-      staleForNewKey: new Set(),
-    },
-    nLinks,
-  );
-  return cleanup === null ? [] : [cleanup];
-}
-
 interface BuildNWritesInputs {
   readonly ctx: SubtreeContext;
   readonly oldCtx: SubtreeContext;
@@ -251,7 +176,7 @@ function buildNWrites(inputs: BuildNWritesInputs): readonly KeyWrite[] {
   const { nNode, oldMatch, newType, rule } = fields;
   const oldParent = nNode.parent;
   const oldEdge = nNode.edge;
-  const edgeInputs: ConvertEdgeInputs = {
+  const edgeInputs: RuleEdgeInputs = {
     schema: ctx.schema,
     snapshot: ctx.snapshot,
     node: action.node,
@@ -262,8 +187,8 @@ function buildNWrites(inputs: BuildNWritesInputs): readonly KeyWrite[] {
   };
   const edgeWrites =
     rule.kind === 'property'
-      ? convertPropertyEdgeWrites(ctx, edgeInputs)
-      : convertOldEdgeCleanupOnly(ctx.schema, edgeInputs);
+      ? propertyEdgeWrites(ctx, edgeInputs)
+      : oldEdgeCleanupOnly(ctx.schema, edgeInputs);
 
   const propertyExtras = nNode.extras
     .filter((extra) => extra.kind === 'property' && extra.parent !== oldParent)
@@ -357,25 +282,6 @@ function buildConvertChanges(inputs: BuildConvertChangesInputs): Plan['changes']
     : mergedDescendantWrites;
 }
 
-/** The text-edge halves of the plan (N's own edge is `'property'`-kind or not, handled inside
- * `buildNWrites`/`buildConvertChanges` already) — the append that establishes the new relationship
- * and the removal that clears the old one, same rules `planMove` uses. */
-function buildConvertTextEdges(
-  nNode: StructureNode,
-  rule: EdgeRule,
-  action: ConvertAction,
-): Pick<Plan, 'appends' | 'bodyLinkRemovals'> {
-  const oldParent = nNode.parent;
-  const oldEdge = nNode.edge;
-  const appends: Plan['appends'] =
-    rule.kind === 'property' ? [] : [textEdgeAppend(rule.kind, action.node, action.parent)];
-  const bodyLinkRemovals: Plan['bodyLinkRemovals'] =
-    oldParent !== null && oldEdge !== null && oldEdge.kind !== 'property'
-      ? [textEdgeRemoval(oldEdge.kind, action.node, oldParent)]
-      : [];
-  return { appends, bodyLinkRemovals };
-}
-
 export function planConvert(
   schema: Schema,
   snapshot: Snapshot,
@@ -403,7 +309,13 @@ export function planConvert(
   };
   const oldCtx = bareContext(ctx);
   const changes = buildConvertChanges({ ctx, oldCtx, nNote, validation, action });
-  const { appends, bodyLinkRemovals } = buildConvertTextEdges(nNode, rule, action);
+  const { appends, bodyLinkRemovals } = buildTextEdgeChanges({
+    rule,
+    node: action.node,
+    newParent: action.parent,
+    oldParent: nNode.parent,
+    oldEdge: nNode.edge,
+  });
   const moves: Plan['moves'] = folderTo !== null ? [{ from: action.node, to: folderTo }] : [];
   const focus = folderTo ?? action.node;
 
