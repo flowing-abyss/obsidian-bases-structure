@@ -378,6 +378,29 @@ function noopConvertFiles(): Record<string, string> {
   };
 }
 
+/** `node.md` (A) has one child, `kid.md`, attached by a literal body-text mention (A's own child
+ * rule is `file.links`). Converting `node.md` to its only sibling type, `B`, keeps `kid.md` as a
+ * child but under B's *different* child rule (`newprop`, a plain property instead of body text):
+ * `kid.md` ends up written by two of the plan's three lists — a `bodyLinkRemovals` entry cutting
+ * the stale body mention, and a `changes` entry adding the fresh property — exactly the "same
+ * note, two lists" case `relinkedNoteCount` must count once, not twice. */
+const RELINK_SCHEMA_CONFIG = {
+  types: {
+    Cat: { tag: 'cat', children: { A: 'up', B: 'up' } },
+    A: { tag: 'a', children: { Kid: 'file.links' } },
+    B: { tag: 'b', children: { Kid: 'newprop' } },
+    Kid: { tag: 'kid' },
+  },
+};
+
+function relinkFiles(): Record<string, string> {
+  return {
+    'cat.md': '---\ntags: [cat]\n---\n',
+    'node.md': '---\ntags: [a]\nup: "[[cat]]"\n---\n',
+    'kid.md': '---\ntags: [kid]\n---\n\nSee [[node]].\n',
+  };
+}
+
 function lastNotice(): (typeof NoticeMock.instances)[number] | undefined {
   return NoticeMock.instances[NoticeMock.instances.length - 1];
 }
@@ -1643,6 +1666,38 @@ describe('startConvert', () => {
       'Structure: "leaf" has no type that fits under "leaf"',
     );
     expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('leaves the title plain when the plan touches only the node itself (no other note relinked)', () => {
+    const h = makeHarness(convertFiles(), { schemaConfig: CONVERT_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    // "b.md" is a childless leaf — converting it to "A" under "solo.md" only ever writes b.md's
+    // own recipe/edge, so there is nothing else for the plan to relink.
+    h.actions.startConvert('b.md', 'solo.md', { x: 0, y: 0 });
+
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual(['Make "b" a A here']);
+  });
+
+  it('appends " · relinks N notes" to an item whose plan rewrites a child — counted once even though that child is written by two of the plan\'s three lists (changes and bodyLinkRemovals here)', () => {
+    const h = makeHarness(relinkFiles(), { schemaConfig: RELINK_SCHEMA_CONFIG });
+    const showAtPositionSpy = vi
+      .spyOn(Menu.prototype, 'showAtPosition')
+      .mockImplementation(function (this: Menu) {
+        return this;
+      });
+
+    h.actions.startConvert('node.md', 'cat.md', { x: 0, y: 0 });
+
+    const menu = showAtPositionSpy.mock.contexts[0] as Menu;
+    expect(menu.items__.map((item) => item.title__)).toStrictEqual([
+      'Make "node" a B here · relinks 1 note',
+    ]);
   });
 
   it('ignores a second convert commit started while the first is still committing, with its own Notice (I5)', async () => {

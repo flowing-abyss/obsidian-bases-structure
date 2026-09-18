@@ -8,7 +8,7 @@ import type { App, FuzzyMatch, PaneType } from 'obsidian';
 import { FuzzySuggestModal, Menu, Notice } from 'obsidian';
 import { ruleBetween } from '../core/derive.js';
 import type { Diagnostic } from '../core/diagnostics.js';
-import { convertOptions, type ConvertContext } from '../core/plan-convert.js';
+import { convertOptions, type ConvertContext, type ConvertOption } from '../core/plan-convert.js';
 import { moveTargets } from '../core/plan-move.js';
 import { retypeOptions } from '../core/plan-retype.js';
 import type { Action, Plan, PlanEnv } from '../core/plan-types.js';
@@ -152,6 +152,43 @@ function noTypeFitsMessage(snapshot: Snapshot, node: string, parent: string): st
  * a stale-data race per I5) — never expected in normal use, but never silent either. */
 function cannotGoUnderMessage(snapshot: Snapshot, node: string, parent: string): string {
   return `"${displayName(snapshot, node)}" cannot go under "${displayName(snapshot, parent)}"`;
+}
+
+/** How many notes other than `node` itself `plan` would rewrite — `changes`/`appends`/
+ * `bodyLinkRemovals`, deduplicated by path (a note can appear in more than one list, e.g. a direct
+ * child whose edge both gets appended to a new body and removed from the old one) and with `node`
+ * itself excluded, since converting it is the point of the plan, not a side effect of it. */
+function relinkedNoteCount(plan: Plan, node: string): number {
+  const paths = new Set<string>();
+  for (const change of plan.changes) {
+    paths.add(change.path);
+  }
+  for (const append of plan.appends) {
+    paths.add(append.path);
+  }
+  for (const removal of plan.bodyLinkRemovals) {
+    paths.add(removal.path);
+  }
+  paths.delete(node);
+  return paths.size;
+}
+
+/** `N notes`, or the singular `1 note` for exactly one. */
+function noteCountLabel(count: number): string {
+  return count === 1 ? '1 note' : `${count} notes`;
+}
+
+/** `Make "<name>" a <Type> here`, plus ` · relinks N notes` whenever `option.plan` — already
+ * planned once by `convertOptions`, never re-planned here — would rewrite at least one other note
+ * (`relinkedNoteCount`; `1 note` singular, `N notes` otherwise). Leaves the plain title alone when
+ * the count is zero, and never touches `startConvert`'s separate empty-options notice. */
+function convertItemTitle(name: string, node: string, option: ConvertOption): string {
+  const base = `Make "${name}" a ${option.type} here`;
+  const count = relinkedNoteCount(option.plan, node);
+  if (count === 0) {
+    return base;
+  }
+  return `${base} · relinks ${noteCountLabel(count)}`;
 }
 
 /** Every `.bases-structure-node` under `root` whose `data-path` is `path` — a linear scan instead
@@ -479,17 +516,19 @@ export class StructureActions {
   }
 
   /** The drop-side half of the Shift-drag gesture (`drag.ts`'s `'convert'` mode): `convertOptions`
-   * lists which types `node` could become while landing under `parent`, listed against the
-   * current render's `getInput()` (same "good enough for a listing" freshness as
-   * `startMovePicker`/`startRetype`). A type change never happens without the user picking it
+   * lists which types `node` could become while landing under `parent` — each already paired with
+   * its own verified `Plan`, reused (not re-planned) for `convertItemTitle`'s relink count —
+   * listed against the current render's `getInput()` (same "good enough for a listing" freshness
+   * as `startMovePicker`/`startRetype`). A type change never happens without the user picking it
    * from a menu — even a single fitting type still opens a one-item menu at `position` (the drop
-   * point), spelling out the result (`Make "<name>" a <Type> here`) instead of naming a bare type,
-   * so nothing is rewritten before the user has actually seen and chosen it. An empty option list
-   * shows a Notice instead. `doc` is the pop-out convention every other `showAtPosition` call in
-   * this file follows (see `showNodeMenu`/`showMenuAt`): the caller's own anchor element's owning
-   * document, since a drag can start inside a pop-out window and the menu must open there too, not
-   * on the default document. Every commit itself re-plans against `freshInput()` via
-   * `commitConvert`, same as every other commit path (I5). */
+   * point), spelling out the result (`Make "<name>" a <Type> here`, plus how many other notes it
+   * would relink) instead of naming a bare type, so nothing is rewritten before the user has
+   * actually seen and chosen it. An empty option list shows a Notice instead. `doc` is the pop-out
+   * convention every other `showAtPosition` call in this file follows (see `showNodeMenu`/
+   * `showMenuAt`): the caller's own anchor element's owning document, since a drag can start
+   * inside a pop-out window and the menu must open there too, not on the default document. Every
+   * commit itself re-plans against `freshInput()` via `commitConvert`, same as every other commit
+   * path (I5) — this listing's own plans are only ever shown, never committed directly. */
   startConvert(
     node: string,
     parent: string,
@@ -505,10 +544,10 @@ export class StructureActions {
       return;
     }
     const menu = new Menu();
-    for (const type of options) {
+    for (const option of options) {
       menu.addItem((item) => {
-        item.setTitle(`Make "${name}" a ${type} here`).onClick(() => {
-          this.commitConvert(node, parent, type, name);
+        item.setTitle(convertItemTitle(name, node, option)).onClick(() => {
+          this.commitConvert(node, parent, option.type, name);
         });
       });
     }

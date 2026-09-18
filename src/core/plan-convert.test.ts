@@ -67,18 +67,37 @@ const snap = snapshot([
 const structure = buildStructure(schema, snap);
 const context = contextOf(schema, snap);
 
+/** Every caller that only cares *which* types are offered, not the `Plan` paired with each —
+ * `optionTypes` narrows a `convertOptions` result down to the same ordered type-name list the
+ * function itself used to return directly. */
+function optionTypes(options: ReturnType<typeof convertOptions>): readonly string[] {
+  return options.map((option) => option.type);
+}
+
 describe('convertOptions', () => {
   it('lists the types a problem can become under a category, keeping its Hierarchy child', () => {
-    expect(convertOptions(context, 'p.md', 'cat.md')).toEqual(['Meta-note', 'Hierarchy']);
+    expect(optionTypes(convertOptions(context, 'p.md', 'cat.md'))).toEqual([
+      'Meta-note',
+      'Hierarchy',
+    ]);
   });
 
   it('excludes a candidate type with no rule to the parent at all', () => {
     // Category has no rule to itself.
-    expect(convertOptions(context, 'p.md', 'cat.md')).not.toContain('Category');
+    expect(optionTypes(convertOptions(context, 'p.md', 'cat.md'))).not.toContain('Category');
   });
 
   it('now includes a type whose only rule to the child is a different kind — the edge gets rewritten, not refused', () => {
-    expect(convertOptions(context, 'p.md', 'cat.md')).toContain('Hierarchy');
+    expect(optionTypes(convertOptions(context, 'p.md', 'cat.md'))).toContain('Hierarchy');
+  });
+
+  it('pairs each option with the exact Plan planConvert would produce for it — reused, not re-planned, by callers', () => {
+    const options = convertOptions(context, 'p.md', 'cat.md');
+    const metaNote = options.find((option) => option.type === 'Meta-note');
+    const expected = planAction(schema, snap, convert('p.md', 'cat.md', 'Meta-note'), noEnv);
+    expect(expected.ok).toBe(true);
+    if (!expected.ok) return;
+    expect(metaNote?.plan).toStrictEqual(expected.plan);
   });
 
   it('returns [] for a node missing from the structure', () => {
@@ -270,7 +289,7 @@ describe('planConvert / convertOptions — I4: the old type tag must be rewritab
   it('excludes "Beta" from convertOptions — never offers a type planConvert would reject', () => {
     // The reviewer's reproduction: a cheap rule/failingChildren pre-filter alone would have let
     // "Beta" through here (nothing about it strands a child); only actually planning catches I4.
-    expect(convertOptions(tagContext, 'n.md', 'cat2.md')).not.toContain('Beta');
+    expect(optionTypes(convertOptions(tagContext, 'n.md', 'cat2.md'))).not.toContain('Beta');
     expect(convertOptions(tagContext, 'n.md', 'cat2.md')).toStrictEqual([]);
   });
 });
@@ -419,7 +438,7 @@ describe('planConvert / convertOptions — an untouched higher-priority candidat
   });
 
   it('excludes "NodeT2" from convertOptions for the same reason', () => {
-    expect(convertOptions(rivalContext, 'node.md', 'N.md')).not.toContain('NodeT2');
+    expect(optionTypes(convertOptions(rivalContext, 'node.md', 'N.md'))).not.toContain('NodeT2');
     expect(convertOptions(rivalContext, 'node.md', 'N.md')).toStrictEqual([]);
   });
 });
@@ -524,7 +543,9 @@ describe('convertOptions / planConvert — a conversion may never adopt new chil
 
   it("does not offer a text-link type that would adopt the note's body links", () => {
     // `structure.md` is a Meta-note whose body links to two Hierarchy notes
-    expect(convertOptions(adoptContext, 'structure.md', 'meta1.md')).toEqual(['Problem']);
+    expect(optionTypes(convertOptions(adoptContext, 'structure.md', 'meta1.md'))).toEqual([
+      'Problem',
+    ]);
   });
 
   it('rejects such a conversion with the adopted note named', () => {

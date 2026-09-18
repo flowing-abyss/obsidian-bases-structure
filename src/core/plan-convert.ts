@@ -402,31 +402,43 @@ interface ConvertCandidateCheck {
   readonly parent: string;
 }
 
-/** Whether `typeName` is a genuine option for `check.node`: a rule must connect the parent's type
- * to it and every direct child must survive the retype (`failingChildren`) — two cheap structural
- * pre-filters — then, only for a candidate that clears both, `planConvert` itself confirms it
- * (a body-only tag, or an untouched higher-priority candidate surviving the simulation, can each
- * still reject a candidate neither pre-filter catches). */
-function convertCandidateSurvives(check: ConvertCandidateCheck, typeName: string): boolean {
+/** A type N could become while moving under `parent`, paired with the exact verified `Plan` that
+ * conversion would run — `convertOptions`' own callers that also need to know *what* the plan
+ * does (e.g. how many other notes it touches) reuse this `plan` instead of planning the same
+ * candidate a second time. */
+export interface ConvertOption {
+  readonly type: string;
+  readonly plan: Plan;
+}
+
+/** `typeName`'s verified `Plan` for `check.node`, or `null` when it isn't a genuine option: a rule
+ * must connect the parent's type to it and every direct child must survive the retype
+ * (`failingChildren`) — two cheap structural pre-filters — then, only for a candidate that clears
+ * both, `planConvert` itself confirms it (a body-only tag, or an untouched higher-priority
+ * candidate surviving the simulation, can each still reject a candidate neither pre-filter
+ * catches). */
+function convertCandidatePlan(check: ConvertCandidateCheck, typeName: string): Plan | null {
   const { context, nNode, parentType, node, parent } = check;
   const { schema, snapshot, structure, env } = context;
   if (ruleBetween(schema, parentType, typeName) === null) {
-    return false;
+    return null;
   }
   if (failingChildren(schema, structure, nNode, typeName).length > 0) {
-    return false;
+    return null;
   }
   const action: ConvertAction = { kind: 'convert', node, parent, type: typeName };
-  return planConvert(schema, snapshot, action, env).ok;
+  const result = planConvert(schema, snapshot, action, env);
+  return result.ok ? result.plan : null;
 }
 
-/** Type names N could become while moving under `parent`, filtered to those that keep the whole
- * branch valid — see `convertCandidateSurvives` for what "valid" means. */
+/** Type names N could become while moving under `parent`, each paired with its own verified
+ * `Plan` and filtered to those that keep the whole branch valid — see `convertCandidatePlan` for
+ * what "valid" means. */
 export function convertOptions(
   context: ConvertContext,
   node: string,
   parent: string,
-): readonly string[] {
+): readonly ConvertOption[] {
   const { schema, structure } = context;
   const nNode = structure.nodes.get(node);
   const parentNode = structure.nodes.get(parent);
@@ -445,8 +457,11 @@ export function convertOptions(
   };
   const ordered = [...schema.types].sort((a, b) => a.level - b.level);
   return ordered
-    .map((type) => type.name)
-    .filter((name) => name !== nNode.type && convertCandidateSurvives(check, name));
+    .filter((type) => type.name !== nNode.type)
+    .flatMap((type) => {
+      const plan = convertCandidatePlan(check, type.name);
+      return plan === null ? [] : [{ type: type.name, plan }];
+    });
 }
 
 /** What the UI highlights as valid drop targets for `node`, for either gesture: `moveTargets` for

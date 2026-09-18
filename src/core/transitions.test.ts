@@ -297,11 +297,18 @@ const CONVERT_CASES = CONVERT_ROWS.flatMap((row) =>
   })),
 );
 
+/** This table only pins *which* types each pair offers, not the `Plan` `convertOptions` now pairs
+ * each one with (see `plan-convert.test.ts`'s own coverage of that pairing) — narrows a result
+ * back down to the plain, ordered type-name list every row above is written against. */
+function optionTypes(options: ReturnType<typeof convertOptions>): readonly string[] {
+  return options.map((option) => option.type);
+}
+
 describe('convert (Shift-drag) — every type each (dragged type, target type) pair offers', () => {
   it.each(CONVERT_CASES)(
     '$rowLabel -> $colLabel offers $expected',
     ({ rowPath, colPath, expected }) => {
-      expect(convertOptions(context, rowPath, colPath)).toStrictEqual(expected);
+      expect(optionTypes(convertOptions(context, rowPath, colPath))).toStrictEqual(expected);
     },
   );
 });
@@ -509,7 +516,7 @@ describe('convert — why the empty cells are empty', () => {
 
 describe('the reported bug, reproduced directly against this fixture', () => {
   it('Shift-dragging a Problem (with its own Hierarchy child) onto the root Category now offers both "Meta-note" and "Hierarchy" — the child\'s edge rewrites instead of blocking the conversion', () => {
-    expect(convertOptions(context, 'problemChild.md', 'root.md')).toStrictEqual([
+    expect(optionTypes(convertOptions(context, 'problemChild.md', 'root.md'))).toStrictEqual([
       'Meta-note',
       'Hierarchy',
     ]);
@@ -520,7 +527,7 @@ describe('the reported bug, reproduced directly against this fixture', () => {
   });
 
   it('a bare Problem leaf (no child) offers the same two types onto the same root — shape no longer narrows a Hierarchy-child row at all', () => {
-    expect(convertOptions(context, 'problemLeaf.md', 'root.md')).toStrictEqual([
+    expect(optionTypes(convertOptions(context, 'problemLeaf.md', 'root.md'))).toStrictEqual([
       'Meta-note',
       'Hierarchy',
     ]);
