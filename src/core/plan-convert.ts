@@ -230,16 +230,50 @@ function convertChildMismatchReason(
     : `"${childName}" would move to "${displayName(snapshot, afterParent)}"`;
 }
 
-/** Verifies by simulation: N must resolve to `action.type` under `action.parent`, and the first
- * node (other than N) whose parent changed must be `null` — either a direct child of N that the
- * new type can no longer carry (reported against N and that child together), or, failing that, an
- * unrelated node the plan touched by mistake. */
+/** The first path in `afterChildren` that wasn't already in `beforeChildren` — child-path
+ * identity only, so a child that keeps its place but hangs off a different property (the edge-key
+ * cascade `retypedChildWrites` already handles) is never mistaken for a newly adopted one. */
+function firstAdoptedChild(
+  beforeChildren: readonly string[],
+  afterChildren: readonly string[],
+): string | null {
+  const before = new Set(beforeChildren);
+  return afterChildren.find((path) => !before.has(path)) ?? null;
+}
+
+/** The rejection reason when converting `action.node` would gain a child it didn't have before —
+ * named for the first one adopted, whatever rule kind produced it. `null` when N's child set
+ * survives the conversion unchanged. */
+function adoptedChildReason(
+  snapshot: Snapshot,
+  before: Structure,
+  action: ConvertAction,
+  afterChildren: readonly string[],
+): string | null {
+  const beforeChildren = before.nodes.get(action.node)?.children ?? [];
+  const adopted = firstAdoptedChild(beforeChildren, afterChildren);
+  return adopted === null
+    ? null
+    : `"${displayName(snapshot, adopted)}" would become a child of "${displayName(snapshot, action.node)}"`;
+}
+
+/** Verifies by simulation: N must resolve to `action.type` under `action.parent`; N's child set
+ * must be exactly what it was before — gaining any child, whatever rule kind produced it, is
+ * rejected by naming the first one adopted (`adoptedChildReason`), before the weaker "did anything
+ * else move" check below ever gets a chance to blame it on the wrong node; and the first other node
+ * (besides N) whose parent changed must be `null` — either a direct child of N that the new type
+ * can no longer carry (reported against N and that child together), or, failing that, an unrelated
+ * node the plan touched by mistake. */
 function verifyConvert(inputs: VerifyConvertInputs): string | null {
   const { schema, snapshot, plan, before, action, focus } = inputs;
   const after = buildStructure(schema, applyPlan(snapshot, plan));
   const afterFocus = after.nodes.get(focus);
   if (afterFocus?.type !== action.type || afterFocus.parent !== action.parent) {
     return `"${displayName(snapshot, action.node)}" would not become "${action.type}" under "${displayName(snapshot, action.parent)}"`;
+  }
+  const adoptedReason = adoptedChildReason(snapshot, before, action, afterFocus.children);
+  if (adoptedReason !== null) {
+    return adoptedReason;
   }
   const changed = firstChangedOtherNode(before, after, action.node, focus);
   if (changed === null) {

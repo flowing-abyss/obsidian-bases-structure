@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { note, snapshot } from './__tests__/notes.js';
-import { convertOptions, operationTargets, type ConvertContext } from './plan-convert.js';
+import {
+  convertOptions,
+  operationTargets,
+  planConvert,
+  type ConvertContext,
+} from './plan-convert.js';
 import { moveTargets } from './plan-move.js';
 import type { Action } from './plan-types.js';
 import { planAction } from './planner.js';
@@ -405,6 +410,50 @@ describe('planConvert — relocates into the new type’s folder, same as a plai
     if (!result.ok) return;
     expect(result.focus).toBe('bar-folder/sub/n.md');
     expect(result.plan.moves).toStrictEqual([]);
+  });
+});
+
+describe('convertOptions / planConvert — a conversion may never adopt new children', () => {
+  // The user's real schema (see CLAUDE.md): Meta-note's own children are property-based
+  // ("meta"), but Hierarchy's own children rule is `file.backlinks` — a Meta-note converting to
+  // Hierarchy would make every Hierarchy-typed note it body-links a new child, exactly the
+  // structure-wrecking adoption this guards against.
+  const adoptSchema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+  const adoptSnap = snapshot([
+    note('meta1.md', { tags: ['system/high/meta'] }),
+    note('structure.md', {
+      basename: 'structure',
+      tags: ['system/high/meta'],
+      links: ['km.md', 'other.md'],
+    }),
+    note('km.md', { basename: 'knowledge models', tags: ['system/high/hierarchy'] }),
+    note('other.md', { basename: 'other hierarchy', tags: ['system/high/hierarchy'] }),
+  ]);
+  const adoptContext = contextOf(adoptSchema, adoptSnap);
+
+  it("does not offer a text-link type that would adopt the note's body links", () => {
+    // `structure.md` is a Meta-note whose body links to two Hierarchy notes
+    expect(convertOptions(adoptContext, 'structure.md', 'meta1.md')).toEqual(['Problem']);
+  });
+
+  it('rejects such a conversion with the adopted note named', () => {
+    expect(
+      planConvert(adoptSchema, adoptSnap, convert('structure.md', 'meta1.md', 'Hierarchy'), noEnv),
+    ).toEqual({
+      ok: false,
+      reason: '"knowledge models" would become a child of "structure"',
+    });
   });
 });
 
