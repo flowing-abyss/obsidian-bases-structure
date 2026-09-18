@@ -733,6 +733,63 @@ describe('applyPlan — moves', () => {
   });
 });
 
+describe('applyPlan — moves and body-link removals together (finding 1)', () => {
+  it('removes the old body mention before renaming the file, so the removal still finds its target at its pre-move path', async () => {
+    // planConvert is the only planner that can put both a `moves` entry (the new type's folder
+    // pins it) and a `bodyLinkRemovals` entry (the old edge was text-based) into the same plan,
+    // targeting the very same node. The simulator (simulate.ts) removes the body mention before
+    // renaming; this plan must apply the same way, or the removal's own `requireFile` throws once
+    // the rename has already moved the note out from under its old path.
+    const schema = parseSchema(
+      (key: string) =>
+        ({
+          types: {
+            OldCat: { tag: 'oldcat', children: { Thing: 'file.backlinks' } },
+            NewCat: { tag: 'newcat', children: { Bar: 'up' } },
+            Thing: { tag: 'thing' },
+            Bar: { tag: 'bar', folder: 'bar-folder' },
+          },
+        })[key],
+    ).schema;
+    const coreSnap = snapshot(
+      [
+        note('oldcat.md', { tags: ['oldcat'], links: ['thing.md'] }),
+        note('newcat.md', { tags: ['newcat'] }),
+        note('thing.md', { tags: ['thing'] }),
+      ],
+      { results: ['oldcat.md', 'newcat.md', 'thing.md'] },
+    );
+    const env = { defaultFolder: '', exists: (): boolean => false };
+
+    const result = planAction(
+      schema,
+      coreSnap,
+      { kind: 'convert', node: 'thing.md', parent: 'newcat.md', type: 'Bar' },
+      env,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.moves).toStrictEqual([{ from: 'thing.md', to: 'bar-folder/thing.md' }]);
+    expect(result.plan.bodyLinkRemovals).toStrictEqual([{ path: 'oldcat.md', target: 'thing.md' }]);
+
+    const app = App.createConfigured__({
+      files: { 'oldcat.md': '- [[Thing]]\n', 'newcat.md': '', 'thing.md': '' },
+    });
+
+    const outcome = await applyPlan(
+      app.asOriginalType__(),
+      result.plan,
+      'Convert',
+      emptySnapshot(),
+    );
+
+    expect(outcome.error).toBeNull();
+    expect(app.vault.getFileByPath('bar-folder/thing.md')).not.toBeNull();
+    expect(await app.vault.read(mustFile(app, 'oldcat.md'))).toBe('');
+  });
+});
+
 describe('applyPlan — missing notes', () => {
   it('stops at the first failing operation, keeping the steps already completed', async () => {
     const app = App.createConfigured__({});

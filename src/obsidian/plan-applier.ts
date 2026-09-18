@@ -345,12 +345,17 @@ interface ApplyContext {
   readonly creating: ReadonlySet<string>;
 }
 
-/** Applies every part of `plan` in order (creations, changes, appends, moves, bodyLinkRemovals), recording one
- * `TransactionStep` per primitive write. Stops at the first failing operation and returns the
- * steps completed so far with `error` set — `null` when everything succeeded. `expected` is the
- * snapshot the plan was built from (the view's `freshInput()`, read immediately before planning):
- * each change write is checked against it before being applied, so a concurrent edit to the same
- * key aborts the rest of the plan instead of overwriting it (I5). */
+/** Applies every part of `plan` in order (creations, changes, appends, bodyLinkRemovals, moves —
+ * matching `simulate.ts`'s own `applyPlan` exactly, so the applier never diverges from what a
+ * plan was verified against), recording one `TransactionStep` per primitive write. A
+ * `bodyLinkRemoval` runs before `moves` because `planConvert` is the only planner that can put
+ * both into the same plan, targeting the same node: its old edge's removal and its new type's
+ * folder-pinned move — so the removal must still find that node (as either the removal's own
+ * `path` or its `target`) at its pre-move location. Stops at the first failing operation and
+ * returns the steps completed so far with `error` set — `null` when everything succeeded.
+ * `expected` is the snapshot the plan was built from (the view's `freshInput()`, read immediately
+ * before planning): each change write is checked against it before being applied, so a concurrent
+ * edit to the same key aborts the rest of the plan instead of overwriting it (I5). */
 export async function applyPlan(
   app: App,
   plan: Plan,
@@ -372,11 +377,11 @@ export async function applyPlan(
     for (const append of plan.appends) {
       await applyAppend(app, append, steps, ctx.creating);
     }
-    for (const move of plan.moves) {
-      await applyMove(app, move, steps);
-    }
     for (const removal of plan.bodyLinkRemovals) {
       await applyBodyLinkRemoval(app, removal, steps);
+    }
+    for (const move of plan.moves) {
+      await applyMove(app, move, steps);
     }
     return { transaction: { label, steps }, error: null };
   } catch (error) {
