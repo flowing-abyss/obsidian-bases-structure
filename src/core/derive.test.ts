@@ -475,4 +475,53 @@ describe('deriveSubtreeWrites', () => {
     expect(result.map((entry) => entry.path)).not.toContain('missingChild.md');
     expect(result.map((entry) => entry.path)).not.toContain('e.md');
   });
+
+  it("reconnects a descendant whose narrowed value only matched its parent's OLD contribution (Fix 1)", () => {
+    // "p.md" is the moved/retyped node's own child; its "k" already shows the *new* value (as if
+    // its own write, earlier in this same cascade, already landed and got recorded into
+    // `ctx.linkOverrides` — exactly what a real `deriveSubtreeWrites` walk does one level up). "k"
+    // moved from {v1,v2} to {v2} — a legal narrowing, not drift. "d.md" (p.md's own child, the
+    // node actually under test) deliberately narrowed its own "k" down to just "v1.md" — the value
+    // p.md *used* to share, not the one it shares now. Without Fix 1, d.md's delta is `remove
+    // [v1], add []` (v2.md was already in U_old, so round 3's "only what's newly contributed" rule
+    // excludes it) — emptying "k" and stranding d.md from its only parent.
+    const schema: Schema = {
+      types: [],
+      typeByName: new Map([
+        ['PType', typeDef('PType', new Map())],
+        ['DType', typeDef('DType', new Map())],
+      ]),
+      inherit: ['k'],
+      layout: 'graph',
+      direction: 'right',
+      edgeLabels: false,
+    };
+    const structure = structureOf([
+      node({ path: 'p.md', type: 'PType', children: ['d.md'] }),
+      node({ path: 'd.md', type: 'DType', parent: 'p.md' }),
+    ]);
+    const snap = snapshot([
+      note('p.md', { propertyLinks: { k: ['v1.md', 'v2.md'] } }),
+      note('d.md', { propertyLinks: { k: ['v1.md'] } }),
+    ]);
+    const ctx: SubtreeContext = {
+      schema,
+      snapshot: snap,
+      structure,
+      typeOverrides: new Map(),
+      linkOverrides: new Map([['p.md', { k: ['v2.md'] }]]),
+    };
+    const oldCtx = bareContext(ctx);
+
+    const result = deriveSubtreeWrites(ctx, oldCtx, 'p.md');
+
+    expect(result).toStrictEqual([
+      {
+        path: 'd.md',
+        writes: [
+          { key: 'k', value: { kind: 'links', remove: ['v1.md'], add: ['v2.md'], list: true } },
+        ],
+      },
+    ]);
+  });
 });

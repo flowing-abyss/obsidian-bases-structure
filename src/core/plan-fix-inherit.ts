@@ -1,14 +1,13 @@
-// Fix-inherit planning: turns a `'fix-inherit'` `Action` into a verified `Plan` that rewrites one
-// node's own `inherit`-key values to exactly what its property parents currently contribute, then
-// cascades that same fix to the node's whole subtree — or a rejection with a stable, user-facing
-// reason. Unlike move/retype's conservative "only touch what the action invalidates" cascade, this
-// forces every value to match what `diagnostics.ts`'s `inherit-mismatch` check expects, by
-// construction (same `unionInheritedTargets`/`inheritKeysFor` pair). No Obsidian imports.
+// Fix-inherit planning: turns a `'fix-inherit'` `Action` into a verified `Plan` that rewrites just
+// the `inherit`-key values `diagnostics.ts` flags as mismatched for one node, bringing each flagged
+// key to what its property parents currently contribute, then cascades that same fix to the node's
+// whole subtree — or a rejection with a stable, user-facing reason. A key the diagnostic doesn't
+// flag (e.g. a value legally narrowed to a non-empty subset of a parent's values) is left exactly
+// as the user set it; a foreign membership within a flagged key survives too. No Obsidian imports.
 
 import {
   bareContext,
   deriveSubtreeWrites,
-  inheritKeysFor,
   isForeignMembership,
   listShape,
   propertyParentsOf,
@@ -16,38 +15,36 @@ import {
   unionInheritedTargets,
   type SubtreeContext,
 } from './derive.js';
-import { collectDiagnostics } from './diagnostics.js';
+import { collectDiagnostics, inheritMismatchKeys } from './diagnostics.js';
 import { isSelfOrDescendant, recordAllOverrides } from './plan-shared.js';
 import type { Action, KeyWrite, Plan, PlanResult } from './plan-types.js';
 import type { Schema } from './schema.js';
 import { applyPlan } from './simulate.js';
 import { displayName, type Snapshot } from './snapshot.js';
-import { buildStructure, type StructureNode } from './structure.js';
+import { buildStructure } from './structure.js';
 
 type FixInheritAction = Extract<Action, { kind: 'fix-inherit' }>;
 
-/** Every `schema.inherit`-key write `node` needs to exactly match what its (unchanged) property
- * parents currently contribute — full replace (`current` -> `expected`), not a delta from an old
- * vs. new state the way move/retype's cascade computes it (nothing here moved or retyped; the
- * whole point is correcting drift a delta would never touch). `[]` when `node` has no property
- * parent at all — mirrors `diagnostics.ts`'s `inheritMismatchDiagnostic` early return, so a
- * parentless node's own values are never treated as "wrong" here either. A value that isn't
- * `expected` is still kept when it's a foreign membership (`isForeignMembership`) — `node`'s own
- * membership in a structure this view can't see, which this repair must never erase; every
- * missing parent value is still added regardless. */
+/** Every write needed to bring `node`'s diagnostic-flagged `inherit` keys (`inheritMismatchKeys` —
+ * the same predicate `collectDiagnostics` reports, so this can never rewrite a key the diagnostic
+ * didn't complain about) to exactly what its property parents currently contribute. `[]` when
+ * nothing is flagged — a legally narrowed key (a non-empty subset of a parent's values) is left
+ * exactly as the user set it. A value that isn't `expected` is still kept when it's a foreign
+ * membership (`isForeignMembership`) — `node`'s own membership in a structure this view can't see,
+ * which this repair must never erase; every missing parent value is still added regardless. */
 function ownInheritWrites(
   ctx: SubtreeContext,
   node: string,
-  nNode: StructureNode,
   parents: readonly string[],
 ): readonly KeyWrite[] {
-  if (parents.length === 0) {
+  const flaggedKeys = inheritMismatchKeys(ctx.schema, ctx.snapshot, ctx.structure, node);
+  if (flaggedKeys.length === 0) {
     return [];
   }
   const current = ctx.snapshot.notes.get(node)?.propertyLinks ?? {};
   const nodeType = typeNameAfter(ctx, node);
   const writes: KeyWrite[] = [];
-  for (const key of inheritKeysFor(ctx.schema, nNode)) {
+  for (const key of flaggedKeys) {
     const expected = unionInheritedTargets(ctx, parents, key);
     const currentTargets = current[key] ?? [];
     const remove = currentTargets.filter(
@@ -107,7 +104,7 @@ export function planFixInherit(
   };
   const oldCtx = bareContext(ctx);
   const parents = propertyParentsOf(nNode);
-  const nWrites = ownInheritWrites(ctx, action.node, nNode, parents);
+  const nWrites = ownInheritWrites(ctx, action.node, parents);
   if (nWrites.length === 0) {
     return {
       ok: false,

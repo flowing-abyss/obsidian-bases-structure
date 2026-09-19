@@ -347,3 +347,72 @@ describe("planFixInherit — a note's membership in a structure this view cannot
     expect(collectDiagnostics(schema, after, structure)).toStrictEqual([]);
   });
 });
+
+describe('planFixInherit — only the diagnostic-flagged keys are rewritten', () => {
+  const schema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+
+  it('(P2b) fixes only the flagged "meta", leaving a legal "category" narrowing untouched', () => {
+    // "boot.md" passes both "ai.md" and "startups.md"; "p.md" (Problem, child of boot.md) holds a
+    // clean flattened copy of both. "h.md" (Hierarchy, child of p.md) deliberately narrowed its
+    // own "category" down to just "ai.md" — legal narrowing, not flagged — but never picked up a
+    // "meta" value at all, which *is* flagged (h.md shares nothing with what p.md provides for
+    // "meta"). Before this fix, `ownInheritWrites` rewrote every inherit key to the full union
+    // regardless of the diagnostic, silently reverting the "category" narrowing by adding
+    // "startups.md" back in alongside the legitimate "meta" repair.
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const startups = note('startups.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const p = note('p.md', {
+      tags: ['system/high/problem'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { problem: ['p.md'], category: ['ai.md'] },
+    });
+    const snap = snapshot([ai, startups, boot, p, h], {
+      results: ['ai.md', 'startups.md', 'boot.md', 'p.md', 'h.md'],
+    });
+    const structureBefore = buildStructure(schema, snap);
+    expect(collectDiagnostics(schema, snap, structureBefore)).toStrictEqual([
+      {
+        kind: 'inherit-mismatch',
+        node: 'h.md',
+        keys: ['meta'],
+        message: '"h" does not match its parent for meta.',
+      },
+    ]);
+
+    const result = planFixInherit(schema, snap, { kind: 'fix-inherit', node: 'h.md' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          { key: 'meta', value: { kind: 'links', remove: [], add: ['boot.md'], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['category']).toStrictEqual(['ai.md']);
+    expect(after.notes.get('h.md')?.propertyLinks['meta']).toStrictEqual(['boot.md']);
+    const structureAfter = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structureAfter)).toStrictEqual([]);
+  });
+});

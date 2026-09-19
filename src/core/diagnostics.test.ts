@@ -394,10 +394,14 @@ describe('collectDiagnostics — inherit-mismatch', () => {
 
     const diagnostics = diagnosticsFor(schema, snap);
 
-    expect(diagnostics.find((diagnostic) => diagnostic.node === 'h.md')).toMatchObject({
-      kind: 'inherit-mismatch',
-      keys: ['category'],
-    });
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'inherit-mismatch',
+        node: 'h.md',
+        keys: ['category'],
+        message: '"h" does not match its parent for category.',
+      },
+    ]);
   });
 
   it("flags a child that holds none of its parent's values", () => {

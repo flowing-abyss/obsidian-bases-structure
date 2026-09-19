@@ -14,6 +14,7 @@ import {
   isForeignMembership,
   listShape,
   oldContribOf,
+  reconnectToParents,
   resultingTargets,
   typeNameAfter,
   unionInheritedTargets,
@@ -426,9 +427,11 @@ export interface InheritWriteInputs {
  * happened to reflect, is left alone (a move fixes only what it changes, not pre-existing drift).
  * Mutates `ctx.linkOverrides` for `node` as writes are found — mirrors `deriveSubtreeWrites`'s
  * per-descendant recompute, applied to the node itself with caller-supplied parent lists instead
- * of the structure's own `parent`/`extras`. A stale target is still spared when it's a foreign
- * membership (`isForeignMembership`) — `node`'s own membership in a structure this view can't
- * see, which this write must never erase. */
+ * of the structure's own `parent`/`extras`. The one exception to "only what's newly contributed":
+ * `reconnectToParents` still adds a parent's whole contribution outright when this delta would
+ * otherwise leave the key sharing nothing with that (new) parent at all (Fix 1). A stale target is
+ * still spared when it's a foreign membership (`isForeignMembership`) — `node`'s own membership
+ * in a structure this view can't see, which this write must never erase. */
 export function inheritWritesFor(
   ctx: SubtreeContext,
   oldCtx: SubtreeContext,
@@ -452,7 +455,15 @@ export function inheritWritesFor(
     // Round 3: only a target the action *newly* contributes (in U_new but not already in U_old) is
     // added — see derive.ts's `writesForDescendant` for the full rationale (this is the same rule,
     // applied to the moved/retyped node's own inherit-key recompute rather than a descendant's).
-    const add = uNew.filter((target) => !uOld.includes(target) && !current.includes(target));
+    const rawAdd = uNew.filter((target) => !uOld.includes(target) && !current.includes(target));
+    const add = reconnectToParents(ctx, oldCtx, {
+      oldParents: oldPropertyParents,
+      parents: newPropertyParents,
+      key,
+      current,
+      remove,
+      add: rawAdd,
+    });
     if (remove.length === 0 && add.length === 0) {
       continue;
     }

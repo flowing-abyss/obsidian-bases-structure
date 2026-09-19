@@ -80,9 +80,9 @@ function isDirectLegalEdge(
 }
 
 /** What `node` should currently hold for an `inherit` key `property` — the same
- * `unionInheritedTargets`/`propertyParentsOf` pairing the repair action uses, so a diagnostic and
- * "Fix inheritance" can never disagree. Callers only reach this once `property` is confirmed to be
- * an `inherit` key. */
+ * `unionInheritedTargets`/`propertyParentsOf` pairing the repair action uses (via
+ * `inheritMismatchKeys` below), so a diagnostic and "Fix inheritance" can never disagree. Callers
+ * only reach this once `property` is confirmed to be an `inherit` key. */
 function expectedTargetsFor(
   ctx: DiagCtx,
   node: StructureNode,
@@ -307,6 +307,36 @@ function mismatchedKeys(ctx: DiagCtx, node: StructureNode, parents: readonly str
     }
   }
   return keys;
+}
+
+/** The `inherit` keys `mismatchedKeys` currently flags for `path` — the exact predicate
+ * `inheritMismatchDiagnostic` reports, exposed standalone so a repair action
+ * (`plan-fix-inherit.ts`'s `ownInheritWrites`) can rewrite precisely the keys the diagnostic
+ * complains about, instead of re-deriving (and risking drifting from) the same rule. `[]` when
+ * `path` isn't a structure node, or has no property parent at all — mirrors
+ * `inheritMismatchDiagnostic`'s own early return, so a parentless node's own values are never
+ * treated as "wrong" here either. */
+export function inheritMismatchKeys(
+  schema: Schema,
+  snapshot: Snapshot,
+  structure: Structure,
+  path: string,
+): readonly string[] {
+  const node = structure.nodes.get(path);
+  if (node === undefined) {
+    return [];
+  }
+  const parents = propertyParentsOf(node);
+  if (parents.length === 0) {
+    return [];
+  }
+  const ctx: DiagCtx = {
+    schema,
+    snapshot,
+    structure,
+    subtree: { schema, snapshot, structure, typeOverrides: new Map(), linkOverrides: new Map() },
+  };
+  return mismatchedKeys(ctx, node, parents);
 }
 
 /** `null` when `node` has no property parent at all (the root, or any other parentless top) —

@@ -134,9 +134,9 @@ export function ruleBetween(
  * copy this view is responsible for cascading. A cascade must never remove such a value: doing so
  * would break the note's membership in a base this one doesn't even show. `nodeType: null`
  * (untyped) never qualifies, since inheritance never applies to it either. `live` takes just
- * `schema`/`structure` — same `Pick`-of-`SubtreeContext` shape as `oldContribOf`'s own first
- * param — so a full `SubtreeContext` (or `diagnostics.ts`'s own `DiagCtx`, which carries both
- * fields too) can be passed straight through. */
+ * `schema`/`structure` — a subset of `oldContribOf`'s own first param (which also picks
+ * `snapshot`) — so a full `SubtreeContext` (or `diagnostics.ts`'s own `DiagCtx`, which carries
+ * both fields too) can be passed straight through. */
 export function isForeignMembership(
   live: Pick<SubtreeContext, 'schema' | 'structure'>,
   nodeType: string | null,
@@ -300,6 +300,83 @@ export function resultingTargets(
   return kept;
 }
 
+export interface ParentReconnectInputs {
+  readonly oldParents: readonly string[]; // property parents before the action
+  readonly parents: readonly string[]; // property parents after the action — who might need reconnecting
+  readonly key: string;
+  readonly current: readonly string[]; // the key's current (pre-write) value
+  readonly remove: readonly string[]; // what the caller's own delta rule already decided to remove
+  readonly add: readonly string[]; // what the caller's own delta rule already decided to add
+}
+
+/** `true` when `current` already shares nothing with some `oldParents` entry that itself supplies
+ * something for `key`, evaluated through `oldCtx` — the pre-action state. Mirrors `diagnostics.ts`'s
+ * `losesAParent`, just aimed at the *old* parents/values instead of the live ones: a `true` here
+ * means the key was already mismatched before the action ever ran, so reconnecting it isn't this
+ * action's job (see `reconnectToParents`'s own doc for why that distinction matters). */
+function isAlreadyDisconnected(
+  oldCtx: SubtreeContext,
+  oldParents: readonly string[],
+  key: string,
+  current: readonly string[],
+): boolean {
+  return oldParents.some((parent) => {
+    const provided = unionInheritedTargets(oldCtx, [parent], key);
+    return provided.length > 0 && !provided.some((target) => current.includes(target));
+  });
+}
+
+/** `parent`'s whole contribution for `key` when it's non-empty and shares nothing with
+ * `resultingSet` — the values `reconnectToParents` needs to fold in to keep `key` connected to
+ * `parent`. `[]` when `parent` supplies nothing, or already shares something with `resultingSet`
+ * (nothing to reconnect). */
+function extraTargetsFromParent(
+  ctx: SubtreeContext,
+  parent: string,
+  key: string,
+  resultingSet: ReadonlySet<string>,
+): readonly string[] {
+  const provided = unionInheritedTargets(ctx, [parent], key);
+  if (provided.length === 0 || provided.some((target) => resultingSet.has(target))) {
+    return [];
+  }
+  return provided.filter((target) => !resultingSet.has(target));
+}
+
+/** Extends `inputs.add` so a write can never leave `key` sharing nothing with a property parent
+ * that still supplies something for it — but only when the action itself is what would cause that:
+ * when `inputs.current` was already disconnected from one of `inputs.oldParents`'s own (pre-action)
+ * contributions (`isAlreadyDisconnected`), that's pre-existing drift no move/retype/fix was asked
+ * to repair, and `inputs.add` comes back unchanged (a move only fixes what it changes). Otherwise,
+ * for each parent in `inputs.parents` (the resulting, *new* parent list), `extraTargetsFromParent`
+ * folds in that parent's whole contribution when it's non-empty and disjoint from the resulting
+ * value (`resultingTargets` of `current`/`remove`/`add`), skipping anything already present —
+ * narrowing to a subset of one parent's values is still fine, this only fires when the action's own
+ * delta would otherwise strand a previously-connected key with no shared value at all, so a
+ * move/retype/fix can never manufacture the very mismatch it's meant to prevent (Fix 1). Shared by
+ * `writesForDescendant` below and `plan-shared.ts`'s `inheritWritesFor`, so the guarantee can't
+ * drift between the two. */
+export function reconnectToParents(
+  ctx: SubtreeContext,
+  oldCtx: SubtreeContext,
+  inputs: ParentReconnectInputs,
+): readonly string[] {
+  const { oldParents, parents, key, current, remove, add } = inputs;
+  if (isAlreadyDisconnected(oldCtx, oldParents, key, current)) {
+    return add;
+  }
+  const resultingSet = new Set(resultingTargets(current, remove, add));
+  const extra: string[] = [];
+  for (const parent of parents) {
+    for (const target of extraTargetsFromParent(ctx, parent, key, resultingSet)) {
+      if (!extra.includes(target)) {
+        extra.push(target);
+      }
+    }
+  }
+  return extra.length === 0 ? add : [...add, ...extra];
+}
+
 /** D's "property parents" for inheritance purposes: its primary parent (when any) first, then
  * every `extras` entry that is itself a `'property'`-kind edge — the set of parents whose own
  * `inherit`-key values D's own values should be a union of. Round 2 C1: this same structural list
@@ -345,9 +422,11 @@ export function inheritKeysFor(schema: Schema, node: StructureNode): readonly st
  * the action (it's in `U_old` too) but that `current` never reflected is left alone: the action
  * didn't cause that gap, so it isn't this write's job to close it (the controller's "a move only
  * writes what it changes" decision) — see the round 3 report for the H/A/M2 regression this fixes
- * (a descendant picking up a sibling-chain value nothing here actually changed). A stale target is
- * still spared when it's a foreign membership (`isForeignMembership`) — a value this descendant's
- * own type could hold directly, outside this view, that this cascade has no business erasing. */
+ * (a descendant picking up a sibling-chain value nothing here actually changed). The one exception:
+ * `reconnectToParents` still adds a parent's whole contribution outright when this delta would
+ * otherwise leave the key sharing nothing with that parent at all (Fix 1). A stale target is still
+ * spared when it's a foreign membership (`isForeignMembership`) — a value this descendant's own
+ * type could hold directly, outside this view, that this cascade has no business erasing. */
 function writesForDescendant(
   ctx: SubtreeContext,
   oldCtx: SubtreeContext,
@@ -371,7 +450,15 @@ function writesForDescendant(
     // added — one already contributable before the action (e.g. an ancestor's own pre-existing,
     // unrelated value) is left alone even if `current` never happened to reflect it yet. A move
     // fixes only what it changes; it doesn't also retroactively reconcile drift nothing here caused.
-    const add = uNew.filter((target) => !uOld.includes(target) && !current.includes(target));
+    const rawAdd = uNew.filter((target) => !uOld.includes(target) && !current.includes(target));
+    const add = reconnectToParents(ctx, oldCtx, {
+      oldParents: parents,
+      parents,
+      key,
+      current,
+      remove,
+      add: rawAdd,
+    });
     if (remove.length === 0 && add.length === 0) {
       continue;
     }

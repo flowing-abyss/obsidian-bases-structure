@@ -1480,4 +1480,183 @@ describe('planAction — move: a note keeps its membership in a structure this v
     const after = applyPlan(snap, result.plan);
     expect(after.notes.get('h.md')?.propertyLinks['meta']).toStrictEqual(['m2.md', 'mOut.md']);
   });
+
+  it('(H) the foreign-membership filter also protects a cascaded descendant, not just the moved node', () => {
+    // Same setup as (D) — "p.md" (Problem) holds "startups.md" as a category directly, which a
+    // Problem can't legally do, so moving it away drops that value from p.md itself — but "h.md"
+    // (Hierarchy, child of p.md via "problem") *also* holds "startups.md" under category, and a
+    // Hierarchy CAN hold a category directly (Category -> Hierarchy is a "category" property
+    // rule), so the cascade must leave h.md's category alone even while it strips the same value
+    // from p.md. Guards `writesForDescendant`'s `!isForeignMembership(...)` filter specifically —
+    // every other test in this file only exercises that guard on the moved node's own writes.
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const tools = note('tools.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const p = note('p.md', {
+      tags: ['system/high/problem'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: {
+        category: ['ai.md', 'startups.md'],
+        meta: ['boot.md'],
+        problem: ['p.md'],
+      },
+    });
+    const snap = snapshot([ai, boot, tools, p, h], {
+      host: 'ai.md',
+      results: ['boot.md', 'tools.md', 'p.md', 'h.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'p.md', parent: 'tools.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const pChange = result.plan.changes.find((change) => change.path === 'p.md');
+    const hChange = result.plan.changes.find((change) => change.path === 'h.md');
+    expect(pChange).toStrictEqual({
+      path: 'p.md',
+      writes: [
+        {
+          key: 'meta',
+          value: { kind: 'links', remove: ['boot.md'], add: ['tools.md'], list: true },
+        },
+        {
+          key: 'category',
+          value: { kind: 'links', remove: ['startups.md'], add: [], list: true },
+        },
+      ],
+    });
+    expect(hChange).toStrictEqual({
+      path: 'h.md',
+      writes: [
+        {
+          key: 'meta',
+          value: { kind: 'links', remove: ['boot.md'], add: ['tools.md'], list: true },
+        },
+      ],
+    });
+    expect(result.plan.changes).toHaveLength(2);
+  });
+});
+
+describe('planAction — move: a narrowed inherited value stays connected to its new parent', () => {
+  // The user's real schema again (see CLAUDE.md).
+  const schema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+
+  it('(P1) moving a Hierarchy whose narrowed "meta" only matched the old parent reconnects to the new one', () => {
+    // p1.md and p2.md's own "meta" share nothing except m2.md; h.md deliberately kept only
+    // p1.md's "m1.md" (clean before the move — h shares m1.md with p1.md). Without Fix 1, the
+    // delta is `remove [m1], add []` (m2.md was already in U_old via p1.md, so round 3's "only
+    // newly contributed" rule excludes it) — emptying h's "meta" entirely.
+    const m1 = note('m1.md', { tags: ['system/high/meta'] });
+    const m2 = note('m2.md', { tags: ['system/high/meta'] });
+    const p1 = note('p1.md', {
+      tags: ['system/high/problem'],
+      propertyLinks: { meta: ['m1.md', 'm2.md'] },
+    });
+    const p2 = note('p2.md', {
+      tags: ['system/high/problem'],
+      propertyLinks: { meta: ['m2.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { problem: ['p1.md'], meta: ['m1.md'] },
+    });
+    const snap = snapshot([m1, m2, p1, p2, h], {
+      results: ['m1.md', 'm2.md', 'p1.md', 'p2.md', 'h.md'],
+    });
+    const structureBefore = buildStructure(schema, snap);
+    expect(collectDiagnostics(schema, snap, structureBefore)).toStrictEqual([]);
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'h.md', parent: 'p2.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          {
+            key: 'problem',
+            value: { kind: 'links', remove: ['p1.md'], add: ['p2.md'], list: true },
+          },
+          { key: 'meta', value: { kind: 'links', remove: ['m1.md'], add: ['m2.md'], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['meta']).toStrictEqual(['m2.md']);
+    const structureAfter = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structureAfter)).toStrictEqual([]);
+  });
+
+  it('(P5) moving a Hierarchy whose narrowed "category" only matched the old parent reconnects to the new one', () => {
+    // m1.md and m2.md's own "category" share nothing except x.md; h.md deliberately kept only
+    // m1.md's "ai.md" (clean before the move). Without Fix 1, the delta is `remove [ai], add []`
+    // (x.md was already in U_old via m1.md) — emptying h's "category" entirely.
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const x = note('x.md', { tags: ['system/category'] });
+    const m1 = note('m1.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'x.md'] },
+    });
+    const m2 = note('m2.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['x.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['m1.md'], category: ['ai.md'] },
+    });
+    const snap = snapshot([ai, x, m1, m2, h], {
+      results: ['ai.md', 'x.md', 'm1.md', 'm2.md', 'h.md'],
+    });
+    const structureBefore = buildStructure(schema, snap);
+    expect(collectDiagnostics(schema, snap, structureBefore)).toStrictEqual([]);
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'h.md', parent: 'm2.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          { key: 'meta', value: { kind: 'links', remove: ['m1.md'], add: ['m2.md'], list: true } },
+          {
+            key: 'category',
+            value: { kind: 'links', remove: ['ai.md'], add: ['x.md'], list: true },
+          },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['category']).toStrictEqual(['x.md']);
+    const structureAfter = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structureAfter)).toStrictEqual([]);
+  });
 });
