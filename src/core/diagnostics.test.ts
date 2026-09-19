@@ -270,8 +270,10 @@ describe('collectDiagnostics — inherit-mismatch', () => {
     ]);
   });
 
-  it('flags a shorter inherited set as a mismatch even when every value it does have is valid', () => {
-    // h1.md contributes two category targets; h2.md's own copy only kept one of them.
+  it("does not flag a child that keeps only some of its parent's values", () => {
+    // h1.md contributes two category targets; h2.md's own copy narrows to just one of them — a
+    // child is allowed to be more specific than its parent, as long as it still shares some of
+    // what the parent passes down.
     const schema = vaultSchema();
     const snap = snapshot([
       note('c1.md'),
@@ -284,6 +286,80 @@ describe('collectDiagnostics — inherit-mismatch', () => {
       note('h2.md', {
         tags: ['system/high/hierarchy'],
         propertyLinks: { category: ['c1.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+
+  it("does not flag a Hierarchy that keeps one of its Meta-note's two categories", () => {
+    // Mirrors a real vault shape: a Hierarchy sits under a Meta-note (via "meta"), and the
+    // Meta-note's own "category" spans two targets, one of which ("startups.md") is a category
+    // outside this base (not in the snapshot/results at all). The Hierarchy deliberately keeps
+    // only the category it's actually about — narrowing, not drift.
+    const schema = vaultSchema();
+    const snap = snapshot(
+      [
+        note('cat.md', { tags: ['system/category'] }),
+        note('meta.md', {
+          tags: ['system/high/meta'],
+          propertyLinks: { category: ['cat.md', 'startups.md'] },
+        }),
+        note('h.md', {
+          tags: ['system/high/hierarchy'],
+          propertyLinks: { category: ['cat.md'], meta: ['meta.md'] },
+        }),
+      ],
+      { host: 'cat.md', results: ['meta.md', 'h.md'] },
+    );
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+
+  it('flags a child that shares nothing with one of its parents', () => {
+    // h.md has two property parents: meta.md (primary, via "meta") and c2.md (extra, via a
+    // direct "category" edge — c2.md is a real Category note, a legal parent in its own right).
+    // meta.md's own "category" is c1.md; h.md's own "category" is c2.md, which shares nothing
+    // with what meta.md passes down — the child dropped that parent's context entirely, not just
+    // narrowed it.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('c1.md', { tags: ['system/category'] }),
+      note('c2.md', { tags: ['system/category'] }),
+      note('meta.md', {
+        tags: ['system/high/meta'],
+        propertyLinks: { category: ['c1.md'] },
+      }),
+      note('h.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['c2.md'], meta: ['meta.md'] },
+      }),
+    ]);
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics.find((diagnostic) => diagnostic.node === 'h.md')).toMatchObject({
+      kind: 'inherit-mismatch',
+      keys: ['category'],
+    });
+  });
+
+  it("flags a child that holds none of its parent's values", () => {
+    // h1.md contributes a non-empty "category"; h2.md keeps none of it at all.
+    const schema = vaultSchema();
+    const snap = snapshot([
+      note('c1.md'),
+      note('h1.md', {
+        tags: ['system/high/hierarchy'],
+        propertyLinks: { category: ['c1.md'] },
+        links: ['h2.md'],
+      }),
+      note('h2.md', {
+        tags: ['system/high/hierarchy'],
       }),
     ]);
 

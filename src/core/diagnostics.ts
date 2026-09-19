@@ -258,17 +258,33 @@ function untypedDiagnostic(ctx: DiagCtx, node: StructureNode): Diagnostic {
   };
 }
 
-function targetsDiffer(expected: readonly string[], actual: readonly string[]): boolean {
-  if (expected.length !== actual.length) {
-    return true;
-  }
+/** `true` when `remaining` holds a target `expected` (the union every property parent
+ * contributes) does not — a child may narrow its parents' values, but never add one of its own. */
+function hasExtraValue(expected: readonly string[], remaining: readonly string[]): boolean {
   const expectedSet = new Set(expected);
-  return actual.some((target) => !expectedSet.has(target));
+  return remaining.some((target) => !expectedSet.has(target));
+}
+
+/** `true` when some single parent passes a non-empty value for `key` that `remaining` shares
+ * nothing with — narrowing to a subset of one parent's values is fine, but dropping a parent's
+ * contribution entirely (including down to nothing) is not. */
+function losesAParent(
+  ctx: DiagCtx,
+  parents: readonly string[],
+  key: string,
+  remaining: readonly string[],
+): boolean {
+  return parents.some((parent) => {
+    const provided = unionInheritedTargets(ctx.subtree, [parent], key);
+    return provided.length > 0 && !provided.some((target) => remaining.includes(target));
+  });
 }
 
 /** A key mismatches when what's left after setting aside its own illegal links (already reported
- * separately, one `illegal-parent` per link) still disagrees with what `inherit` expects — an
- * illegal link is never double-counted as a key-level mismatch too. */
+ * separately, one `illegal-parent` per link) either holds a value none of `inherit`'s union
+ * supplies, or shares nothing with some parent that supplies something — a child may narrow to a
+ * non-empty subset of what each contributing parent passes down, but never add its own value or
+ * drop a parent's contribution outright. */
 function mismatchedKeys(ctx: DiagCtx, node: StructureNode, parents: readonly string[]): string[] {
   const keys: string[] = [];
   for (const key of inheritKeysFor(ctx.schema, node)) {
@@ -276,7 +292,7 @@ function mismatchedKeys(ctx: DiagCtx, node: StructureNode, parents: readonly str
     const actual = ctx.snapshot.notes.get(node.path)?.propertyLinks[key] ?? [];
     const illegal = illegalTargetsFor(ctx, node, key, actual);
     const remaining = actual.filter((target) => !illegal.includes(target));
-    if (targetsDiffer(expected, remaining)) {
+    if (hasExtraValue(expected, remaining) || losesAParent(ctx, parents, key, remaining)) {
       keys.push(key);
     }
   }
