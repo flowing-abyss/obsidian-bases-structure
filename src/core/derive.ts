@@ -1,8 +1,10 @@
 // Small derivation helpers shared by the planner: which properties a type's own `children` rules
 // bind (`edgeProperties`), what a new/edited note should inherit through an `inherit` key
 // (`inheritedTargets`), whether a property should be written as a YAML list or a scalar
-// (`listShape`), which edge rule connects a parent type to a child type (`ruleBetween`), and the
-// move/retype link cascade down a subtree (`deriveSubtreeWrites`). No Obsidian imports.
+// (`listShape`), which edge rule connects a parent type to a child type (`ruleBetween`), whether an
+// out-of-view target might be the note's own membership in a structure this view can't see
+// (`isForeignMembership`), and the move/retype link cascade down a subtree
+// (`deriveSubtreeWrites`). No Obsidian imports.
 
 import type { KeyWrite } from './plan-types.js';
 import type { EdgeRule, Schema, TypeDef } from './schema.js';
@@ -126,6 +128,34 @@ export function ruleBetween(
   return lowestLevelRuleFor(schema, childType);
 }
 
+/** `true` when `target` sits outside this view's own structure *and* some type in the schema could
+ * hand a note typed `nodeType` a `key` value as a direct `'property'` parent — i.e. `target` may
+ * be `nodeType`'s own membership in a structure this view can't see, not a flattened inherited
+ * copy this view is responsible for cascading. A cascade must never remove such a value: doing so
+ * would break the note's membership in a base this one doesn't even show. `nodeType: null`
+ * (untyped) never qualifies, since inheritance never applies to it either. `live` takes just
+ * `schema`/`structure` — same `Pick`-of-`SubtreeContext` shape as `oldContribOf`'s own first
+ * param — so a full `SubtreeContext` (or `diagnostics.ts`'s own `DiagCtx`, which carries both
+ * fields too) can be passed straight through. */
+export function isForeignMembership(
+  live: Pick<SubtreeContext, 'schema' | 'structure'>,
+  nodeType: string | null,
+  key: string,
+  target: string,
+): boolean {
+  const { schema, structure } = live;
+  if (nodeType === null || structure.nodes.has(target)) {
+    return false;
+  }
+  for (const type of schema.types) {
+    const rule = type.children.get(nodeType);
+    if (rule?.kind === 'property' && rule.property === key) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** A patch for a brand-new-relationship edge write: nothing is invalidated (`stale` is whatever
  * the caller has determined is genuinely no longer valid — see `oldContribOf`/round 2's C1 rule),
  * `newParent` is added unless already present. Only elements resolving to a path in `stale` are
@@ -192,11 +222,18 @@ export function oldContribOf(
   return inheritedTargets(schema, { path: parentPath, type, links }, key);
 }
 
-/** `path`'s `TypeDef` as it will be after the action: `typeOverrides` wins when it names a path,
- * otherwise the type it already resolves to in the (pre-action) `structure`. */
+/** `path`'s type name as it will be after the action: `typeOverrides` wins when it names `path`,
+ * otherwise the type it already resolves to in the (pre-action) `structure`. Exported so a caller
+ * that only needs the name — `isForeignMembership`'s `nodeType` — doesn't have to duplicate this
+ * lookup the way `typeDefAfter` does for the full `TypeDef`. */
+export function typeNameAfter(ctx: SubtreeContext, path: string): string | null {
+  return ctx.typeOverrides.get(path) ?? ctx.structure.nodes.get(path)?.type ?? null;
+}
+
+/** `path`'s `TypeDef` as it will be after the action — `typeNameAfter` resolved against the
+ * schema's own type map. */
 function typeDefAfter(ctx: SubtreeContext, path: string): TypeDef | null {
-  const overrideName = ctx.typeOverrides.get(path);
-  const typeName = overrideName ?? ctx.structure.nodes.get(path)?.type ?? null;
+  const typeName = typeNameAfter(ctx, path);
   return typeName === null ? null : (ctx.schema.typeByName.get(typeName) ?? null);
 }
 
@@ -308,7 +345,9 @@ export function inheritKeysFor(schema: Schema, node: StructureNode): readonly st
  * the action (it's in `U_old` too) but that `current` never reflected is left alone: the action
  * didn't cause that gap, so it isn't this write's job to close it (the controller's "a move only
  * writes what it changes" decision) — see the round 3 report for the H/A/M2 regression this fixes
- * (a descendant picking up a sibling-chain value nothing here actually changed). */
+ * (a descendant picking up a sibling-chain value nothing here actually changed). A stale target is
+ * still spared when it's a foreign membership (`isForeignMembership`) — a value this descendant's
+ * own type could hold directly, outside this view, that this cascade has no business erasing. */
 function writesForDescendant(
   ctx: SubtreeContext,
   oldCtx: SubtreeContext,
@@ -319,12 +358,15 @@ function writesForDescendant(
   const overrides: Record<string, readonly string[]> = {};
   let changed = false;
   const parents = propertyParentsOf(node);
+  const nodeType = typeNameAfter(ctx, path);
   for (const key of inheritKeysFor(ctx.schema, node)) {
     const uOld = unionInheritedTargets(oldCtx, parents, key);
     const uNew = unionInheritedTargets(ctx, parents, key);
     const current = ctx.snapshot.notes.get(path)?.propertyLinks[key] ?? [];
     const staleSet = new Set(uOld.filter((target) => !uNew.includes(target)));
-    const remove = current.filter((target) => staleSet.has(target));
+    const remove = current.filter(
+      (target) => staleSet.has(target) && !isForeignMembership(ctx, nodeType, key, target),
+    );
     // Round 3: only a target the action *newly* contributes (in U_new but not already in U_old) is
     // added — one already contributable before the action (e.g. an ancestor's own pre-existing,
     // unrelated value) is left alone even if `current` never happened to reflect it yet. A move

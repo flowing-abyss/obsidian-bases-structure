@@ -9,8 +9,10 @@ import {
   bareContext,
   deriveSubtreeWrites,
   inheritKeysFor,
+  isForeignMembership,
   listShape,
   propertyParentsOf,
+  typeNameAfter,
   unionInheritedTargets,
   type SubtreeContext,
 } from './derive.js';
@@ -29,7 +31,10 @@ type FixInheritAction = Extract<Action, { kind: 'fix-inherit' }>;
  * vs. new state the way move/retype's cascade computes it (nothing here moved or retyped; the
  * whole point is correcting drift a delta would never touch). `[]` when `node` has no property
  * parent at all — mirrors `diagnostics.ts`'s `inheritMismatchDiagnostic` early return, so a
- * parentless node's own values are never treated as "wrong" here either. */
+ * parentless node's own values are never treated as "wrong" here either. A value that isn't
+ * `expected` is still kept when it's a foreign membership (`isForeignMembership`) — `node`'s own
+ * membership in a structure this view can't see, which this repair must never erase; every
+ * missing parent value is still added regardless. */
 function ownInheritWrites(
   ctx: SubtreeContext,
   node: string,
@@ -40,11 +45,14 @@ function ownInheritWrites(
     return [];
   }
   const current = ctx.snapshot.notes.get(node)?.propertyLinks ?? {};
+  const nodeType = typeNameAfter(ctx, node);
   const writes: KeyWrite[] = [];
   for (const key of inheritKeysFor(ctx.schema, nNode)) {
     const expected = unionInheritedTargets(ctx, parents, key);
     const currentTargets = current[key] ?? [];
-    const remove = currentTargets.filter((target) => !expected.includes(target));
+    const remove = currentTargets.filter(
+      (target) => !expected.includes(target) && !isForeignMembership(ctx, nodeType, key, target),
+    );
     const add = expected.filter((target) => !currentTargets.includes(target));
     if (remove.length === 0 && add.length === 0) {
       continue;

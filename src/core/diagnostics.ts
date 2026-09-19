@@ -6,6 +6,7 @@
 import {
   edgeProperties,
   inheritKeysFor,
+  isForeignMembership,
   propertyParentsOf,
   ruleBetween,
   unionInheritedTargets,
@@ -258,11 +259,20 @@ function untypedDiagnostic(ctx: DiagCtx, node: StructureNode): Diagnostic {
   };
 }
 
-/** `true` when `remaining` holds a target `expected` (the union every property parent
- * contributes) does not — a child may narrow its parents' values, but never add one of its own. */
-function hasExtraValue(expected: readonly string[], remaining: readonly string[]): boolean {
-  const expectedSet = new Set(expected);
-  return remaining.some((target) => !expectedSet.has(target));
+/** `true` when `remaining` holds a target that neither the union of `node`'s property parents (for
+ * `key`, via `expectedTargetsFor`) nor a foreign membership (`isForeignMembership` — `node`'s own
+ * type could hold `target` directly, in a structure this view can't see) accounts for — a child
+ * may narrow its parents' values, but never add a genuine one of its own. */
+function hasExtraValue(
+  ctx: DiagCtx,
+  node: StructureNode,
+  key: string,
+  remaining: readonly string[],
+): boolean {
+  const expectedSet = new Set(expectedTargetsFor(ctx, node, key));
+  return remaining.some(
+    (target) => !expectedSet.has(target) && !isForeignMembership(ctx, node.type, key, target),
+  );
 }
 
 /** `true` when some single parent passes a non-empty value for `key` that `remaining` shares
@@ -284,15 +294,15 @@ function losesAParent(
  * separately, one `illegal-parent` per link) either holds a value none of `inherit`'s union
  * supplies, or shares nothing with some parent that supplies something — a child may narrow to a
  * non-empty subset of what each contributing parent passes down, but never add its own value or
- * drop a parent's contribution outright. */
+ * drop a parent's contribution outright. A foreign membership (`hasExtraValue`) is exempt from the
+ * first rule: this view can't tell it apart from the note's own, unrelated membership elsewhere. */
 function mismatchedKeys(ctx: DiagCtx, node: StructureNode, parents: readonly string[]): string[] {
   const keys: string[] = [];
   for (const key of inheritKeysFor(ctx.schema, node)) {
-    const expected = unionInheritedTargets(ctx.subtree, parents, key);
     const actual = ctx.snapshot.notes.get(node.path)?.propertyLinks[key] ?? [];
     const illegal = illegalTargetsFor(ctx, node, key, actual);
     const remaining = actual.filter((target) => !illegal.includes(target));
-    if (hasExtraValue(expected, remaining) || losesAParent(ctx, parents, key, remaining)) {
+    if (hasExtraValue(ctx, node, key, remaining) || losesAParent(ctx, parents, key, remaining)) {
       keys.push(key);
     }
   }

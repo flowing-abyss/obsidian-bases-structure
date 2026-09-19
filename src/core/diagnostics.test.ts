@@ -320,6 +320,58 @@ describe('collectDiagnostics — inherit-mismatch', () => {
     expect(diagnostics).toStrictEqual([]);
   });
 
+  it('does not flag a Hierarchy holding a second, out-of-view category directly', () => {
+    // "robotics.md" is a Category outside this base entirely (no NoteData at all, unlike
+    // "startups.md" above which at least appears as a value). A Hierarchy can hold a category
+    // directly (Category -> Hierarchy is its own "category" property rule), so this may be the
+    // note's own membership in a structure this view can't see — never a hard drift.
+    const schema = vaultSchema();
+    const snap = snapshot(
+      [
+        note('ai.md', { tags: ['system/category'] }),
+        note('tools.md', { tags: ['system/high/meta'], propertyLinks: { category: ['ai.md'] } }),
+        note('h.md', {
+          tags: ['system/high/hierarchy'],
+          propertyLinks: { meta: ['tools.md'], category: ['ai.md', 'robotics.md'] },
+        }),
+      ],
+      { host: 'ai.md', results: ['tools.md', 'h.md'] },
+    );
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([]);
+  });
+
+  it('flags a Problem holding a second, out-of-view category — it cannot hold one directly', () => {
+    // Same shape as above, but "p.md" is a Problem — nothing routes a "category" property directly
+    // onto a Problem (only a Meta-note ancestor ever supplies it), so "robotics.md" is never a
+    // plausible membership of its own; it is a genuine mismatch.
+    const schema = vaultSchema();
+    const snap = snapshot(
+      [
+        note('ai.md', { tags: ['system/category'] }),
+        note('tools.md', { tags: ['system/high/meta'], propertyLinks: { category: ['ai.md'] } }),
+        note('p.md', {
+          tags: ['system/high/problem'],
+          propertyLinks: { meta: ['tools.md'], category: ['ai.md', 'robotics.md'] },
+        }),
+      ],
+      { host: 'ai.md', results: ['tools.md', 'p.md'] },
+    );
+
+    const diagnostics = diagnosticsFor(schema, snap);
+
+    expect(diagnostics).toStrictEqual([
+      {
+        kind: 'inherit-mismatch',
+        node: 'p.md',
+        keys: ['category'],
+        message: '"p" does not match its parent for category.',
+      },
+    ]);
+  });
+
   it('flags a child that shares nothing with one of its parents', () => {
     // h.md has two property parents: meta.md (primary, via "meta") and c2.md (extra, via a
     // direct "category" edge — c2.md is a real Category note, a legal parent in its own right).

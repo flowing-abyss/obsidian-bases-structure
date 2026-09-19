@@ -294,3 +294,56 @@ describe('planFixInherit — user ruling — writes only the schema-owned inheri
     }
   });
 });
+
+describe("planFixInherit — a note's membership in a structure this view cannot see survives the fix", () => {
+  const schema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+
+  it('adds the missing parent value and keeps the out-of-view one it already held directly', () => {
+    // "tools.md" passes only "ai.md"; "h.md" currently holds just "robotics.md" (an out-of-view
+    // Category this base doesn't show) — that alone is a mismatch (it shares nothing with what
+    // tools.md supplies), but fixing it must add "ai.md" without dropping "robotics.md", since a
+    // Hierarchy can hold a category directly.
+    const snap = snapshot(
+      [
+        note('ai.md', { tags: ['system/category'] }),
+        note('tools.md', { tags: ['system/high/meta'], propertyLinks: { category: ['ai.md'] } }),
+        note('h.md', {
+          tags: ['system/high/hierarchy'],
+          propertyLinks: { meta: ['tools.md'], category: ['robotics.md'] },
+        }),
+      ],
+      { host: 'ai.md', results: ['tools.md', 'h.md'] },
+    );
+
+    const result = planFixInherit(schema, snap, { kind: 'fix-inherit', node: 'h.md' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          { key: 'category', value: { kind: 'links', remove: [], add: ['ai.md'], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['category']).toStrictEqual([
+      'robotics.md',
+      'ai.md',
+    ]);
+    const structure = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structure)).toStrictEqual([]);
+  });
+});

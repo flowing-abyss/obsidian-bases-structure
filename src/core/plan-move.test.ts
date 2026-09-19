@@ -7,6 +7,7 @@ import {
   rLangSnapshot,
 } from './__tests__/knowledge-base.fixture.js';
 import { note, snapshot } from './__tests__/notes.js';
+import { collectDiagnostics } from './diagnostics.js';
 import { moveTargets } from './plan-move.js';
 import { planAction } from './planner.js';
 import { parseSchema } from './schema.js';
@@ -1144,5 +1145,339 @@ describe('planAction — move: user ruling — writes only the schema-owned link
     for (const key of Object.keys(before).filter((k) => !OWNED_KEYS.includes(k))) {
       expect(after[key]).toEqual(before[key]);
     }
+  });
+});
+
+describe('planAction — move: a note keeps its membership in a structure this view cannot see', () => {
+  // The user's real schema again (see CLAUDE.md): Category -> Meta-note/Hierarchy (both
+  // "category"), Meta-note -> Problem/Hierarchy (both "meta"), Problem -> Hierarchy ("problem"),
+  // Hierarchy -> Hierarchy (file.backlinks). The view is rooted at Category "ai.md"; "startups.md"
+  // is a second Category the base doesn't show at all — never given a NoteData entry, matching the
+  // real shape of a category outside the base.
+  const schema = schemaFrom({
+    inherit: ['category', 'meta', 'problem'],
+    types: {
+      Category: {
+        tag: 'system/category',
+        children: { 'Meta-note': 'category', Hierarchy: 'category' },
+      },
+      'Meta-note': { tag: 'system/high/meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+      Problem: { tag: 'system/high/problem', children: { Hierarchy: 'problem' } },
+      Hierarchy: { tag: 'system/high/hierarchy', children: { Hierarchy: 'file.backlinks' } },
+    },
+  });
+
+  it('(A) moving a Hierarchy in two categories to another meta-note in view changes only "meta"', () => {
+    // "h.md" belongs to both "ai.md" (this view's category) and "startups.md" (outside it) via a
+    // direct Hierarchy "category" edge — moving it between meta-notes must never touch that.
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const tools = note('tools.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+    });
+    const snap = snapshot([ai, boot, tools, h], {
+      host: 'ai.md',
+      results: ['boot.md', 'tools.md', 'h.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'h.md', parent: 'tools.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          {
+            key: 'meta',
+            value: { kind: 'links', remove: ['boot.md'], add: ['tools.md'], list: true },
+          },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['category']).toStrictEqual([
+      'ai.md',
+      'startups.md',
+    ]);
+    const structure = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structure)).toStrictEqual([]);
+  });
+
+  it('(B) moving that same Hierarchy to the category root drops "meta" but keeps "category" as-is', () => {
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+    });
+    const snap = snapshot([ai, boot, h], { host: 'ai.md', results: ['boot.md', 'h.md'] });
+
+    const result = planAction(schema, snap, { kind: 'move', node: 'h.md', parent: 'ai.md' }, noEnv);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          { key: 'meta', value: { kind: 'links', remove: ['boot.md'], add: [], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['category']).toStrictEqual([
+      'ai.md',
+      'startups.md',
+    ]);
+    const structure = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structure)).toStrictEqual([]);
+  });
+
+  it('(C) the cascade to a linked descendant changes its "meta" but leaves its out-of-view "category" alone', () => {
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const tools = note('tools.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+      links: ['h2.md'],
+    });
+    const h2 = note('h2.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+    });
+    const snap = snapshot([ai, boot, tools, h, h2], {
+      host: 'ai.md',
+      results: ['boot.md', 'tools.md', 'h.md', 'h2.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'h.md', parent: 'tools.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const h2Change = result.plan.changes.find((change) => change.path === 'h2.md');
+    expect(h2Change).toStrictEqual({
+      path: 'h2.md',
+      writes: [
+        {
+          key: 'meta',
+          value: { kind: 'links', remove: ['boot.md'], add: ['tools.md'], list: true },
+        },
+      ],
+    });
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h2.md')?.propertyLinks['category']).toStrictEqual([
+      'ai.md',
+      'startups.md',
+    ]);
+    const structure = buildStructure(schema, after);
+    expect(collectDiagnostics(schema, after, structure)).toStrictEqual([]);
+  });
+
+  it('(D) a Problem cannot hold a category directly, so the same move DOES drop its out-of-view category', () => {
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const tools = note('tools.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const p = note('p.md', {
+      tags: ['system/high/problem'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md', 'startups.md'] },
+    });
+    const snap = snapshot([ai, boot, tools, p], {
+      host: 'ai.md',
+      results: ['boot.md', 'tools.md', 'p.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'p.md', parent: 'tools.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'p.md',
+        writes: [
+          {
+            key: 'meta',
+            value: { kind: 'links', remove: ['boot.md'], add: ['tools.md'], list: true },
+          },
+          {
+            key: 'category',
+            value: { kind: 'links', remove: ['startups.md'], add: [], list: true },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('(F) regression pin: the user\'s real note, with no second category involved, still only writes "meta"', () => {
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const tools = note('tools.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['boot.md'], category: ['ai.md'] },
+    });
+    const snap = snapshot([ai, boot, tools, h], {
+      host: 'ai.md',
+      results: ['boot.md', 'tools.md', 'h.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'h.md', parent: 'tools.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          {
+            key: 'meta',
+            value: { kind: 'links', remove: ['boot.md'], add: ['tools.md'], list: true },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('(G) adds are unaffected: moving into a meta-note that is in two categories still adds the second one', () => {
+    const ai = note('ai.md', { tags: ['system/category'] });
+    const boot = note('boot.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md', 'startups.md'] },
+    });
+    const tools = note('tools.md', {
+      tags: ['system/high/meta'],
+      propertyLinks: { category: ['ai.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['system/high/hierarchy'],
+      propertyLinks: { meta: ['tools.md'], category: ['ai.md'] },
+    });
+    const snap = snapshot([ai, boot, tools, h], {
+      host: 'ai.md',
+      results: ['boot.md', 'tools.md', 'h.md'],
+    });
+
+    const result = planAction(
+      schema,
+      snap,
+      { kind: 'move', node: 'h.md', parent: 'boot.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          {
+            key: 'meta',
+            value: { kind: 'links', remove: ['tools.md'], add: ['boot.md'], list: true },
+          },
+          {
+            key: 'category',
+            value: { kind: 'links', remove: [], add: ['startups.md'], list: true },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("(E) the edge-key case: moving into a different rule keeps an old parent's out-of-view contribution", () => {
+    // "h.md" sits under Problem "p.md" (edge "problem"); p.md's own "meta" spans "m1.md" (in this
+    // view) and "mOut.md" (outside it). h.md's own "meta" already mirrors both. Moving h.md under
+    // Meta-note "m2.md" changes its edge key to "meta" itself — the old parent's in-view
+    // contribution (m1) must go stale, but its out-of-view one (mOut) must not, since h.md could
+    // hold a "meta" membership directly (Meta-note -> Hierarchy is a "meta" property rule).
+    const localSchema = schemaFrom({
+      inherit: ['meta'],
+      types: {
+        'Meta-note': { tag: 'meta', children: { Problem: 'meta', Hierarchy: 'meta' } },
+        Problem: { tag: 'problem', children: { Hierarchy: 'problem' } },
+        Hierarchy: { tag: 'hier' },
+      },
+    });
+    const m1 = note('m1.md', { tags: ['meta'] });
+    const m2 = note('m2.md', { tags: ['meta'] });
+    const p = note('p.md', {
+      tags: ['problem'],
+      propertyLinks: { meta: ['m1.md', 'mOut.md'] },
+    });
+    const h = note('h.md', {
+      tags: ['hier'],
+      propertyLinks: { problem: ['p.md'], meta: ['m1.md', 'mOut.md'] },
+    });
+    const snap = snapshot([m1, m2, p, h], { results: ['m1.md', 'm2.md', 'p.md', 'h.md'] });
+
+    const result = planAction(
+      localSchema,
+      snap,
+      { kind: 'move', node: 'h.md', parent: 'm2.md' },
+      noEnv,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.changes).toStrictEqual([
+      {
+        path: 'h.md',
+        writes: [
+          { key: 'meta', value: { kind: 'links', remove: ['m1.md'], add: ['m2.md'], list: true } },
+          { key: 'problem', value: { kind: 'links', remove: ['p.md'], add: [], list: true } },
+        ],
+      },
+    ]);
+    const after = applyPlan(snap, result.plan);
+    expect(after.notes.get('h.md')?.propertyLinks['meta']).toStrictEqual(['m2.md', 'mOut.md']);
   });
 });

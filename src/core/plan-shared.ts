@@ -11,9 +11,11 @@
 
 import {
   edgeKeyPatch,
+  isForeignMembership,
   listShape,
   oldContribOf,
   resultingTargets,
+  typeNameAfter,
   unionInheritedTargets,
   type SubtreeContext,
 } from './derive.js';
@@ -233,22 +235,26 @@ export interface RuleEdgeInputs {
  * `inheritKeysFor`, which excludes a node's own edge property from the generic recompute). When
  * O was N's old parent through k directly (typically an untyped host or root, whose own type
  * never claims k as an edge property), N's own values under k are N's, not something O
- * contributed — folding O's raw value in here silently deleted it. */
+ * contributed — folding O's raw value in here silently deleted it.
+ *
+ * `oldContribOf`'s own result is further filtered through `isForeignMembership`: O itself is
+ * always stale outright (it's always a node in this structure), but a value it *contributed* may
+ * be N's own membership in a structure this view can't see, which this write must never erase. */
 export function propertyEdgeWrites(
   ctx: SubtreeContext,
   inputs: RuleEdgeInputs,
 ): readonly KeyWrite[] {
   const { schema, snapshot, node, newParent, rule, oldParent, oldEdge } = inputs;
-  const staleForNewKey = new Set(
-    oldParent === null
-      ? []
-      : [
-          oldParent,
-          ...(schema.inherit.includes(rule.property) && oldEdge?.property !== rule.property
-            ? oldContribOf(ctx, oldParent, rule.property)
-            : []),
-        ],
-  );
+  const nodeType = typeNameAfter(ctx, node);
+  const oldContrib =
+    oldParent !== null &&
+    schema.inherit.includes(rule.property) &&
+    oldEdge?.property !== rule.property
+      ? oldContribOf(ctx, oldParent, rule.property).filter(
+          (target) => !isForeignMembership(ctx, nodeType, rule.property, target),
+        )
+      : [];
+  const staleForNewKey = new Set(oldParent === null ? [] : [oldParent, ...oldContrib]);
   return buildEdgeWrites(schema, {
     snapshot,
     node,
@@ -420,7 +426,9 @@ export interface InheritWriteInputs {
  * happened to reflect, is left alone (a move fixes only what it changes, not pre-existing drift).
  * Mutates `ctx.linkOverrides` for `node` as writes are found — mirrors `deriveSubtreeWrites`'s
  * per-descendant recompute, applied to the node itself with caller-supplied parent lists instead
- * of the structure's own `parent`/`extras`. */
+ * of the structure's own `parent`/`extras`. A stale target is still spared when it's a foreign
+ * membership (`isForeignMembership`) — `node`'s own membership in a structure this view can't
+ * see, which this write must never erase. */
 export function inheritWritesFor(
   ctx: SubtreeContext,
   oldCtx: SubtreeContext,
@@ -429,6 +437,7 @@ export function inheritWritesFor(
   const { node, excludeKey, oldPropertyParents, newPropertyParents } = inputs;
   const writes: KeyWrite[] = [];
   const nLinks = ctx.snapshot.notes.get(node)?.propertyLinks ?? {};
+  const nodeType = typeNameAfter(ctx, node);
   for (const key of ctx.schema.inherit) {
     if (key === excludeKey) {
       continue;
@@ -437,7 +446,9 @@ export function inheritWritesFor(
     const uNew = unionInheritedTargets(ctx, newPropertyParents, key);
     const current = nLinks[key] ?? [];
     const staleSet = new Set(uOld.filter((target) => !uNew.includes(target)));
-    const remove = current.filter((target) => staleSet.has(target));
+    const remove = current.filter(
+      (target) => staleSet.has(target) && !isForeignMembership(ctx, nodeType, key, target),
+    );
     // Round 3: only a target the action *newly* contributes (in U_new but not already in U_old) is
     // added — see derive.ts's `writesForDescendant` for the full rationale (this is the same rule,
     // applied to the moved/retyped node's own inherit-key recompute rather than a descendant's).
